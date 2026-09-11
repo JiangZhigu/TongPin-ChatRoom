@@ -9,6 +9,7 @@ from tongpin.infra.db import Database, now_ms
 class JobRepository:
     def __init__(self, database: Database):
         self.db = database
+        self.failure_handlers = {}
 
     def enqueue(self, kind, payload=None, *, entity_id="", dedupe_key=None, run_after=None):
         with self.db.write() as connection:
@@ -83,12 +84,23 @@ class JobRepository:
 
     def fail(self, identifier, code, attempts, retry=True):
         with self.db.write() as connection:
+            row = connection.execute(
+                "SELECT * FROM jobs WHERE id=? AND status='running'", (identifier,)
+            ).fetchone()
+            if not row:
+                return
+            status = "pending" if retry and attempts < 5 else "failed"
             connection.execute(
-                "UPDATE jobs SET status=?,lease_until=NULL,run_after=?,last_error_code=? WHERE id=? AND status='running'",
+                "UPDATE jobs SET status=?,lease_until=NULL,run_after=?,last_error_code=?,completed_at=? WHERE id=? AND status='running'",
                 (
-                    "pending" if retry and attempts < 5 else "failed",
+                    status,
                     now_ms() + min(60000, 1000 * 2**attempts),
                     str(code)[:80],
+                    now_ms() if status == "failed" else None,
                     identifier,
                 ),
             )
+            handler = self.failure_handlers.get(row["kind"])
+            if status == "failed" and handler:
+                # The job and its domain result become terminal in the same commit.
+                handler(connection, row, str(code)[:80])

@@ -11,7 +11,8 @@ from werkzeug.exceptions import HTTPException
 
 from tongpin import __version__
 from tongpin.contracts.base import APIError
-from tongpin.transports.http.auth import auth_blueprint, require_csrf
+from tongpin.transports.http.admin import admin_blueprint
+from tongpin.transports.http.auth import auth_blueprint, principal, require_csrf
 from tongpin.transports.http.chat import chat_blueprint
 from tongpin.transports.http.files import files_blueprint
 from tongpin.transports.http.groups import groups_blueprint
@@ -62,6 +63,7 @@ def create_http_app(runtime):
         runtime.metrics.request(
             response.status_code,
             (time.perf_counter() - g.get("started_at", time.perf_counter())) * 1000,
+            path=request.path if request.method == 'POST' else '',
         )
         return response
 
@@ -128,13 +130,15 @@ def create_http_app(runtime):
     app.register_blueprint(groups_blueprint)
     app.register_blueprint(interactions_blueprint)
     app.register_blueprint(files_blueprint)
+    app.register_blueprint(admin_blueprint)
 
     @app.route(
         "/api/v1/admin", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]
     )
     @app.route("/api/v1/admin/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-    def admin_disabled(path):
-        raise APIError("ADMIN_UNAVAILABLE", "管理服务尚未启用。", 503)
+    def admin_missing(path):
+        principal(admin=True)
+        raise APIError("RESOURCE_UNAVAILABLE", "管理页面或操作不存在。", 404)
 
     @app.get("/", defaults={"path": ""})
     @app.get("/<path:path>")

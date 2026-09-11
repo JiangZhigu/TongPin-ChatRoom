@@ -75,6 +75,14 @@ const failureReply = (code = 'AUTH_REQUIRED') => Promise.resolve({ ok: false, st
 const captchaReply = () => dataReply({ captchaId: 'expiry-captcha', image: 'data:image/png;base64,', expiresAt: Date.now() + 120000 });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((finish) => { resolve = finish; }); return { promise, resolve }; }
 
+describe('M7 current-account restrictions', () => {
+  it('shows server-supplied restriction reasons as read-only account information', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply(bootstrapData({ ...expiryUser, restrictions: { uploadDisabled: true, groupCreationDisabled: false, reason: '附件违规审核期间', mutedUntil: 1999999999999, muteReason: '已核实连续骚扰' } })) : dataReply({ items: [] })));
+    render(<App />); fireEvent.click(await screen.findByRole('button', { name: '设置' })); await screen.findByRole('heading', { name: '账号使用限制' });
+    expect(screen.getByText('限制理由：附件违规审核期间')).toBeInTheDocument(); expect(screen.getByText('禁言理由：已核实连续骚扰')).toBeInTheDocument(); expect(screen.getByText('上传：已限制')).toBeInTheDocument(); expect(screen.getByText('创建群聊：未限制')).toBeInTheDocument(); expect(screen.queryByRole('button', { name: '解除限制' })).not.toBeInTheDocument();
+  });
+});
+
 describe('M2 bootstrap StrictMode', () => {
   it.each(['login', 'register'] as const)('creates one anonymous flow and submits its CSRF token through the actual %s form', async (operation) => {
     let bootstrapCalls = 0;
@@ -150,10 +158,11 @@ describe('M2 auth expiry', () => {
       if (url.endsWith('/bootstrap')) return dataReply(bootstrapData(bootstrapCalls++ === 0 ? adminUser : null));
       if (url.endsWith('/captcha')) return captchaReply();
       if (url.endsWith('/admin/auth')) return operation === 'verification' ? failureReply('SESSION_REVOKED') : dataReply({ user: adminUser, secondFactorRequired: true });
+      if (url.startsWith('/api/v1/admin/overview')) return dataReply({ window: '24h', from: 0, to: 1, generatedAt: 1, metrics: [], trends: [], processStartedAt: 0 });
       return failureReply();
     }));
     render(<App />);
-    if (operation === 'logout') { await screen.findByRole('heading', { name: '管理身份已确认' }); fireEvent.click(screen.getByRole('button', { name: '退出当前账号' })); }
+    if (operation === 'logout') { await screen.findByRole('heading', { name: '运营概览' }); fireEvent.click(screen.getByRole('button', { name: '退出当前账号' })); }
     expect(await screen.findByRole('heading', { name: '登录管理后台' })).toBeInTheDocument();
     expect(screen.getByLabelText('动态码或第二因素恢复码')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '管理身份已确认' })).not.toBeInTheDocument();

@@ -32,6 +32,7 @@ class Database:
         self.path = path
         self.migrations = migrations or Path(__file__).resolve().parents[1] / "migrations"
         self._writer = threading.RLock()
+        self.metrics = None
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -58,17 +59,26 @@ class Database:
 
     @contextmanager
     def write(self) -> Iterator[sqlite3.Connection]:
+        started = time.perf_counter()
         with self._writer:
             connection = self.connect()
+            wait_ms, failed = None, False
             try:
                 connection.execute("BEGIN IMMEDIATE")
+                wait_ms = (time.perf_counter() - started) * 1000
                 yield connection
                 connection.commit()
+            except sqlite3.Error:
+                failed = True
+                connection.rollback()
+                raise
             except BaseException:
                 connection.rollback()
                 raise
             finally:
                 connection.close()
+                if self.metrics:
+                    self.metrics.database_write(wait_ms if wait_ms is not None else (time.perf_counter() - started) * 1000, failed)
 
     def migrate(self) -> list[int]:
         with self._writer:

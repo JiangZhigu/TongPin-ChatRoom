@@ -75,6 +75,8 @@ class FileService:
 
     def scope(self, conn, actor, purpose, cid, access_key, *, write=True):
         actor = self.runtime.auth.current_in_transaction(conn, actor)
+        if write and actor.user['upload_disabled']:
+            raise APIError('UPLOAD_DISABLED', '账号当前不能上传文件。' + (actor.user['restriction_reason'] or ''), 403)
         if purpose == "user_avatar":
             if write and self.runtime.policy.get(conn)["maintenance"]:
                 raise APIError("MAINTENANCE", "维护期间暂不能上传头像。", 503)
@@ -97,10 +99,10 @@ class FileService:
 
     def policy(self, actor):
         with self.runtime.db.read() as conn:
-            self.runtime.auth.current_in_transaction(conn, actor)
+            actor = self.runtime.auth.current_in_transaction(conn, actor)
             policy = self.runtime.policy.get(conn)
             reserved, total = conn.execute("SELECT COALESCE(SUM(CASE WHEN state IN ('reserved','uploading') THEN quota_bytes ELSE 0 END),0),COALESCE(SUM(quota_bytes),0) FROM attachments WHERE owner_id=?", (actor.id,)).fetchone()
-            return {"imageLimit": policy["image_limit_bytes"], "fileLimit": policy["file_limit_bytes"], "attachmentCount": policy["attachment_count"], "messageBytes": policy["message_attachment_bytes"], "userQuota": policy["user_quota_bytes"], "usedBytes": total - reserved, "reservedBytes": reserved, "supportedExtensions": sorted(MIMES), "scanPolicy": "closed-test-unscanned" if self.runtime.settings.allow_unscanned_files else "strict", "scanner": "configured" if self.scanner.port else "disabled"}
+            return {"imageLimit": policy["image_limit_bytes"], "fileLimit": policy["file_limit_bytes"], "attachmentCount": policy["attachment_count"], "messageBytes": policy["message_attachment_bytes"], "userQuota": actor.user['quota_bytes'] if actor.user['quota_bytes'] is not None else policy["user_quota_bytes"], "usedBytes": total - reserved, "reservedBytes": reserved, "uploadAllowed": not bool(actor.user['upload_disabled']), "uploadReason": actor.user['restriction_reason'] if actor.user['upload_disabled'] else '', "supportedExtensions": sorted(MIMES), "scanPolicy": "closed-test-unscanned" if self.runtime.settings.allow_unscanned_files else "strict", "scanner": "configured" if self.scanner.port else "disabled"}
 
     def metadata(self, row):
         ready = row["state"] == "ready"
@@ -136,7 +138,8 @@ class FileService:
             if data.purpose != "message" and kind != "image":
                 raise APIError("FILE_TYPE_UNSUPPORTED", "头像只能使用支持的图片。", 422)
             total, active = conn.execute("SELECT COALESCE(SUM(quota_bytes),0),COALESCE(SUM(state IN ('reserved','uploading','processing')),0) FROM attachments WHERE owner_id=?", (actor.id,)).fetchone()
-            if total + data.size > policy["user_quota_bytes"]:
+            quota = actor.user['quota_bytes'] if actor.user['quota_bytes'] is not None else policy["user_quota_bytes"]
+            if total + data.size > quota:
                 raise APIError("USER_QUOTA_EXCEEDED", "本人附件空间不足，请先处理不需要的未发送附件。", 507)
             if active >= 12:
                 raise APIError("UPLOAD_BUSY", "待处理附件过多，请等待或取消部分上传。", 429, retry_after_ms=3000)

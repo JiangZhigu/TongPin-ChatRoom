@@ -42,6 +42,7 @@ def public_user(user):
         "status": user["status"],
         "createdAt": user["created_at"],
         "preferences": json.loads(user["preferences"]),
+        "restrictions": {"uploadDisabled": bool(user['upload_disabled']), "groupCreationDisabled": bool(user['group_creation_disabled']), "reason": user['restriction_reason'], "mutedUntil": user['muted_until'], "muteReason": user['mute_reason']},
     }
 
 
@@ -86,6 +87,7 @@ class AuthService:
             not session
             or not user
             or user["status"] != "active"
+            or user['must_change_password']
             or session["revoked_at"] is not None
             or session["expires_at"] <= now
             or session["last_seen_at"] + session["idle_ms"] <= now
@@ -119,6 +121,7 @@ class AuthService:
             not row
             or not user
             or user["status"] != "active"
+            or user['must_change_password']
             or row["revoked_at"] is not None
             or row["expires_at"] <= now
             or row["last_seen_at"] + row["idle_ms"] <= now
@@ -232,10 +235,14 @@ class AuthService:
                     result="denied",
                     device=device,
                 )
+            if verified and user and user['status'] == 'banned':
+                raise APIError('ACCOUNT_BANNED', '账号已被封禁。' + ('原因：' + user['status_reason'] if user['status_reason'] else '请联系运营者核查。'), 403)
             raise APIError("LOGIN_FAILED", "登录名、密码或账号状态不正确。", 401)
+        if user['must_change_password']:
+            raise APIError('PASSWORD_RESET_REQUIRED', '账号需要重置密码。请在找回入口使用管理员交付的一次性重置凭据，或本人尚未使用的恢复码。', 403)
         with self.runtime.db.write() as conn:
             current = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
-            if current["password_hash"] != user["password_hash"] or current["status"] != "active":
+            if current["password_hash"] != user["password_hash"] or current["status"] != "active" or current['must_change_password']:
                 raise APIError("LOGIN_FAILED", "登录名、密码或账号状态不正确。", 401)
             if data.admin and current["site_role"] != "super_admin":
                 raise APIError("FORBIDDEN", "此账号没有全站管理权限。", 403)
@@ -270,9 +277,11 @@ class AuthService:
             if (
                 not user
                 or user["status"] not in {"active", "deleting"}
-                or not self.security.consume_recovery(conn, user["id"], data.recoveryCode)
             ):
                 raise APIError("RECOVERY_FAILED", "登录名或恢复凭据无效。", 401)
+            manual = conn.execute('UPDATE reset_credentials SET consumed_at=? WHERE digest=? AND user_id=? AND expires_at>? AND consumed_at IS NULL', (now_ms(), self.security.digest(data.recoveryCode, 'manual-reset'), user['id'], now_ms())).rowcount == 1
+            if not manual and not self.security.consume_recovery(conn, user['id'], data.recoveryCode):
+                raise APIError('RECOVERY_FAILED', '登录名或恢复凭据无效。', 401)
             if user["site_role"] == "super_admin":
                 self.security.second_factor(conn, user, data.secondFactor)
             if (
@@ -282,7 +291,7 @@ class AuthService:
             ):
                 raise APIError("RECOVERY_FAILED", "恢复期限已结束，请联系运营者。", 401)
             conn.execute(
-                "UPDATE users SET password_hash=?,status='active',deletion_at=NULL,updated_at=? WHERE id=?",
+                "UPDATE users SET password_hash=?,status='active',deletion_at=NULL,must_change_password=0,admin_version=admin_version+1,updated_at=? WHERE id=?",
                 (new_hash, now_ms(), user["id"]),
             )
             conn.execute(
@@ -293,6 +302,7 @@ class AuthService:
                 "DELETE FROM reauth_tokens WHERE session_id IN (SELECT id FROM sessions WHERE user_id=?)",
                 (user["id"],),
             )
+            conn.execute('DELETE FROM reset_credentials WHERE user_id=?', (user['id'],))
             audit(conn, user["id"], "account.recover", user["id"], device=device)
             self.runtime.events.user_changed(conn, user["id"])
         self.runtime.revalidate_connections()

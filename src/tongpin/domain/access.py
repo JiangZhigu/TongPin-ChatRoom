@@ -95,9 +95,9 @@ class AccessPolicy:
             ):
                 raise APIError("MUTED", "当前处于禁言状态，草稿将为你保留。", 403)
         if write:
-            user = conn.execute("SELECT muted_until FROM users WHERE id=?", (actor_id,)).fetchone()
+            user = conn.execute("SELECT muted_until,mute_reason FROM users WHERE id=?", (actor_id,)).fetchone()
             if (user["muted_until"] or 0) > now_ms():
-                raise APIError("MUTED", "账号当前被限制发送消息。", 403)
+                raise APIError("MUTED", "账号当前被限制发送消息。" + ("原因：" + user['mute_reason'] if user['mute_reason'] else ''), 403)
             if row["status"] != "active":
                 raise APIError("CONVERSATION_FROZEN", "会话当前已暂停发送。", 403)
             if self.runtime.policy.get(conn)["maintenance"]:

@@ -171,6 +171,15 @@ describe('rich message persistence, located windows and live hints', () => {
     expect(await readOfflineIdentity()).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith('/auth/logout'))).toBe(false);
   });
+  it('announces refreshed account metadata without broadcasting private user content', async () => {
+    const current = await client(); const listener = vi.fn();
+    window.addEventListener('tongpin:account-changed', listener);
+    identity = { ...user, restrictions: { uploadDisabled: true, groupCreationDisabled: true, reason: '当前限制', mutedUntil: null, muteReason: '' } };
+    await live(current, event('1', { type: 'account.changed' }));
+    await until(() => listener.mock.calls.length === 1);
+    expect(listener.mock.calls[0][0].detail).toEqual({ userId: user.id });
+    window.removeEventListener('tongpin:account-changed', listener);
+  });
   it('does not let a delayed complete action response restore a recalled body or quoted text', async () => {
     const source = message('original', '10', '已撤回的正文');
     messages = [source, { ...message('quote', '11'), reply: { id: source.id, status: 'available', text: source.text, author: '甲' } }];

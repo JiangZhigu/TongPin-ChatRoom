@@ -138,7 +138,7 @@ class EventService:
     def notifications(self, actor, before="", limit=50):
         boundary, last_id = activity_cursor(before)
         with self.runtime.db.read() as conn:
-            self.runtime.auth.current_in_transaction(conn, actor)
+            actor = self.runtime.auth.current_in_transaction(conn, actor)
             rows = conn.execute(
                 "SELECT * FROM notifications WHERE user_id=? AND (?=0 OR created_at<? OR(created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?",
                 (actor.id, boundary, boundary, boundary, last_id, limit + 1),
@@ -180,6 +180,18 @@ class EventService:
                     report = conn.execute("SELECT id,feedback FROM reports WHERE id=? AND reporter_id=?", (row["entity_ref"], actor.id)).fetchone()
                     if report:
                         item.update(text="你的举报有新的处理结果", reportId=report["id"])
+                elif row['kind'] == 'account.restriction':
+                    item['text'] = '账号权限或设备会话已由全站管理员更新，请在账号与安全中核对。'
+                elif row['kind'] == 'admin.alert':
+                    item['text'] = '管理告警已更新。'
+                    try:
+                        self.runtime.auth.require_admin(actor)
+                    except APIError:
+                        item['text'] = '此管理通知当前不可访问。'
+                    else:
+                        alert = conn.execute('SELECT title,status FROM admin_alerts WHERE id=?', (row['entity_ref'],)).fetchone()
+                        if alert:
+                            item['text'] = alert['title'] + ('（已恢复）' if alert['status'] == 'resolved' else '，请查看运行监控。')
                 elif row["kind"] == "report.created":
                     if actor.user["site_role"] == "super_admin":
                         item.update(text="收到新的治理举报，请进入全站后台处理", reportId=row["entity_ref"])

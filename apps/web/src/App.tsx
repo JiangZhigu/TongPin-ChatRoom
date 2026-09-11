@@ -10,6 +10,7 @@ import { OfflineRecoveryPage } from './OfflineRecoveryPage';
 import { GroupInviteEntry } from './GroupInviteEntry';
 import { dismissInvitation, readInvitation } from './lib/invitation';
 import { EmptyState } from './components/EmptyState';
+import { AdminShell } from './admin/AdminShell';
 
 const DevelopmentPreview = import.meta.env.DEV ? lazy(() => import('./DevelopmentPreview')) : null;
 type ServiceState = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; version: string; accountsEnabled: boolean };
@@ -50,7 +51,8 @@ function AdminEntry({ onSignedOut }: { onSignedOut: () => void }) {
   const [error, setError] = useState(''); const [attempt, setAttempt] = useState(0); const [busy, setBusy] = useState(false);
   useEffect(() => { const controller = new AbortController(); setError(''); setVerifiedUser(null); void api<{ user: UserView }>('/api/v1/admin/auth', { signal: controller.signal }).then((data) => { if (!controller.signal.aborted) setVerifiedUser(data.user); }).catch((cause) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : '管理身份验证失败'); }); return () => controller.abort(); }, [attempt]);
   async function signOut() { setBusy(true); try { await api('/api/v1/auth/logout', { method: 'POST', body: {} }); onSignedOut(); } catch (cause) { setError(cause instanceof Error ? cause.message : '退出失败'); } finally { setBusy(false); } }
-  return <div className="admin-page"><header><a href="/" aria-label="同频首页"><Brand /></a><span className="admin-tag">管理后台</span></header><main><span className="empty-symbol"><ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" /></span><p className="eyebrow">同频管理</p><h1>{verifiedUser ? '管理身份已确认' : error ? '无法进入管理后台' : '正在验证管理身份'}</h1>{error && <p role="alert" className="form-error">{error}</p>}{verifiedUser && <><p>你好，{verifiedUser.nickname}。当前会话已通过服务端管理身份验证。</p><div className="service-card"><div><h3>管理功能尚未启用</h3><p>完整管理功能将陆续接入，当前没有可展示的运营数据。</p></div></div></>}<div className="admin-actions"><a className="primary-button" href="/">返回同频<ArrowRight size={16} /></a>{error && <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}>重新验证</button>}<button className="text-button" disabled={busy} onClick={() => void signOut()}>{busy ? '正在退出…' : '退出当前账号'}</button></div></main></div>;
+  if (verifiedUser) return <AdminShell key={verifiedUser.id} user={verifiedUser} onSignOut={() => void signOut()} signOutBusy={busy} signOutError={error} />;
+  return <div className="admin-page"><header><a href="/" aria-label="同频首页"><Brand /></a><span className="admin-tag">管理后台</span></header><main><span className="empty-symbol"><ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" /></span><p className="eyebrow">同频管理</p><h1>{error ? '无法进入管理后台' : '正在验证管理身份'}</h1>{error && <p role="alert" className="form-error">{error}</p>}<div className="admin-actions"><a className="primary-button" href="/">返回同频<ArrowRight size={16} /></a>{error && <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}>重新验证</button>}<button className="text-button" disabled={busy} onClick={() => void signOut()}>{busy ? '正在退出…' : '退出当前账号'}</button></div></main></div>;
 }
 
 export function App() {
@@ -110,7 +112,7 @@ function AccountApplication({ admin }: { admin: boolean }) {
   }
   if (!bootstrap.accountsEnabled) return <WelcomePage />;
   if (!bootstrap.user) return <><AuthPage bootstrap={bootstrap} admin={admin} onAuthenticated={authenticated} />{invitationToken && (invitationOpen ? <GroupInviteEntry key={invitationToken} token={invitationToken} userId={null} onClose={closeInvitation} onSignIn={() => setInvitationOpen(false)} onOpenGroup={async () => {}} /> : <button className="invitation-resume-button secondary-button" onClick={() => setInvitationOpen(true)}>继续查看群邀请</button>)}</>;
-  if (admin) return <AdminEntry onSignedOut={signedOut} />;
+  if (admin) return <AdminEntry key={bootstrap.user.id} onSignedOut={signedOut} />;
   const user = bootstrap.user;
   return <ChatWorkspace key={user.id} user={user} onUserChange={userChanged} onSignedOut={signedOut} invitationToken={invitationToken} onInvitationDismiss={closeInvitation} />;
 }

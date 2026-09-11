@@ -97,7 +97,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   }
 }
 
-export type User = { id: string; username: string; nickname: string; bio: string; avatarUrl?: string | null; siteRole: 'user' | 'super_admin'; status: string; createdAt: number; preferences: { invisible: boolean; readReceipts: boolean; doNotDisturb: boolean; [key: string]: unknown } };
+export type User = { id: string; username: string; nickname: string; bio: string; avatarUrl?: string | null; siteRole: 'user' | 'super_admin'; status: string; createdAt: number; preferences: { invisible: boolean; readReceipts: boolean; doNotDisturb: boolean; [key: string]: unknown }; restrictions?: { uploadDisabled: boolean; groupCreationDisabled: boolean; reason: string; mutedUntil: number | null; muteReason: string } };
 export type Bootstrap = { accountsEnabled: boolean; registrationMode: 'closed' | 'invite-only' | 'open'; csrfToken: string; user: User | null; terms: { version: string; operatorName: string; operatorContact: string; development: boolean; text: string } };
 let bootstrapFlight: { generation: number; promise: Promise<Bootstrap> } | undefined;
 export function fetchBootstrap(): Promise<Bootstrap> {

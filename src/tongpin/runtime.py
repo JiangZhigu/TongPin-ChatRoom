@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import tempfile
 import threading
 
+from tongpin.admin.service import AdminService
 from tongpin.config import Settings
 from tongpin.contracts.base import APIError
 from tongpin.domain.access import AccessPolicy, blocked, user_summary
@@ -18,7 +20,7 @@ from tongpin.domain.interactions import InteractionService
 from tongpin.domain.lifecycle import LifecycleService
 from tongpin.domain.policy import PolicyService
 from tongpin.infra.cache import BoundedCache
-from tongpin.infra.db import Database
+from tongpin.infra.db import Database, now_ms
 from tongpin.infra.executors import BlockingExecutor
 from tongpin.infra.metrics import Metrics
 from tongpin.infra.paths import DataPaths
@@ -37,9 +39,11 @@ class Runtime:
         self.cache = BoundedCache()
         self.executor = BlockingExecutor(settings.blocking_workers, settings.blocking_backlog)
         self.jobs = JobRepository(self.db)
-        self.runner = JobRunner(self.jobs, self.executor, excluded_kinds=("files.process",))
+        self.runner = JobRunner(self.jobs, self.executor, excluded_kinds=("files.process", "admin.execute"))
         self.file_runner = JobRunner(self.jobs, self.executor, kinds=("files.process",))
+        self.admin_runner = JobRunner(self.jobs, self.executor, kinds=("admin.execute",))
         self.metrics = Metrics()
+        self.db.metrics = self.metrics
         self.ready = False
         self.auth = None
         self.policy = PolicyService(self)
@@ -61,11 +65,14 @@ class Runtime:
         self.files = FileService(self)
         self.interactions = InteractionService(self)
         self.lifecycle = LifecycleService(self)
+        self.admin = AdminService(self)
         self.runner.handlers["events.dispatch"] = self._dispatch_job
         self.runner.handlers["groups.expire"] = self.groups.expire_job
         self.runner.handlers["files.cleanup"] = self.files.cleanup
         self.file_runner.handlers["files.process"] = self.files.process
         self.runner.handlers["retention.cleanup"] = self.lifecycle.cleanup
+        self.admin_runner.handlers['admin.execute'] = self.admin.process_command
+        self.jobs.failure_handlers['admin.execute'] = self.admin.fail_command
 
     def initialize(self):
         self.paths.prepare()
@@ -91,12 +98,20 @@ class Runtime:
         await self.executor.run(self.initialize)
         self.runner.start()
         self.file_runner.start()
+        self.admin_runner.start()
         self._metric_task = asyncio.create_task(self._sample_metrics(), name="tongpin-metrics")
 
     async def _sample_metrics(self):
         while not self._stopping.is_set():
-            await self.executor.run(self.metrics.sample)
-            await self.validate_connections()
+            try:
+                sample = await self.executor.run(self.metrics.sample)
+                await self.executor.run(self.admin.sample_alerts, sample)
+            except Exception:  # noqa: BLE001 -- Monitoring failure must not disable session checks.
+                logging.getLogger("tongpin").error("Runtime monitoring sample failed")
+            try:
+                await self.validate_connections()
+            except Exception:  # noqa: BLE001 -- Retry connection validation on the next bounded tick.
+                logging.getLogger("tongpin").error("Connection revalidation failed")
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=10)
             except TimeoutError:
@@ -114,6 +129,8 @@ class Runtime:
             await asyncio.gather(*pending, return_exceptions=True)
         await self.runner.stop()
         await self.file_runner.stop()
+        await self.admin_runner.stop()
+        self.admin.secrets.clear()
         self.cache.clear()
         self.interactions.typing_cache.clear()
         self.interactions.typing_rate.clear()
@@ -155,6 +172,7 @@ class Runtime:
                 "userId": actor.id,
                 "sessionId": actor.session["id"],
                 "tokenHash": actor.session["token_hash"],
+                "connectedAt": now_ms(),
             }
         pending = self._presence_tasks.pop(actor.id, None)
         if pending:

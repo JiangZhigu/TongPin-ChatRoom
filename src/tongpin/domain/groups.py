@@ -126,6 +126,8 @@ class GroupService:
             old = self.command(conn, actor, "create", data)
             if old:
                 return self.detail_in(conn, actor, old)
+            if actor.user['group_creation_disabled']:
+                raise APIError('GROUP_CREATION_DISABLED', '账号当前不能创建群。' + (actor.user['restriction_reason'] or ''), 403)
             if self.runtime.policy.get(conn)["maintenance"]:
                 raise APIError("MAINTENANCE", "服务维护中，暂时无法建群。", 503)
             self.owner_capacity(conn, actor.id)

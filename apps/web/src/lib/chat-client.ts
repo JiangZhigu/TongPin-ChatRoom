@@ -307,7 +307,10 @@ export class ChatClient {
     if (event.type === 'message.updated') this.contentRevision++;
     if (event.type === 'account.changed') {
       const account = await this.request<{ user: User }>('/auth/me');
-      if (this.current(epoch)) this.updateUser(account.user);
+      if (this.current(epoch)) {
+        this.updateUser(account.user);
+        if (account.user.id === this.user.id) window.dispatchEvent(new CustomEvent('tongpin:account-changed', { detail: { userId: this.user.id } }));
+      }
       return;
     }
     if (event.type === 'access.revoked' && event.conversationId) { this.revokeConversation(event.conversationId); return; }

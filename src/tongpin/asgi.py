@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import socketio
 from asgiref.wsgi import WsgiToAsgi
 from pydantic import ValidationError
@@ -63,6 +65,7 @@ class Application:
         @self.sio.on("message.send")
         async def message_send(sid, payload):
             request_id = "invalid-command"
+            started = time.perf_counter()
             try:
                 data = SocketMessageInput.model_validate(payload)
                 request_id = data.requestId
@@ -78,6 +81,7 @@ class Application:
                 result = await self.runtime.executor.run(
                     self.runtime.chat.send, actor, data.conversationId, message
                 )
+                self.runtime.metrics.websocket(False, (time.perf_counter() - started) * 1000)
                 return {"ok": True, "requestId": request_id, "data": result}
             except ValidationError:
                 error = APIError("VALIDATION_ERROR", "消息格式无效。", 422)
@@ -87,6 +91,7 @@ class Application:
                 error = APIError(
                     "TEMPORARY_UNAVAILABLE", "暂时无法确认消息结果，请使用原消息标识重试。", 503
                 )
+            self.runtime.metrics.websocket(True, (time.perf_counter() - started) * 1000)
             return {
                 "ok": False,
                 "requestId": request_id,

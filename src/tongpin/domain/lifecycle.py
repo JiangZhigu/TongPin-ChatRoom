@@ -36,7 +36,7 @@ class LifecycleService:
             (actor.id,),
         ).fetchall()
         other_admin = conn.execute(
-            "SELECT 1 FROM users WHERE id<>? AND site_role='super_admin' AND status='active' AND totp_secret IS NOT NULL LIMIT 1",
+            "SELECT 1 FROM users WHERE id<>? AND site_role='super_admin' AND status='active' AND totp_secret IS NOT NULL AND must_change_password=0 LIMIT 1",
             (actor.id,),
         ).fetchone()
         return {
