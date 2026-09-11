@@ -14,6 +14,8 @@ from tongpin.domain.contacts import ContactService
 from tongpin.domain.events import EventService
 from tongpin.domain.files import FileService
 from tongpin.domain.groups import GroupService
+from tongpin.domain.interactions import InteractionService
+from tongpin.domain.lifecycle import LifecycleService
 from tongpin.domain.policy import PolicyService
 from tongpin.infra.cache import BoundedCache
 from tongpin.infra.db import Database
@@ -57,10 +59,13 @@ class Runtime:
         self.chat = ChatService(self)
         self.groups = GroupService(self)
         self.files = FileService(self)
+        self.interactions = InteractionService(self)
+        self.lifecycle = LifecycleService(self)
         self.runner.handlers["events.dispatch"] = self._dispatch_job
         self.runner.handlers["groups.expire"] = self.groups.expire_job
         self.runner.handlers["files.cleanup"] = self.files.cleanup
         self.file_runner.handlers["files.process"] = self.files.process
+        self.runner.handlers["retention.cleanup"] = self.lifecycle.cleanup
 
     def initialize(self):
         self.paths.prepare()
@@ -74,6 +79,7 @@ class Runtime:
                 self.secret = self.paths.development_secret()
             self.auth = AuthService(self)
             self.files.initialize()
+            self.lifecycle.initialize()
             self.ready = True
         except BaseException:
             tempfile.tempdir = self._previous_tempdir
@@ -109,6 +115,8 @@ class Runtime:
         await self.runner.stop()
         await self.file_runner.stop()
         self.cache.clear()
+        self.interactions.typing_cache.clear()
+        self.interactions.typing_rate.clear()
         self.executor.close()
         self.lock.release()
         if tempfile.tempdir == str(self.paths.temporary):

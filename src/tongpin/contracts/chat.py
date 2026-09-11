@@ -49,7 +49,8 @@ class FriendRequestInput(InputModel):
 
 
 class FriendPreferencesInput(InputModel):
-    notifyOnline: bool
+    notifyOnline: bool | None = None
+    remark: str | None = Field(default=None, max_length=80)
 
 
 class DirectInput(InputModel):
@@ -62,6 +63,7 @@ class MessageInput(InputModel):
     attachmentIds: list[str] = Field(default_factory=list, max_length=6)
     replyToMessageId: str | None = Field(default=None, max_length=80)
     mentionedUserIds: list[str] = Field(default_factory=list, max_length=50)
+    mentionAll: bool = False
     accessKey: str = Field(min_length=1, max_length=160)
     actorContext: str | None = Field(default=None, max_length=80)
 
@@ -88,3 +90,4 @@ class ConversationPreferencesInput(InputModel):
     muted: bool | None = None
     pinned: bool | None = None
     archived: bool | None = None
+    onlyMentions: bool | None = None

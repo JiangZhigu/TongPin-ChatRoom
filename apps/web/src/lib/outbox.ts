@@ -96,7 +96,7 @@ export function readOfflineSnapshot(expectedRevision?: string, afterDraftKey?: s
         const row = cursor.result;
         if (!row || values.length > 100) { resolve(values); return; }
         const draft: Draft = row.value;
-        if ((!afterDraftKey || draft.key > afterDraftKey) && (draft.text.trim() || draft.files?.length)) values.push(draft);
+        if ((!afterDraftKey || draft.key > afterDraftKey) && (draft.text.trim() || draft.files?.length || draft.replyToMessageId || draft.mentionedUserIds?.length || draft.mentionAll)) values.push(draft);
         row.continue();
       };
     });
@@ -211,7 +211,7 @@ export function readDraft(userId: string, conversationId: string): Promise<Draft
   });
 }
 
-export function saveLocalDraft(userId: string, conversationId: string, text: string, position: { scrollTop?: number; anchorId?: string; files?: LocalAttachment[] } = {}): Promise<void> {
+export function saveLocalDraft(userId: string, conversationId: string, text: string, position: Pick<Draft, 'scrollTop' | 'anchorId' | 'files' | 'replyToMessageId' | 'mentionedUserIds' | 'mentionAll'> = {}): Promise<void> {
   return transaction(['drafts', 'outbox', 'meta'], 'readwrite', async (tx) => {
     const identity: OfflineIdentity | undefined = await requested(tx.objectStore('meta').get('active-user'));
     if (identity?.user.id !== userId) throw new APIError(0, { code: 'LOCAL_IDENTITY_CHANGED', message: '账号已切换，未将此草稿写入另一个账号。' });
@@ -229,7 +229,7 @@ export function localSummary(userId: string): Promise<{ pending: number; drafts:
   return transaction(['outbox', 'drafts'], 'readonly', async (tx) => {
     const pending = await requested(tx.objectStore('outbox').index('userId').count(IDBKeyRange.only(userId)));
     const rows: Draft[] = await requested(tx.objectStore('drafts').index('userId').getAll(IDBKeyRange.only(userId)));
-    return { pending, drafts: rows.filter((row) => row.text.trim() || row.files?.length).length };
+    return { pending, drafts: rows.filter((row) => row.text.trim() || row.files?.length || row.replyToMessageId || row.mentionedUserIds?.length || row.mentionAll).length };
   });
 }
 

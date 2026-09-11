@@ -27,10 +27,11 @@ const chat = vi.hoisted(() => ({
   state: null as ChatState | null, listeners: new Set<() => void>(),
   start: vi.fn<() => Promise<void>>(), stop: vi.fn<() => void>(), updateUser: vi.fn(),
   select: vi.fn<(id: string | null) => Promise<void>>(), older: vi.fn<() => Promise<void>>(),
-  queue: vi.fn<(id: string, text: string, options?: { files: LocalAttachment[] }) => Promise<void>>(), retry: vi.fn<(id: string) => Promise<void>>(), cancel: vi.fn<(id: string) => Promise<void>>(),
+  queue: vi.fn<(id: string, text: string, options?: { files: LocalAttachment[]; replyToMessageId?: string | null; mentionedUserIds?: string[]; mentionAll?: boolean }) => Promise<void>>(), retry: vi.fn<(id: string) => Promise<void>>(), cancel: vi.fn<(id: string) => Promise<void>>(),
   getDraft: vi.fn<(id: string) => Promise<Draft | null>>(), saveDraft: vi.fn<(id: string, text: string, position?: unknown) => Promise<void>>(),
   refresh: vi.fn<() => Promise<void>>(), read: vi.fn<(id: string, seq: string) => Promise<void>>(),
   summary: vi.fn<() => Promise<{ pending: number; drafts: number }>>(), logout: vi.fn<(choice: 'keep' | 'delete') => Promise<void>>(),
+  jump: vi.fn<(id: string) => Promise<void>>(), newer: vi.fn<() => Promise<void>>(), typing: vi.fn(), apply: vi.fn(), finishDeletion: vi.fn(),
   more: vi.fn<() => Promise<void>>(), histories: {} as Record<string, Message[]>,
 }));
 vi.mock('./lib/chat-client', () => ({ ChatClient: class {
@@ -39,6 +40,7 @@ vi.mock('./lib/chat-client', () => ({ ChatClient: class {
   start = chat.start; stop = chat.stop; updateUser = chat.updateUser; selectConversation = chat.select; loadOlder = chat.older;
   queue = chat.queue; retry = chat.retry; cancel = chat.cancel; getDraft = chat.getDraft; saveDraft = chat.saveDraft;
   refresh = chat.refresh; read = chat.read; getLocalSummary = chat.summary; logout = chat.logout;
+  jumpToMessage = chat.jump; loadNewer = chat.newer; typing = chat.typing; applyMessage = chat.apply; finishAccountDeletion = chat.finishDeletion;
   loadMoreConversations = chat.more; loadMoreContacts = chat.more; loadMoreRequests = chat.more; loadMoreNotifications = chat.more;
 } }));
 
@@ -84,7 +86,7 @@ describe('M6-UI attachment draft lifecycle', () => {
     expect(screen.getByText('正在保存附件草稿…')).toBeInTheDocument(); expect(screen.queryByText('草稿已保存到本机')).not.toBeInTheDocument();
     await act(async () => saving.resolve()); await screen.findByText('草稿已保存到本机');
     const queue = deferred<void>(); chat.queue.mockImplementation(() => queue.promise); fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    await waitFor(() => expect(chat.queue).toHaveBeenCalledWith('dm-a', '', { files: [expect.objectContaining({ blob: file })] })); expect(screen.getByText('说明.txt')).toBeInTheDocument();
+    await waitFor(() => expect(chat.queue).toHaveBeenCalledWith('dm-a', '', { files: [expect.objectContaining({ blob: file })], replyToMessageId: null, mentionedUserIds: [], mentionAll: false })); expect(screen.getByText('说明.txt')).toBeInTheDocument();
     await act(async () => queue.resolve()); await waitFor(() => expect(screen.queryByText('说明.txt')).not.toBeInTheDocument()); expect(chat.saveDraft).toHaveBeenLastCalledWith('dm-a', '', expect.objectContaining({ files: [] }));
   });
   it('retains attachment bytes when local quota prevents draft or queue commit', async () => {
@@ -144,7 +146,7 @@ describe('M6-FIX-UI committed attachment drafts', () => {
     showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '发送期间的新文本' } }); await act(async () => new Promise((resolve) => setTimeout(resolve, 400))); await act(async () => queue.resolve());
     await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeEnabled()); expect(drafts.get('dm-a')).toMatchObject({ text: '发送期间的新文本', files: [] });
-    fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1]).toEqual(['dm-a', '发送期间的新文本', { files: [] }]);
+    fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1]).toEqual(['dm-a', '发送期间的新文本', { files: [], replyToMessageId: null, mentionedUserIds: [], mentionAll: false }]);
   });
   it.each([false, true])('M6-FIX2 preserves the newest full draft before debounce fires, removed B=%s', async (removeB) => {
     const { drafts, commit, write } = persistence(); const queue = deferred<void>(); const snapshots: { text: string; names: string[] }[] = [];
@@ -307,7 +309,7 @@ describe('M3-M4 chat transaction and draft UI', () => {
     fireEvent.change(input, { target: { value: '后来继续编辑的草稿' } });
     await act(async () => commit.resolve());
     expect(input).toHaveValue('后来继续编辑的草稿'); expect(screen.getByText('已存本机 · 等待投递')).toBeInTheDocument();
-    expect(chat.queue).toHaveBeenCalledWith('dm-a', '发送时的正文', { files: [] });
+    expect(chat.queue).toHaveBeenCalledWith('dm-a', '发送时的正文', { files: [], replyToMessageId: null, mentionedUserIds: [], mentionAll: false });
     expect(chat.saveDraft.mock.calls.some(([, text]) => text === '')).toBe(false);
   });
   it('clears only an unchanged submitted draft after successful local storage', async () => {
@@ -524,5 +526,80 @@ describe('M3-M4 logout focus', () => {
     if (other) expect(other).toHaveFocus();
     if (scenario === 'new modal') other?.closest('dialog')?.remove();
     if (scenario === 'another control') other?.remove();
+  });
+});
+
+describe('M7-UI workspace rich drafts and location', () => {
+  it('restores ID-only reply and mention metadata, clears submitted IDs and preserves new reply during queue commit', async () => {
+    const initial = { ...message('reply-a', '1', '原消息 A'), capabilities: { canInteract: true, canRecall: false, canModerate: false } }; const newer = { ...message('reply-b', '2', '原消息 B'), capabilities: { canInteract: true, canRecall: false, canModerate: false } };
+    chat.histories['dm-a'] = [initial, newer]; const saved: Draft = { key: 'draft', userId: user.id, conversationId: 'dm-a', text: '提交正文', updatedAt: 1, files: [], replyToMessageId: 'reply-a', mentionedUserIds: ['already-mentioned'], mentionAll: true }; chat.getDraft.mockResolvedValue(saved);
+    const writes: Draft[] = []; chat.saveDraft.mockImplementation(async (id, text, extra) => { writes.push({ ...saved, ...extra as Partial<Draft>, conversationId: id, text }); }); const commit = deferred<void>(); chat.queue.mockImplementationOnce(() => commit.promise);
+    showWorkspace(); await openConversation(); expect(screen.getByText('引用：测试好友：原消息 A')).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledOnce());
+    fireEvent.click(within(screen.getByText('原消息 B').closest('li')!).getByRole('button', { name: '引用回复' })); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '后续正文' } });
+    await act(async () => commit.resolve()); await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeEnabled()); expect(screen.getByText('引用：测试好友：原消息 B')).toBeInTheDocument(); expect(screen.queryByLabelText('移除全体提及')).not.toBeInTheDocument(); expect(screen.queryByLabelText('移除提及 already-mentioned')).not.toBeInTheDocument();
+    expect(chat.queue.mock.calls[0][2]).toEqual({ files: [], replyToMessageId: 'reply-a', mentionedUserIds: ['already-mentioned'], mentionAll: true }); expect(writes.at(-1)).toMatchObject({ text: '后续正文', replyToMessageId: 'reply-b', mentionedUserIds: [], mentionAll: false }); expect(JSON.stringify(writes.at(-1))).not.toContain('原消息 A');
+  });
+  it('keeps rich draft on failed queue and sends its exact IDs on a retry', async () => {
+    const saved: Draft = { key: 'draft', userId: user.id, conversationId: 'dm-a', text: '失败保留', updatedAt: 1, replyToMessageId: 'reply-a', mentionedUserIds: ['u2'], mentionAll: false }; chat.getDraft.mockResolvedValue(saved); chat.histories['dm-a'] = [message('reply-a')]; chat.queue.mockRejectedValueOnce(new Error('保存失败'));
+    showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await screen.findByText('保存失败'); expect(screen.getByLabelText('消息内容')).toHaveValue('失败保留'); expect(screen.getByLabelText('移除引用')).toBeInTheDocument(); expect(screen.getByLabelText('移除提及 u2')).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1][2]).toMatchObject({ replyToMessageId: 'reply-a', mentionedUserIds: ['u2'] });
+  });
+  it('opens search from the list and loads target context without a second latest-history selection', async () => {
+    chat.jump.mockImplementation(async () => publish({ selectedId: 'dm-a', messages: [message('located', '50', '定位正文')], locatedMessageId: 'located', historyAfter: '50' })); showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '搜索消息 / 我的收藏' })); await screen.findByRole('heading', { name: '消息搜索与收藏' });
+    await act(async () => window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: 'other', messageId: 'wrong' } }))); expect(chat.jump).not.toHaveBeenCalled();
+    await act(async () => window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: user.id, messageId: 'located' } }))); await screen.findByText('已定位到目标消息'); expect(chat.jump).toHaveBeenCalledWith('located'); expect(chat.select).not.toHaveBeenCalled(); expect(screen.getByText('定位正文').closest('li')).toHaveClass('is-located'); expect(chat.read).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '加载较新的消息' })); await waitFor(() => expect(chat.newer).toHaveBeenCalledOnce());
+  });
+  it('does not mark a bounded context as fully read even when its viewport is at bottom', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true); chat.histories['dm-a'] = [message('context', '40')]; showWorkspace(); await openConversation(); chat.read.mockClear(); await act(async () => publish({ historyAfter: '40' })); const viewport = screen.getByLabelText('消息记录'); dimensions(viewport, 300, 0); fireEvent.scroll(viewport); fireEvent.focus(window); expect(chat.read).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('M7-UI context history pagination', () => {
+  it('does not count already-existing later pages as live messages and preserves the located viewport and draft', async () => {
+    const initial = Array.from({ length: 29 }, (_, index) => message(`context-${index + 1}`, String(index + 1), `历史 ${index + 1}`));
+    const later = Array.from({ length: 36 }, (_, index) => message(`context-${index + 30}`, String(index + 30), `历史 ${index + 30}`));
+    chat.jump.mockImplementation(async () => publish({ selectedId: 'dm-a', conversations: [{ ...conversation(), lastSeq: '65' }], messages: initial, locatedMessageId: 'context-4', historyAfter: '29' }));
+    chat.getDraft.mockResolvedValue({ key: 'draft', userId: user.id, conversationId: 'dm-a', text: '保留的草稿', updatedAt: 1 });
+    showWorkspace(); await act(async () => window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: user.id, messageId: 'context-4' } }))); await screen.findByText('已定位到目标消息');
+    const viewport = screen.getByLabelText('消息记录'); const geometry = dimensions(viewport, 1000, 180); fireEvent.scroll(viewport);
+    const page = deferred<void>(); chat.newer.mockImplementation(async () => { publish({ historyLoading: true }); await page.promise; geometry.setHeight(1900); publish({ messages: [...initial, ...later], historyAfter: null, historyLoading: false }); });
+    fireEvent.click(screen.getByRole('button', { name: '加载较新的消息' })); await act(async () => page.resolve()); await screen.findByText('历史 65');
+    expect(screen.queryByRole('button', { name: /条新消息/ })).not.toBeInTheDocument(); expect(geometry.top()).toBe(180); expect(screen.getByLabelText('消息内容')).toHaveValue('保留的草稿'); expect(chat.read).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '返回最新消息' })); await waitFor(() => expect(chat.select).toHaveBeenCalledWith('dm-a')); expect(screen.getByLabelText('消息内容')).toHaveValue('保留的草稿');
+  });
+  it('still counts a genuine live message during pagination and keeps both controls in separate flow rows', async () => {
+    const initial = [message('context-1', '1', '定位历史')]; const existing = message('context-2', '2', '较新历史'); const live = message('live-3', '3', '真正实时消息');
+    chat.jump.mockImplementation(async () => publish({ selectedId: 'dm-a', conversations: [{ ...conversation(), lastSeq: '2' }], messages: initial, locatedMessageId: 'context-1', historyAfter: '1' }));
+    showWorkspace(); await act(async () => window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: user.id, messageId: 'context-1' } }))); await screen.findByText('已定位到目标消息');
+    const viewport = screen.getByLabelText('消息记录'); const geometry = dimensions(viewport, 1000, 180); fireEvent.scroll(viewport); const page = deferred<void>();
+    chat.newer.mockImplementation(async () => { publish({ historyLoading: true }); await page.promise; geometry.setHeight(1500); publish({ messages: [initial[0], existing, live], historyAfter: null, historyLoading: false }); });
+    fireEvent.click(screen.getByRole('button', { name: '加载较新的消息' })); act(() => publish({ conversations: [{ ...conversation(), lastSeq: '3', lastMessage: live }] })); await act(async () => page.resolve());
+    const newButton = await screen.findByRole('button', { name: '1 条新消息' }); const latest = screen.getByRole('button', { name: '返回最新消息' }); expect(newButton.closest('.timeline-actions')).toBe(latest.closest('.timeline-actions')); expect(newButton.closest('.history-context-bar')).toBeNull(); expect(latest.closest('.history-context-bar')).not.toBeNull(); expect(geometry.top()).toBe(180);
+    geometry.setHeight(1600); act(() => publish({ messages: [initial[0], existing, live, message('live-4', '4', '接着实时到达')] })); expect(screen.getByRole('button', { name: '2 条新消息' })).toBeInTheDocument();
+  });
+});
+
+
+describe('M7-UI explicit latest position', () => {
+  async function located() {
+    chat.jump.mockImplementation(async () => publish({ selectedId: 'dm-a', conversations: [{ ...conversation(), lastSeq: '65' }, conversation('dm-b', '另一位好友')], messages: [message('located-4', '4')], historyAfter: '4', locatedMessageId: 'located-4' }));
+    showWorkspace(); await act(async () => window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: user.id, messageId: 'located-4' } }))); await screen.findByText('已定位到目标消息'); const viewport = screen.getByLabelText('消息记录'); const geometry = dimensions(viewport, 9316, 428); fireEvent.scroll(viewport); return { viewport, geometry };
+  }
+  it('scrolls to the real bottom only after latest history and rich/file draft restoration, then marks latest read', async () => {
+    const files: LocalAttachment[] = [{ id: 'f1', name: '保留.txt', mime: 'text/plain', blob: new File(['保留'], '保留.txt', { type: 'text/plain' }) }]; const draft: Draft = { key: 'draft', userId: user.id, conversationId: 'dm-a', text: '保留正文', files, replyToMessageId: 'located-4', mentionedUserIds: ['u2'], mentionAll: false, scrollTop: 428, updatedAt: 1 };
+    chat.getDraft.mockResolvedValue(draft); const { geometry } = await located(); vi.mocked(document.hasFocus).mockReturnValue(true); const history = deferred<void>(), restored = deferred<Draft | null>();
+    chat.select.mockImplementation(async () => { publish({ historyLoading: true }); await history.promise; publish({ messages: [message('latest-65', '65', '实际最新消息')], historyAfter: null, historyLoading: false }); }); chat.getDraft.mockImplementationOnce(() => restored.promise);
+    fireEvent.click(screen.getByRole('button', { name: '返回最新消息' })); await waitFor(() => expect(chat.select).toHaveBeenCalledWith('dm-a')); await act(async () => history.resolve()); expect(geometry.top()).toBe(428); expect(chat.read).not.toHaveBeenCalled(); await act(async () => restored.resolve(draft));
+    await waitFor(() => expect(geometry.top()).toBe(9016)); await waitFor(() => expect(chat.read).toHaveBeenCalledWith('dm-a', '65')); expect(screen.getByLabelText('消息内容')).toHaveValue('保留正文'); expect(screen.getByText('保留.txt')).toBeInTheDocument(); expect(screen.getByLabelText('移除引用')).toBeInTheDocument(); expect(screen.getByLabelText('移除提及 u2')).toBeInTheDocument(); expect(chat.older).not.toHaveBeenCalled();
+  });
+  it('does not treat an offline cached window as newly fetched latest history', async () => {
+    const { geometry } = await located(); vi.mocked(document.hasFocus).mockReturnValue(true); act(() => publish({ phase: 'offline' })); fireEvent.click(screen.getByRole('button', { name: '返回最新消息' })); await screen.findByText('请等待连接恢复后再返回最新消息，当前阅读位置和草稿已保留。'); expect(chat.select).not.toHaveBeenCalled(); expect(geometry.top()).toBe(428); expect(chat.read).not.toHaveBeenCalled(); expect(screen.getByRole('button', { name: '返回最新消息' })).toBeInTheDocument();
+  });
+  it('does not jump or report read when fetching latest history fails', async () => {
+    const { geometry } = await located(); vi.mocked(document.hasFocus).mockReturnValue(true); chat.select.mockRejectedValueOnce(new Error('最新历史加载失败')); fireEvent.click(screen.getByRole('button', { name: '返回最新消息' })); await screen.findByText('最新历史加载失败'); expect(geometry.top()).toBe(428); fireEvent.focus(window); expect(chat.read).not.toHaveBeenCalled();
+  });
+  it('does not carry a pending latest jump into a later ordinary conversation selection', async () => {
+    const { viewport, geometry } = await located(); const old = deferred<void>(); chat.select.mockImplementation(async (id) => { if (id === 'dm-a') await old.promise; else publish({ selectedId: id, messages: [message('b-1', '1', '另一会话')], historyAfter: null }); });
+    fireEvent.click(screen.getByRole('button', { name: '返回最新消息' })); await waitFor(() => expect(chat.select).toHaveBeenCalledWith('dm-a')); chat.getDraft.mockResolvedValue({ key: 'b-draft', userId: user.id, conversationId: 'dm-b', text: '另一份草稿', scrollTop: 240, updatedAt: 1 }); fireEvent.click(within(screen.getByLabelText('会话列表')).getByRole('button', { name: /另一位好友/ })); await waitFor(() => expect(screen.getByLabelText('消息内容')).toHaveValue('另一份草稿')); expect(geometry.top()).toBe(240); await act(async () => old.resolve()); expect(geometry.top()).toBe(240); expect(screen.getByLabelText('消息内容')).toHaveValue('另一份草稿'); expect(chat.read).not.toHaveBeenCalled(); expect(viewport).toBe(screen.getByLabelText('消息记录'));
   });
 });

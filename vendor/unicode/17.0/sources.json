@@ -1,0 +1,63 @@
+{
+  "unicode": "17.0.0",
+  "emoji": "17.0",
+  "cldr": "48.2",
+  "cldrTag": "release-48-2",
+  "retrievedAt": "2026-09-11T15:08:56+08:00",
+  "sources": [
+    {
+      "name": "emoji-test.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/emoji/emoji-test.txt",
+      "bytes": 669326,
+      "sha256": "1d8a944f88d7952f7ef7c5167fef3c67995bcae24543949710231b03a201acda"
+    },
+    {
+      "name": "emoji-data.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/ucd/emoji/emoji-data.txt",
+      "bytes": 107324,
+      "sha256": "2cb2bb9455cda83e8481541ecf5b6dfda66a3bb89efa3fa7c5297eccf607b72b"
+    },
+    {
+      "name": "emoji-sequences.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/emoji/emoji-sequences.txt",
+      "bytes": 194868,
+      "sha256": "12cc8267dc33cbd11ed32bcf6fc5dc2ad9c7a77bae1bdfba2f41b1b9b3ead8dd"
+    },
+    {
+      "name": "emoji-zwj-sequences.txt",
+      "url": "https://www.unicode.org/Public/17.0.0/emoji/emoji-zwj-sequences.txt",
+      "bytes": 277215,
+      "sha256": "5b25441daed2322b068c5e70cda522946a4f0274df864445a1965a92e5fc5cad"
+    },
+    {
+      "name": "annotations-zh.xml",
+      "url": "https://raw.githubusercontent.com/unicode-org/cldr/release-48-2/common/annotations/zh.xml",
+      "bytes": 291028,
+      "sha256": "92389f71659998736530c72d4dcc86e453fe0be170cde5c5ad27094cab2a2de8"
+    },
+    {
+      "name": "annotationsDerived-zh.xml",
+      "url": "https://raw.githubusercontent.com/unicode-org/cldr/release-48-2/common/annotationsDerived/zh.xml",
+      "bytes": 502514,
+      "sha256": "777acebb7c4ed103c34f5605881a2537656e0a17d9d1127518da7cd54f612bcc"
+    },
+    {
+      "name": "annotations-en.xml",
+      "url": "https://raw.githubusercontent.com/unicode-org/cldr/release-48-2/common/annotations/en.xml",
+      "bytes": 294945,
+      "sha256": "8511aadd046fdba2f0ffe590266ced8bbf48175ad139b2675d85d7141057b235"
+    },
+    {
+      "name": "annotationsDerived-en.xml",
+      "url": "https://raw.githubusercontent.com/unicode-org/cldr/release-48-2/common/annotationsDerived/en.xml",
+      "bytes": 548066,
+      "sha256": "d76bd041c8c9e7b00b716aff8b7d9dbf509877010e191d5efd068be2553e066e"
+    },
+    {
+      "name": "LICENSE-UNICODE.txt",
+      "url": "https://www.unicode.org/license.txt",
+      "bytes": 1995,
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96"
+    }
+  ]
+}

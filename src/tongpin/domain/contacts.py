@@ -20,7 +20,7 @@ class ContactService:
             pair(actor_id, user["id"]),
         ).fetchone()
         preferences = conn.execute(
-            "SELECT notify_online FROM friend_preferences WHERE user_id=? AND friend_id=?",
+            "SELECT notify_online,remark FROM friend_preferences WHERE user_id=? AND friend_id=?",
             (actor_id, user["id"]),
         ).fetchone()
         own_block = conn.execute(
@@ -38,6 +38,7 @@ class ContactService:
             else "none",
             requestId=pending["id"] if pending else None,
             notifyOnline=bool(preferences and preferences[0]),
+            remark=preferences["remark"] if preferences else "",
             blocked=bool(own_block),
             online=self.runtime.access.presence(conn, actor_id, user["id"]),
         )
@@ -274,13 +275,27 @@ class ContactService:
             }
 
     def preferences(self, actor, uid, data):
+        values = data.model_dump(exclude_unset=True, exclude_none=True)
+        if not values:
+            raise APIError("VALIDATION_ERROR", "请选择需要修改的好友设置。", 422)
+        if "remark" in values:
+            values["remark"] = values["remark"].strip()
+            message_text(values["remark"], max_chars=80, max_bytes=640, allow_empty=True)
         with self.runtime.db.write() as conn:
             self.runtime.auth.current_in_transaction(conn, actor)
             if not friendship(conn, actor.id, uid):
-                raise APIError("FRIENDSHIP_REQUIRED", "只有好友可以设置上线提醒。", 403)
+                raise APIError("FRIENDSHIP_REQUIRED", "只有好友可以设置备注和上线提醒。", 403)
             conn.execute(
-                "INSERT INTO friend_preferences VALUES(?,?,?) ON CONFLICT(user_id,friend_id) DO UPDATE SET notify_online=excluded.notify_online",
-                (actor.id, uid, int(data.notifyOnline)),
+                "INSERT OR IGNORE INTO friend_preferences(user_id,friend_id) VALUES(?,?)",
+                (actor.id, uid),
             )
+            if "notifyOnline" in values:
+                conn.execute("UPDATE friend_preferences SET notify_online=? WHERE user_id=? AND friend_id=?", (int(values["notifyOnline"]), actor.id, uid))
+            if "remark" in values:
+                conn.execute("UPDATE friend_preferences SET remark=? WHERE user_id=? AND friend_id=?", (values["remark"], actor.id, uid))
             self.runtime.events.publish(conn, [actor.id], "contacts.changed", uid)
-        return {"notifyOnline": data.notifyOnline}
+            direct = conn.execute("SELECT id FROM conversations WHERE kind='direct' AND low_id=? AND high_id=?", pair(actor.id, uid)).fetchone()
+            if direct:
+                self.runtime.events.publish(conn, [actor.id], "conversation.updated", direct[0], direct[0])
+            row = conn.execute("SELECT notify_online,remark FROM friend_preferences WHERE user_id=? AND friend_id=?", (actor.id, uid)).fetchone()
+            return {"notifyOnline": bool(row["notify_online"]), "remark": row["remark"]}

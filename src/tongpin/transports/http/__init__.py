@@ -15,6 +15,7 @@ from tongpin.transports.http.auth import auth_blueprint, require_csrf
 from tongpin.transports.http.chat import chat_blueprint
 from tongpin.transports.http.files import files_blueprint
 from tongpin.transports.http.groups import groups_blueprint
+from tongpin.transports.http.interactions import interactions_blueprint
 
 
 def create_http_app(runtime):
@@ -125,6 +126,7 @@ def create_http_app(runtime):
     app.register_blueprint(auth_blueprint)
     app.register_blueprint(chat_blueprint)
     app.register_blueprint(groups_blueprint)
+    app.register_blueprint(interactions_blueprint)
     app.register_blueprint(files_blueprint)
 
     @app.route(

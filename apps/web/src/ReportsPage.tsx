@@ -1,0 +1,10 @@
+import { useEffect, useRef, useState } from 'react';
+import { api } from './lib/api';
+import type { Page } from './lib/chat-types';
+import type { ReportItem } from './lib/interactions-types';
+export function ReportsPage({ onClose }: { onClose: () => void }) {
+  const [page, setPage] = useState<Page<ReportItem> | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const controller = useRef<AbortController | null>(null);
+  async function load(append = false) { controller.current?.abort(); const request = new AbortController(); controller.current = request; setBusy(true); setError(''); try { const result = await api<Page<ReportItem>>(`/api/v1/reports${append && page?.nextCursor ? `?after=${encodeURIComponent(page.nextCursor)}` : ''}`, { signal: request.signal }); if (!request.signal.aborted) setPage((current) => ({ items: append ? [...(current?.items || []), ...result.items] : result.items, nextCursor: result.nextCursor })); } catch (cause) { if (!request.signal.aborted) setError(cause instanceof Error ? cause.message : '举报记录加载失败。'); } finally { if (!request.signal.aborted) setBusy(false); } }
+  useEffect(() => { void load(); return () => controller.current?.abort(); }, []);
+  return <section className="reports-page"><header className="workspace-page-header"><h1>我的举报</h1><button className="secondary-button" onClick={onClose}>返回</button></header><button className="text-button" disabled={busy} onClick={() => void load()}>刷新举报状态</button>{error && <p role="alert" className="form-error">{error}</p>}{busy && <p role="status">正在加载举报记录…</p>}{page?.items.length === 0 && <p>你还没有提交举报。</p>}<ul className="message-results">{page?.items.map((item) => <li key={item.id}><div><strong>{{ open: '等待处理', claimed: '正在处理', resolved: '已处理', rejected: '未予受理' }[item.status]}</strong><small>编号：{item.id} · {new Date(item.createdAt).toLocaleString('zh-CN')}</small><p>{item.description || '未填写补充说明'}</p><p>处理反馈：{item.feedback || '暂未收到处理反馈'}</p></div></li>)}</ul>{page?.nextCursor && <button className="load-more-button" disabled={busy} onClick={() => void load(true)}>加载更多举报</button>}</section>;
+}

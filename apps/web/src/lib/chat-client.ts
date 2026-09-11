@@ -2,9 +2,11 @@ import { io, type Socket } from 'socket.io-client';
 import { api, APIError, onAuthExpired, type User } from './api';
 import type { ChatSnapshot, ChatState, Contact, Conversation, Draft, FriendRequest, HistoryPage, LocalAttachment, Message, NotificationItem, Page, QueuedMessage, SendPayload, SendResult, SyncEvent, SyncPage, UserSummary } from './chat-types';
 import { uploadLocalAttachment, validateLocalFiles } from './files';
+import type { MessageLocation, TypingUser } from './interactions-types';
+import { closeBrowserNotifications, showBrowserNotification } from './browser-notifications';
 import { addQueuedMessage, changeQueuedMessage, clearLocalUser, forgetIdentity, localError, localSummary, OUTBOX_AGE_MS, readDraft, readOfflineIdentity, readQueue, rememberIdentity, saveLocalDraft, withDeliveryLock } from './outbox';
 
-const initialState = (): ChatState => ({ phase: 'connecting', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null });
+const initialState = (): ChatState => ({ phase: 'connecting', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyAfter: null, locatedMessageId: null, typingUsers: [], historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null });
 const permanentErrors = new Set(['VALIDATION_ERROR', 'PAYLOAD_TOO_LARGE', 'IDEMPOTENCY_CONFLICT', 'STALE_ACCESS', 'FRIENDSHIP_REQUIRED', 'CONTACT_UNAVAILABLE', 'RESOURCE_UNAVAILABLE', 'MUTED', 'CONVERSATION_FROZEN', 'FILE_REJECTED', 'FILE_QUARANTINED', 'FILE_NOT_READY', 'FILE_TYPE_UNSUPPORTED', 'FILE_INVALID', 'FILE_SIZE_MISMATCH', 'FILE_HASH_MISMATCH', 'FILE_INFECTED', 'FILE_IN_USE', 'ATTACHMENT_LIMIT', 'USER_QUOTA_EXCEEDED', 'OUTBOX_EXPIRED']);
 const bySequence = (one: Message, two: Message) => BigInt(one.seq) < BigInt(two.seq) ? -1 : BigInt(one.seq) > BigInt(two.seq) ? 1 : one.id.localeCompare(two.id);
 export function mergeMessages(existing: Message[], additions: Message[]): Message[] {
@@ -22,7 +24,7 @@ export function validateMessageText(text: string, allowEmpty = false) {
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(text) || [...text].some((character) => { const code = character.codePointAt(0)!; return code >= 0xd800 && code <= 0xdfff; })) throw new APIError(422, { code: 'VALIDATION_ERROR', message: '消息不能包含无效或控制字符。' });
 }
 
-type WindowCache = { accessKey: string; messages: Message[]; before: string | null };
+type WindowCache = { accessKey: string; messages: Message[]; before: string | null; after?: string | null };
 export class ChatClient {
   private user: User;
   private state = initialState();
@@ -30,6 +32,7 @@ export class ChatClient {
   private running = false;
   private generation = 0;
   private selectionGeneration = 0;
+  private contentRevision = 0;
   private controller = new AbortController();
   private socket: Socket | null = null;
   private channel: BroadcastChannel | null = null;
@@ -42,6 +45,10 @@ export class ChatClient {
   private wakeDelivery: (() => void) | null = null;
   private deliveryTasks = new Map<string, AbortController>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private typingTimer: ReturnType<typeof setInterval> | null = null;
+  private typingFlight = false;
+  private lastTyping = 0;
+  private alertsEnabled = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   private retryAttempt = 0;
@@ -52,7 +59,7 @@ export class ChatClient {
   private enqueueFlight: Promise<void> = Promise.resolve();
   private reading = new Set<string>();
   private online = () => { if (this.running) void this.reconnect(); };
-  private offline = () => { if (this.running) { this.initialized = false; this.set({ phase: 'offline' }); this.closeSocket(); } };
+  private offline = () => { if (this.running) { this.initialized = false; this.alertsEnabled = false; this.set({ phase: 'offline', typingUsers: [] }); this.closeSocket(); } };
 
   constructor(user: User) { this.user = user; }
   getSnapshot = (): ChatState => this.state;
@@ -83,6 +90,7 @@ export class ChatClient {
       if (this.initialized) { void this.synchronize(); void this.drain(); }
       else if (navigator.onLine && !this.syncFlight) void this.reconnect();
     }, 5000);
+    this.typingTimer = setInterval(() => { void this.pollTyping(); }, 2000);
     const flight = this.initialize(epoch);
     this.syncFlight = flight;
     try { await flight; }
@@ -96,9 +104,12 @@ export class ChatClient {
     for (const task of this.deliveryTasks.values()) task.abort();
     this.wakeDelivery?.();
     if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.typingTimer) clearInterval(this.typingTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     this.pollTimer = null; this.reconnectTimer = null; this.noticeTimer = null;
+    this.typingTimer = null; this.typingFlight = false; this.alertsEnabled = false;
+    closeBrowserNotifications(this.user.id);
     this.unsubscribeExpiry?.(); this.unsubscribeExpiry = null;
     this.channel?.close(); this.channel = null;
     window.removeEventListener('online', this.online); window.removeEventListener('offline', this.offline);
@@ -197,13 +208,14 @@ export class ChatClient {
   }
 
   private async fullSnapshot(epoch: number) {
+    this.alertsEnabled = false;
     if (this.current(epoch)) this.set({ phase: 'syncing' });
     const snapshot = await this.request<ChatSnapshot>('/sync/snapshot');
     if (!this.current(epoch)) return;
     const selected = this.state.selectedId;
     // Fresh server state replaces stale permission-bearing lists.
     this.windows.clear();
-    this.set({ messages: [], historyBefore: null });
+    this.set({ messages: [], historyBefore: null, historyAfter: null, locatedMessageId: null, typingUsers: [] });
     this.cursor = snapshot.cursor;
     this.set({ contacts: snapshot.contacts.items, conversations: snapshot.conversations.items, requests: snapshot.requests.items, nextContacts: snapshot.contacts.nextCursor, nextConversations: snapshot.conversations.nextCursor, nextRequests: snapshot.requests.nextCursor });
     if (selected && !this.state.conversations.some((item) => item.id === selected)) {
@@ -218,6 +230,7 @@ export class ChatClient {
     this.initialized = true; this.retryAttempt = 0;
     this.set({ phase: this.socket?.connected ? 'online' : 'degraded', error: this.localReady ? null : this.state.error });
     if (this.state.selectedId) await this.selectConversation(this.state.selectedId);
+    if (this.current(epoch)) this.alertsEnabled = true;
   }
 
   async refresh(): Promise<void> {
@@ -280,25 +293,50 @@ export class ChatClient {
   }
 
   private revokeConversation(cid: string) {
+    this.contentRevision++;
     this.windows.delete(cid);
-    if (this.state.selectedId === cid) { this.selectionGeneration++; this.set({ selectedId: null, messages: [], historyBefore: null, historyLoading: false }); }
+    if (this.state.selectedId === cid) { this.selectionGeneration++; this.set({ selectedId: null, messages: [], historyBefore: null, historyAfter: null, locatedMessageId: null, typingUsers: [], historyLoading: false }); }
     this.set({ conversations: this.state.conversations.filter((conversation) => conversation.id !== cid) });
   }
 
   private async applyEvent(event: SyncEvent, epoch: number) {
+    if (event.type === 'message.updated') this.contentRevision++;
+    if (event.type === 'account.changed') {
+      const account = await this.request<{ user: User }>('/auth/me');
+      if (this.current(epoch)) this.updateUser(account.user);
+      return;
+    }
     if (event.type === 'access.revoked' && event.conversationId) { this.revokeConversation(event.conversationId); return; }
     const refreshHistory = event.conversation && this.state.selectedId === event.conversation.id && this.state.conversations.some((item) => item.id === event.conversation!.id && item.accessKey !== event.conversation!.accessKey);
     if (event.conversation) this.upsertConversation(event.conversation);
     if (event.message) {
       const message = event.message;
       const cache = this.windows.get(message.conversationId);
-      const update = (messages: Message[]) => mergeMessages(messages, [message]).map((item) => message.status !== 'sent' && item.reply?.id === message.id ? { ...item, reply: { ...item.reply, status: 'unavailable' as const, text: '', author: '' } } : item);
+      const update = (messages: Message[], hasAfter = false) => {
+        const known = messages.some((item) => item.id === message.id);
+        const last = messages.at(-1);
+        const append = event.type === 'message.created' && (!hasAfter || !!last && BigInt(message.seq) === BigInt(last.seq) + 1n) || event.type === 'message.updated' && !hasAfter && this.state.historyLoading && this.state.selectedId === message.conversationId;
+        return mergeMessages(messages, known || append ? [message] : []).map((item) => message.status !== 'sent' && item.reply?.id === message.id ? { ...item, reply: { ...item.reply, status: 'unavailable' as const, text: '', author: '' } } : item);
+      };
       if (cache) {
-        const updated = update(cache.messages);
+        const updated = update(cache.messages, !!cache.after);
         cache.messages = updated.slice(-1000);
         if (updated.length > 1000) cache.before = cache.messages[0].seq;
       }
-      if (this.state.selectedId === message.conversationId) this.set({ messages: update(this.state.messages) });
+      if (this.state.selectedId === message.conversationId) {
+        const messages = update(this.state.messages, !!this.state.historyAfter);
+        const last = messages.at(-1);
+        const latest = this.state.conversations.find((item) => item.id === message.conversationId)?.lastSeq;
+        this.set({ messages, ...(this.state.historyAfter && last ? { historyAfter: latest && BigInt(last.seq) >= BigInt(latest) ? null : last.seq } : {}) });
+      }
+      this.set({ conversations: this.state.conversations.map((item) => item.lastMessage?.id === message.id ? { ...item, lastMessage: message } : item) });
+      if (event.type === 'message.created' && this.alertsEnabled && this.initialized && message.senderId !== this.user.id && message.kind === 'user' && message.status === 'sent' && !this.user.preferences.doNotDisturb && (document.visibilityState !== 'visible' || !document.hasFocus())) {
+        const conversation = this.state.conversations.find((item) => item.id === message.conversationId);
+        const mentioned = message.mentionAll || message.mentionedUserIds.includes(this.user.id);
+        if (conversation && !conversation.preferences.muted && (!conversation.preferences.onlyMentions || mentioned)) {
+          showBrowserNotification(this.user.id, { tag: conversation.id, title: '同频 · 收到新消息', body: mentioned ? '有人在消息中提及了你，打开同频查看。' : '你有一条新消息，打开同频查看。', onClick: () => { if (this.current(epoch)) window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: this.user.id, messageId: message.id } })); } });
+        }
+      }
       if (message.senderId === this.user.id && message.clientMessageId && this.localReady) {
         await changeQueuedMessage(this.user.id, this.user.id + ':' + message.clientMessageId, () => null);
         await this.loadLocal(epoch); this.announce();
@@ -313,9 +351,10 @@ export class ChatClient {
     const previous = this.state.selectedId;
     if (previous && previous !== id) this.cacheWindow(previous);
     const selection = ++this.selectionGeneration; const epoch = this.generation;
-    if (!id) { this.set({ selectedId: null, messages: [], historyBefore: null, historyLoading: false }); return; }
+    if (!id) { this.set({ selectedId: null, messages: [], historyBefore: null, historyAfter: null, locatedMessageId: null, typingUsers: [], historyLoading: false }); return; }
     const cache = this.windows.get(id);
-    this.set({ selectedId: id, messages: cache?.messages || (previous === id ? this.state.messages : []), historyBefore: cache?.before || null, historyLoading: true });
+    this.lastTyping = 0;
+    this.set({ selectedId: id, messages: cache?.messages || (previous === id ? this.state.messages : []), historyBefore: cache?.before || null, historyAfter: cache?.after || (previous === id ? this.state.historyAfter : null), locatedMessageId: null, typingUsers: [], historyLoading: true });
     if (!navigator.onLine || !this.initialized) { this.set({ historyLoading: false }); return; }
     const startedConversation = this.state.conversations.find((item) => item.id === id);
     const startedMessages = this.state.messages;
@@ -337,7 +376,7 @@ export class ChatClient {
       for (let i = 1; i < combined.length; i++) if (BigInt(combined[i].seq) !== BigInt(combined[i - 1].seq) + 1n) contiguousStart = i;
       if (contiguousStart) { combined = combined.slice(contiguousStart); before = combined[0].seq; }
       if (!newerConversation) this.upsertConversation(conversation);
-      this.set({ messages: combined, historyBefore: before, historyLoading: false });
+      this.set({ messages: combined, historyBefore: before, historyAfter: null, historyLoading: false });
       this.cacheWindow(id);
     } catch (error) {
       if (!this.current(epoch) || this.selectionGeneration !== selection) return;
@@ -352,8 +391,67 @@ export class ChatClient {
     if (!conversation) return;
     this.windows.delete(cid);
     const messages = this.state.messages.slice(-1000);
-    this.windows.set(cid, { accessKey: conversation.accessKey, messages, before: this.state.messages.length > 1000 ? messages[0].seq : this.state.historyBefore });
+    this.windows.set(cid, { accessKey: conversation.accessKey, messages, before: this.state.messages.length > 1000 ? messages[0].seq : this.state.historyBefore, after: this.state.historyAfter });
     while (this.windows.size > 10) this.windows.delete(this.windows.keys().next().value!);
+  }
+
+  async jumpToMessage(messageId: string): Promise<void> {
+    if (!this.running || !this.initialized || !navigator.onLine) throw new APIError(503, { code: 'CONNECTION_REQUIRED', message: '请恢复连接后定位消息，当前草稿会保留。' });
+    const epoch = this.generation; const selection = ++this.selectionGeneration;
+    const contentRevision = this.contentRevision;
+    const previous = this.state.selectedId;
+    const known = new Map(this.state.conversations.map((conversation) => [conversation.id, conversation]));
+    const location = await this.request<MessageLocation>('/messages/' + encodeURIComponent(messageId) + '/context');
+    if (!this.current(epoch) || selection !== this.selectionGeneration) return;
+    if (contentRevision !== this.contentRevision) throw new APIError(409, { code: 'STALE_HISTORY', message: '消息或访问权限刚刚改变，请重新定位。' });
+    const changed = this.state.conversations.find((conversation) => conversation.id === location.conversation.id);
+    if (changed && changed !== known.get(changed.id) && changed.accessKey !== location.conversation.accessKey) throw new APIError(409, { code: 'STALE_HISTORY', message: '消息权限已经改变，请重新打开搜索结果。' });
+    if (previous) this.cacheWindow(previous);
+    this.upsertConversation(location.conversation);
+    this.set({ selectedId: location.conversation.id, messages: location.items, historyBefore: location.hasBefore ? location.items[0]?.seq || null : null, historyAfter: location.hasAfter ? location.items.at(-1)?.seq || null : null, locatedMessageId: location.targetId, historyLoading: false, typingUsers: [] });
+    this.cacheWindow(location.conversation.id);
+  }
+
+  async loadNewer(): Promise<void> {
+    const cid = this.state.selectedId; const after = this.state.historyAfter;
+    if (!cid || !after || this.state.historyLoading || !this.running || !this.initialized) return;
+    const epoch = this.generation; const selection = this.selectionGeneration;
+    const contentRevision = this.contentRevision;
+    const accessKey = this.state.conversations.find((item) => item.id === cid)?.accessKey;
+    this.set({ historyLoading: true });
+    try {
+      const page = await this.request<HistoryPage>('/conversations/' + encodeURIComponent(cid) + '/messages?afterSeq=' + encodeURIComponent(after) + '&limit=50');
+      if (!this.current(epoch) || selection !== this.selectionGeneration) return;
+      if (contentRevision !== this.contentRevision) throw new APIError(409, { code: 'STALE_HISTORY', message: '消息内容刚刚改变，请重新加载。' });
+      if (page.accessKey !== accessKey || this.state.conversations.find((item) => item.id === cid)?.accessKey !== accessKey) throw new APIError(409, { code: 'STALE_HISTORY', message: '会话权限已改变，请重新加载消息。' });
+      this.set({ messages: mergeMessages(this.state.messages, page.items), historyAfter: page.hasMore ? page.nextCursor : null, historyLoading: false });
+      this.cacheWindow(cid);
+    } catch (error) { if (this.current(epoch) && selection === this.selectionGeneration) this.set({ historyLoading: false, error: errorMessage(error) }); throw error; }
+  }
+
+  async applyMessage(message: Message): Promise<void> {
+    if (!this.running) return;
+    await this.applyEvent({ v: 1, eventId: '0', cursor: '0', type: 'message.updated', entityRef: message.id, occurredAt: Date.now(), conversationId: message.conversationId, message }, this.generation);
+  }
+
+  typing(active: boolean): void {
+    const cid = this.state.selectedId;
+    if (!cid || !this.running || !this.initialized || !navigator.onLine) return;
+    if (active && (document.visibilityState !== 'visible' || !document.hasFocus() || Date.now() - this.lastTyping < 2000 || !this.state.conversations.find((item) => item.id === cid)?.canSend)) return;
+    this.lastTyping = active ? Date.now() : 0;
+    // This hint never contains text and never enters the durable outbox.
+    void this.request('/conversations/' + encodeURIComponent(cid) + '/typing', { method: 'POST', body: { active } }).catch(() => undefined);
+  }
+
+  private async pollTyping(): Promise<void> {
+    const cid = this.state.selectedId; const epoch = this.generation; const selection = this.selectionGeneration;
+    const remaining = this.state.typingUsers?.filter((item) => item.expiresAt > Date.now()) || [];
+    if (remaining.length !== this.state.typingUsers?.length) this.set({ typingUsers: remaining });
+    if (!cid || !this.running || !this.initialized || !navigator.onLine || this.typingFlight || document.visibilityState !== 'visible') return;
+    this.typingFlight = true;
+    try { const result = await this.request<{ items: TypingUser[] }>('/conversations/' + encodeURIComponent(cid) + '/typing'); if (this.current(epoch) && selection === this.selectionGeneration) this.set({ typingUsers: result.items }); }
+    catch { if (this.current(epoch) && selection === this.selectionGeneration) this.set({ typingUsers: [] }); }
+    finally { if (this.current(epoch)) this.typingFlight = false; }
   }
 
   async loadOlder(): Promise<void> {
@@ -383,7 +481,7 @@ export class ChatClient {
     } catch (error) { if (this.current(epoch)) this.set({ error: localError(error).message }); }
   }
 
-  async queue(conversationId: string, text: string, options: { replyToMessageId?: string; mentionedUserIds?: string[]; files?: LocalAttachment[] } = {}): Promise<void> {
+  async queue(conversationId: string, text: string, options: { replyToMessageId?: string | null; mentionedUserIds?: string[]; mentionAll?: boolean; files?: LocalAttachment[] } = {}): Promise<void> {
     validateLocalFiles(options.files || []);
     validateMessageText(text, Boolean(options.files?.length));
     const conversation = this.state.conversations.find((item) => item.id === conversationId);
@@ -391,6 +489,7 @@ export class ChatClient {
     if (!this.localReady) throw localError();
     const epoch = this.generation; const clientMessageId = crypto.randomUUID();
     const payload: SendPayload = { clientMessageId, text, attachmentIds: [], replyToMessageId: options.replyToMessageId || null, mentionedUserIds: options.mentionedUserIds || [], accessKey: conversation.accessKey, actorContext: this.user.id };
+    if (options.mentionAll) payload.mentionAll = true;
     const entry: QueuedMessage = { key: this.user.id + ':' + clientMessageId, userId: this.user.id, conversationId, conversationTitle: conversation.title, payload, createdAt: Date.now(), expiresAt: Date.now() + OUTBOX_AGE_MS, state: 'queued', attempts: 0, retryAt: 0, error: null, errorCode: null, files: options.files || [] };
     const saving = this.enqueueFlight.catch(() => undefined).then(async () => {
       if (!this.current(epoch)) throw new APIError(401, { code: 'AUTH_REQUIRED', message: '账号状态已改变，内容尚未排队。' });
@@ -398,7 +497,7 @@ export class ChatClient {
     });
     this.enqueueFlight = saving;
     await saving;
-    if (this.current(epoch)) { await this.loadLocal(epoch); this.announce(); void this.drain(); }
+    if (this.current(epoch)) { await this.loadLocal(epoch); this.announce(); this.typing(false); void this.drain(); }
   }
 
   async retry(clientMessageId: string): Promise<void> {
@@ -536,7 +635,7 @@ export class ChatClient {
   }
 
   getDraft(conversationId: string): Promise<Draft | null> { return readDraft(this.user.id, conversationId); }
-  saveDraft(conversationId: string, text: string, position: { scrollTop?: number; anchorId?: string; files?: LocalAttachment[] } = {}): Promise<void> { return saveLocalDraft(this.user.id, conversationId, text, position); }
+  saveDraft(conversationId: string, text: string, position: Pick<Draft, 'scrollTop' | 'anchorId' | 'files' | 'replyToMessageId' | 'mentionedUserIds' | 'mentionAll'> = {}): Promise<void> { return saveLocalDraft(this.user.id, conversationId, text, position); }
   async getLocalSummary(): Promise<{ pending: number; drafts: number }> { await this.enqueueFlight.catch(() => undefined); return localSummary(this.user.id); }
   async logout(choice: 'keep' | 'delete'): Promise<void> {
     const pendingSave = this.enqueueFlight; const pendingSend = this.drainFlight;
@@ -549,8 +648,25 @@ export class ChatClient {
     } catch (error) { void this.start(); throw error; }
   }
 
+  async finishAccountDeletion(choice: 'keep' | 'delete'): Promise<void> {
+    const pendingSave = this.enqueueFlight; const pendingSend = this.drainFlight;
+    this.stop();
+    await pendingSave.catch(() => undefined); await pendingSend?.catch(() => undefined);
+    if (choice === 'delete') await clearLocalUser(this.user.id);
+    if (this.localIdentityRevision) await forgetIdentity(this.user.id, this.localIdentityRevision);
+    this.set({ ...initialState(), phase: 'expired' });
+  }
+
+  async prepareAccountDeletion(): Promise<void> {
+    const pendingSave = this.enqueueFlight; const pendingSend = this.drainFlight;
+    this.stop();
+    await pendingSave.catch(() => undefined); await pendingSend?.catch(() => undefined);
+  }
+
+  resumeAccountAfterDeletionFailure(): void { if (!this.running) void this.start(); }
+
   async read(conversationId: string, seq: string): Promise<void> {
-    if (!this.running || !this.initialized || this.state.selectedId !== conversationId || document.visibilityState !== 'visible' || !document.hasFocus() || this.reading.has(conversationId)) return;
+    if (!this.running || !this.initialized || this.state.historyLoading || this.state.historyAfter || this.state.selectedId !== conversationId || document.visibilityState !== 'visible' || !document.hasFocus() || this.reading.has(conversationId)) return;
     const conversation = this.state.conversations.find((item) => item.id === conversationId);
     if (!conversation || BigInt(seq) <= BigInt(conversation.readSeq)) return;
     this.reading.add(conversationId); const epoch = this.generation;

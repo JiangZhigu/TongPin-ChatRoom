@@ -167,6 +167,22 @@ class EventService:
                             if row["kind"] == "friend.requested"
                             else "好友申请已通过"
                         )
+                elif row["kind"] == "message.mentioned":
+                    item.update(text="你被提及的消息已不可用", available=False)
+                    try:
+                        message, _ = self.runtime.access.message(conn, actor.id, row["entity_ref"])
+                        if message["status"] == "sent":
+                            item.update(text="有人在消息中提及了你", available=True, messageId=message["id"], conversationId=message["conversation_id"])
+                    except APIError as error:
+                        if error.status not in (403, 404):
+                            raise
+                elif row["kind"] == "report.updated":
+                    report = conn.execute("SELECT id,feedback FROM reports WHERE id=? AND reporter_id=?", (row["entity_ref"], actor.id)).fetchone()
+                    if report:
+                        item.update(text="你的举报有新的处理结果", reportId=report["id"])
+                elif row["kind"] == "report.created":
+                    if actor.user["site_role"] == "super_admin":
+                        item.update(text="收到新的治理举报，请进入全站后台处理", reportId=row["entity_ref"])
                 elif row["kind"].startswith("group."):
                     labels = {
                         "group.invited": "收到群聊邀请，请查看群邀请",

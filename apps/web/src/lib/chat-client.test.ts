@@ -6,8 +6,10 @@ import { setCsrfToken, type User } from './api';
 import { openLocalDatabase, readQueue, readOfflineIdentity, rememberIdentity } from './outbox';
 import type { Conversation, LocalAttachment, Message, SyncEvent } from './chat-types';
 import type { UploadRecord } from './files-types';
+import { closeBrowserNotifications, showBrowserNotification } from './browser-notifications';
 
 const socketEvents = vi.hoisted(() => new Map<string, () => void>());
+vi.mock('./browser-notifications', () => ({ closeBrowserNotifications: vi.fn(), showBrowserNotification: vi.fn(() => true) }));
 vi.mock('socket.io-client', () => ({ io: () => {
   const events = socketEvents;
   return { connected: false, on: (key: string, action: () => void) => events.set(key, action), connect: () => queueMicrotask(() => events.get('connect_error')?.()), disconnect: () => undefined, removeAllListeners: () => events.clear() };
@@ -28,6 +30,7 @@ beforeEach(async () => {
   vi.stubGlobal('navigator', { get onLine() { return connected; } });
   vi.stubGlobal('document', { visibilityState: 'visible', hasFocus: () => true });
   setCsrfToken('synthetic-csrf');
+  vi.mocked(showBrowserNotification).mockClear(); vi.mocked(closeBrowserNotifications).mockClear();
   const db = await openLocalDatabase();
   await new Promise<void>((resolve) => { const tx = db.transaction(['meta', 'outbox', 'drafts', 'leases'], 'readwrite'); for (const name of ['meta', 'outbox', 'drafts', 'leases']) tx.objectStore(name).clear(); tx.oncomplete = () => resolve(); });
   vi.stubGlobal('fetch', vi.fn(async (url: string, options?: { method?: string; body?: string }) => {
@@ -54,6 +57,120 @@ beforeEach(async () => {
     if (url.endsWith('/read')) return result({});
     throw new Error('Uncovered test request ' + url);
   }));
+});
+
+describe('rich message persistence, located windows and live hints', () => {
+  function locations(items: Message[], options: { hasAfter?: boolean; delayed?: boolean } = {}) {
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    let finish!: () => void; let entered = false;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/context')) {
+        entered = true;
+        if (options.delayed) await new Promise<void>((resolve) => { finish = resolve; });
+        return result({ conversation, items, targetId: items[0].id, hasBefore: true, hasAfter: options.hasAfter ?? true }) as Response;
+      }
+      if (String(url).includes('afterSeq=')) return result({ items: [message('next', '13'), message('end', '14')], accessKey: conversation.accessKey, hasMore: false, nextCursor: null, lastSeq: '14' }) as Response;
+      if (String(url).endsWith('/typing')) return result({ items: [] }) as Response;
+      return original(url, init);
+    });
+    return { ready: () => entered, finish: () => finish() };
+  }
+  async function live(current: ChatClient, item: SyncEvent) {
+    syncEvents.push(item); socketEvents.get('sync.available')?.();
+    await until(() => vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/sync?')));
+    // A known current message makes completion observable without reading private client state.
+    if (item.message && current.getSnapshot().selectedId === item.message.conversationId && (!current.getSnapshot().historyAfter || current.getSnapshot().messages.some((row) => row.id === item.message!.id))) await until(() => current.getSnapshot().messages.some((row) => row.id === item.message!.id && row.status === item.message!.status));
+    else await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  it('stores only rich reference IDs with the real Blob and preserves the same offline command across restart', async () => {
+    const current = await client(); connected = false; window.dispatchEvent(new Event('offline'));
+    const file = localFile(); const metadata = { replyToMessageId: 'original-id', mentionedUserIds: [peer.id], mentionAll: true, files: [file] };
+    await current.saveDraft(conversation.id, '本机引用草稿', metadata);
+    expect(await current.getDraft(conversation.id)).toMatchObject({ text: '本机引用草稿', ...metadata });
+    await current.queue(conversation.id, '引用发送', metadata);
+    const saved = (await readQueue(user.id))[0];
+    expect(saved.payload).toMatchObject({ text: '引用发送', replyToMessageId: 'original-id', mentionedUserIds: [peer.id], mentionAll: true });
+    current.stop(); const restarted = await client();
+    expect((await readQueue(user.id))[0].payload).toEqual(saved.payload);
+    expect(await (await readQueue(user.id))[0].files[0].blob.text()).toBe('real local bytes');
+    expect((await restarted.getLocalSummary()).pending).toBe(1);
+  });
+  it('does not mark a located history window read or append a distant live message across its gap', async () => {
+    conversation.lastSeq = '14'; messages = [message('latest', '14')];
+    const current = await client(); await current.selectConversation(conversation.id);
+    locations([message('old', '11'), { ...message('quote', '12'), reply: { id: 'old', status: 'available', text: 'old', author: '甲' } }]);
+    await current.jumpToMessage('old'); await current.read(conversation.id, '12');
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/read'))).toHaveLength(0);
+    await live(current, event('1', { message: message('far-away', '20') }));
+    expect(current.getSnapshot().messages.map((row) => row.seq)).toEqual(['11', '12']);
+    await current.applyMessage({ ...message('old', '11', ''), status: 'recalled' });
+    expect(current.getSnapshot().messages[1].reply).toMatchObject({ status: 'unavailable', text: '', author: '' });
+    await current.loadNewer(); expect(current.getSnapshot().historyAfter).toBeNull();
+    expect(current.getSnapshot().messages.map((row) => row.seq)).toEqual(['11', '12', '13', '14']);
+    await current.read(conversation.id, '14');
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/read'))).toHaveLength(1);
+  });
+  it('keeps the older-window boundary while returning to latest history is still in flight', async () => {
+    const current = await client(); locations([message('old', '11')]); await current.jumpToMessage('old');
+    const delayed = delayHistory(); const selection = current.selectConversation(conversation.id); await until(delayed.ready);
+    expect(current.getSnapshot().historyAfter).toBe('11');
+    await current.read(conversation.id, '11');
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/read'))).toHaveLength(0);
+    delayed.finish([message('latest', '14')]); await selection;
+    expect(current.getSnapshot().historyAfter).toBeNull(); expect(current.getSnapshot().messages.map((row) => row.seq)).toEqual(['14']);
+  });
+  it('rejects a delayed context captured before a recall without restoring its old body', async () => {
+    messages = [message('current', '50')]; const current = await client(); await current.selectConversation(conversation.id);
+    const pending = locations([message('removed', '11', 'must not return')], { delayed: true });
+    const jump = current.jumpToMessage('removed'); const rejection = expect(jump).rejects.toMatchObject({ code: 'STALE_HISTORY' }); await until(pending.ready);
+    await current.applyMessage({ ...message('removed', '11', ''), status: 'recalled' });
+    pending.finish(); await rejection;
+    expect(current.getSnapshot().messages.map((row) => row.id)).toEqual(['current']);
+    expect(current.getSnapshot().locatedMessageId).toBeNull();
+  });
+  it('ignores an old context response after the user changes selection', async () => {
+    const current = await client(); const pending = locations([message('old', '11')], { delayed: true });
+    const jump = current.jumpToMessage('old'); await until(pending.ready);
+    await current.selectConversation(null); pending.finish(); await jump;
+    expect(current.getSnapshot().selectedId).toBeNull(); expect(current.getSnapshot().messages).toEqual([]);
+  });
+  it('suppresses boot replay and respects live DND, conversation mute and mentions-only notification controls', async () => {
+    vi.stubGlobal('document', { visibilityState: 'hidden', hasFocus: () => false });
+    const fromPeer = (id: string, seq: string, changes: Partial<Message> = {}) => ({ ...message(id, seq), senderId: peer.id, sender: peer, ...changes });
+    syncEvents = [event('1', { message: fromPeer('backlog', '1') })];
+    const current = await client(); expect(showBrowserNotification).not.toHaveBeenCalled();
+    await live(current, event('2', { message: fromPeer('fresh', '2') }));
+    expect(showBrowserNotification).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(showBrowserNotification).mock.calls[0][1].body).not.toContain('fresh');
+    current.updateUser({ ...user, preferences: { ...user.preferences, doNotDisturb: true } });
+    await live(current, event('3', { message: fromPeer('quiet', '3') }));
+    expect(showBrowserNotification).toHaveBeenCalledTimes(1);
+    current.updateUser(user); conversation = { ...conversation, preferences: { ...conversation.preferences, onlyMentions: true } };
+    await live(current, event('4', { type: 'conversation.updated', conversation }));
+    await live(current, event('5', { message: fromPeer('unmentioned', '5') }));
+    expect(showBrowserNotification).toHaveBeenCalledTimes(1);
+    await live(current, event('6', { message: fromPeer('mentioned', '6', { mentionedUserIds: [user.id] }) }));
+    expect(showBrowserNotification).toHaveBeenCalledTimes(2);
+    conversation = { ...conversation, preferences: { ...conversation.preferences, muted: true } };
+    await live(current, event('7', { type: 'conversation.updated', conversation }));
+    await live(current, event('8', { message: fromPeer('all-muted', '8', { mentionAll: true }) }));
+    expect(showBrowserNotification).toHaveBeenCalledTimes(2);
+    current.stop(); expect(closeBrowserNotifications).toHaveBeenCalledWith(user.id);
+  });
+  it('emits throttled text-free typing hints and pauses synchronization before account deletion', async () => {
+    const current = await client(); locations([message('old', '11')]); await current.selectConversation(conversation.id);
+    current.typing(true); current.typing(true); current.typing(false);
+    await until(() => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/typing')).length === 2);
+    const calls = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/typing'));
+    expect(calls.map(([, options]) => JSON.parse(options!.body as string))).toEqual([{ active: true }, { active: false }]);
+    expect(await readQueue(user.id)).toEqual([]);
+    await current.saveDraft(conversation.id, '选择保留的本机内容');
+    await current.prepareAccountDeletion(); expect(current.getSnapshot().phase).not.toBe('expired');
+    await current.finishAccountDeletion('keep');
+    expect((await current.getDraft(conversation.id))?.text).toBe('选择保留的本机内容');
+    expect(await readOfflineIdentity()).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith('/auth/logout'))).toBe(false);
+  });
 });
 afterEach(async () => { for (const client of clients.splice(0)) client.stop(); await new Promise((resolve) => setTimeout(resolve, 5)); vi.restoreAllMocks(); vi.unstubAllGlobals(); setCsrfToken(''); });
 async function client() { const value = new ChatClient(user); clients.push(value); await value.start(); return value; }

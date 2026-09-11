@@ -62,7 +62,7 @@ class ChatService:
             if visible and getattr(self.runtime, "files", None)
             else []
         )
-        return {
+        result = {
             "id": row["id"],
             "conversationId": row["conversation_id"],
             "seq": str(row["seq"]),
@@ -79,6 +79,9 @@ class ChatService:
             "attachments": attachments,
             "reactions": [],
         }
+        if getattr(self.runtime, "interactions", None):
+            result.update(self.runtime.interactions.decorate(conn, actor_id, row))
+        return result
 
     def conversation_view(self, conn, actor_id, cid):
         meta = self.runtime.access.conversation(conn, actor_id, cid)
@@ -119,7 +122,8 @@ class ChatService:
                     (peer_id, cid),
                 ).fetchone()
                 peer_read = str(other_pref[0]) if other_pref else "0"
-            title, member_count = peer["nickname"], 2
+            friend_pref = conn.execute("SELECT remark FROM friend_preferences WHERE user_id=? AND friend_id=?", (actor_id, peer_id)).fetchone()
+            title, member_count = (friend_pref["remark"] if friend_pref and friend_pref["remark"] else peer["nickname"]), 2
         else:
             title = row["name"]
             member_count = conn.execute(
@@ -149,7 +153,7 @@ class ChatService:
             "preferences": {
                 key: bool(preference[key]) if preference else False
                 for key in ("muted", "pinned", "archived")
-            },
+            } | {"onlyMentions": bool(preference["only_mentions"]) if preference else False},
         }
 
     def list_in(self, conn, actor_id, after="", limit=50):
@@ -231,6 +235,10 @@ class ChatService:
             "mentionedUserIds": mentions,
             "accessKey": data.accessKey,
         }
+        # Existing offline messages did not include this optional field in their
+        # payload hash. Preserve their idempotence when the new value is false.
+        if data.mentionAll:
+            payload["mentionAll"] = True
         payload_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
         ).hexdigest()
@@ -284,6 +292,8 @@ class ChatService:
                     if original["conversation_id"] != cid or original["status"] != "sent":
                         raise APIError("RESOURCE_UNAVAILABLE", "引用的消息已无法使用。", 404)
                 recipients = self.runtime.access.recipients(conn, cid)
+                if data.mentionAll and (access["row"]["kind"] != "group" or access["role"] not in {"owner", "admin"}):
+                    raise APIError("FORBIDDEN", "只有当前群主和管理员可以提醒全体成员。", 403)
                 if any(uid not in recipients for uid in mentions):
                     raise APIError("VALIDATION_ERROR", "只能提及当前会话中的成员。", 422)
                 if attachments:
@@ -304,7 +314,7 @@ class ChatService:
                     (seq, timestamp, cid),
                 )
                 conn.execute(
-                    "INSERT INTO messages(id,conversation_id,seq,sender_id,client_message_id,payload_hash,text,reply_id,mentioned_ids,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO messages(id,conversation_id,seq,sender_id,client_message_id,payload_hash,text,reply_id,mentioned_ids,created_at,mention_all) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         mid,
                         cid,
@@ -316,11 +326,14 @@ class ChatService:
                         data.replyToMessageId,
                         json.dumps(mentions),
                         timestamp,
+                        int(data.mentionAll),
                     ),
                 )
                 if attachments:
                     self.runtime.files.bind_message(conn, actor, mid, attachments)
                 self.runtime.events.publish(conn, recipients, "message.created", mid, cid)
+                for uid in set(recipients if data.mentionAll else mentions) - {actor.id}:
+                    self.runtime.events.notify(conn, uid, "message.mentioned", mid, actor.id)
                 row = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
                 result = {"message": self.message_view(conn, actor.id, row), "duplicate": False}
         # This return is deliberately outside the transaction: ACK means committed.
@@ -366,8 +379,9 @@ class ChatService:
             )
             for key, value in values.items():
                 # keys are the explicit validated model field allowlist.
+                column = "only_mentions" if key == "onlyMentions" else key
                 conn.execute(
-                    f"UPDATE conversation_preferences SET {key}=? WHERE user_id=? AND conversation_id=?",
+                    f"UPDATE conversation_preferences SET {column}=? WHERE user_id=? AND conversation_id=?",
                     (int(value), actor.id, cid),
                 )
             self.runtime.events.publish(conn, [actor.id], "conversation.updated", cid, cid)

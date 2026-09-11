@@ -1,6 +1,6 @@
 # 当前实现接口约定
 
-这是前后端实施的接口依据，随批次更新。M2 已完成本批审查；M3/M4 接口见 [集成契约](M3_M4_CONTRACT.zh-CN.md)，M5 群聊、邀请和审批接口见 [M5契约](M5_CONTRACT.zh-CN.md)，M6 上传、文件、头像及本机Blob恢复见 [M6契约](M6_CONTRACT.zh-CN.md)。接口文档不是运行通过结果。所有 JSON 成功返回 `{data: ..., requestId}`，失败返回 `{error:{code,message,fieldErrors?,retryAfterMs?},requestId}`。请求同源，Cookie 自动携带；POST/PATCH/DELETE/PUT 加 `X-CSRF-Token`，token 来自 bootstrap 或成功登录响应，仅存内存。密码、恢复码、验证码答案、会话凭据不能放 URL/localStorage/sessionStorage。未知字段拒绝。
+这是前后端实施的接口依据，随批次更新。M2 已完成本批审查；M3/M4 接口见 [集成契约](M3_M4_CONTRACT.zh-CN.md)，M5 群聊、邀请和审批接口见 [M5契约](M5_CONTRACT.zh-CN.md)，M6 上传、文件、头像及本机Blob恢复见 [M6契约](M6_CONTRACT.zh-CN.md)，M7消息交互、引用与提及、搜索收藏、输入状态、举报、注销及保留见 [M7契约](M7_CONTRACTS.zh-CN.md)。接口文档不是运行通过结果。所有 JSON 成功返回 `{data: ..., requestId}`，失败返回 `{error:{code,message,fieldErrors?,retryAfterMs?},requestId}`。请求同源，Cookie 自动携带；POST/PATCH/DELETE/PUT 加 `X-CSRF-Token`，token 来自 bootstrap 或成功登录响应，仅存内存。密码、恢复码、验证码答案、会话凭据不能放 URL/localStorage/sessionStorage。未知字段拒绝。
 
 ## M2 账户
 
@@ -25,8 +25,10 @@ User: `{id,username,nickname,bio,avatarUrl:string|null,siteRole:'user'|'super_ad
 | GET /account/security-events | 无 | `{items:[{id,action,createdAt,device,result}]}`，最近50条 |
 | GET /admin/auth | 无 | `{user,secondFactorRequired:true}`；验证当前已完成第二因素的超管会话，普通用户403 |
 
-M2 只启用账户/安全设置和已验证的管理身份入口。聊天功能尚未接入时显示真实空态，不造联系人/消息/人数。完整聊天与后台业务页面在后续批次接入，页面代码需保留扩展入口。
+M2交付时启用了账户、安全设置和管理身份入口；目前聊天、群、文件与M7交互已接入真实服务。完整SA01–SA14后台业务仍由M7-Admin实现，不能以管理身份检查成功视为后台业务完成。
 
 输入规则：username ASCII字母开头4–24位字母/数字/下划线，大小写唯一；昵称1–32码点无空白边缘或控制字符；bio0–200码点；密码15–128码点不 trim/截断，禁止控制字符和明显弱密码。验证码6位，不区分大小写，120秒最多5次，一次消费。错误字段映射用于表单，限流显示重试时间；失效图自动更新并保留非敏感输入，密码不写浏览器持久存储。
 
 条款必须展示服务器返回文本：超管可审阅私聊/群聊/附件且访问审计、保留与注销方式、恢复码丢失后没有自动找回。注册closed时登录/恢复仍可达；invite-only显示站点邀请码，不能用群邀请替代。
+
+M7补充：`account.delete`再认证凭据通常按5分钟有效期消费；注销一经提交，仅原会话与该次已消费凭据可在冷静期内重取原注销回执，不因此恢复登录权限。恢复账号会立即废除该回执。其他请求在会话失效后仍按原鉴权拒绝，注销核对无法确认时返回403 `DELETION_UNCONFIRMED`，客户端保留本机处理选择与内容。

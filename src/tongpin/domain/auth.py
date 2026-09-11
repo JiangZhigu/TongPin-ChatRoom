@@ -294,7 +294,9 @@ class AuthService:
                 (user["id"],),
             )
             audit(conn, user["id"], "account.recover", user["id"], device=device)
+            self.runtime.events.user_changed(conn, user["id"])
         self.runtime.revalidate_connections()
+        self.runtime.presence_changed(user["id"])
         return {"recovered": True}
 
     def logout(self, principal):
