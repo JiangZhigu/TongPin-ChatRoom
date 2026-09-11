@@ -1,14 +1,14 @@
 # M8验收逐项证据映射
 
-更新：2026-09-12。依据用户原始A01–G09及SA01–SA14，保留原设计文件不回写勾选。本表的“已覆盖”指对应自动化/阶段浏览器证据；最终冻结全量、三平台CI和UX-POST尚未完成的部分明确标注。阶段记录包含具体版本、测试ID、真实场景和局限，不能把测试文件存在当作运行通过。
+更新：2026-09-12。依据用户原始A01–G09及SA01–SA14，保留原设计文件不回写勾选。本表的“已覆盖”指对应自动化/阶段浏览器证据；最终冻结全量已通过，三平台CI和UX-POST尚未完成的部分明确标注。阶段记录包含具体版本、测试ID、真实场景和局限，不能把测试文件存在当作运行通过。
 
-共享证据索引保存在项目 `.codex/work-logs/tongpin-m0-20260911-01a08d87/verification-index.json`，本地原始数据不发布至GitHub。M8旧全量失败及之后定向修复见 [M8记录](M8_DELIVERY.zh-CN.md)，新的全量结果取得后补充。
+共享证据索引保存在项目 `.codex/work-logs/tongpin-m0-20260911-01a08d87/verification-index.json`，本地原始数据不发布至GitHub。M8旧全量失败、定向修复和新冻结回归见 [M8记录](M8_DELIVERY.zh-CN.md)：`2658025` 上Python212/212、Vitest435/435通过，0失败/错误/跳过，逻辑受测输入前后无变化，记录 `M8-FINAL-REGRESSION-01-01`。
 
 ## 原设计 A–G
 
 | 条目 | 核对内容 | 现有证据与实际边界 |
 |---|---|---|
-| A01 | 注册、唯一性、昵称/长度 | [M2](M2_DELIVERY.zh-CN.md)真实注册；test_auth注册唯一/验证；最终全量待回填 |
+| A01 | 注册、唯一性、昵称/长度 | [M2](M2_DELIVERY.zh-CN.md)真实注册；test_auth注册唯一/验证；新冻结全量通过 |
 | A02 | 服务端CAPTCHA及错误/过期 | M2浏览器及test_auth，生产响应不含答案 |
 | A03 | CAPTCHA并发消费/轮换/重启 | test_auth的atomic_attempts_rotation_expiry_and_restart；M2错误后恢复界面 |
 | A04 | Argon2id、盐、敏感信息 | M2凭据检查及test_auth；公开范围仍在发布时扫描 |
