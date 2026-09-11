@@ -49,7 +49,11 @@ npm run check
 
 开发模式前端为 `http://localhost:5173`，后端为 `http://127.0.0.1:8765`；构建后由后端同源提供界面。检查使用项目 `.codex` 内隔离合成数据。开发默认库为 `var/data/tongpin.sqlite3`，附件/备份/导出/日志位于非公开目录。常驻服务使用一个ASGI进程、一个SQLite数据目录和进程内有界缓存，不要对同一个库启动多个worker或多副本。
 
-生产模式要求准确HTTPS来源、外部密钥、正式运营资料、非开发条款和持久目录，并执行只读发布预检。CI配置Windows/macOS/Linux的真实HTTP/WS/SQLite、恢复与脚本检查；通过情况以实际运行记录为准，不等同于实机手机或全部Linux发行版验收。
+生产模式要求准确HTTPS来源、外部密钥、正式运营资料、非开发条款和持久目录，并执行只读发布预检。
+
+2026-09-12，[三平台CI与Docker全部通过](https://github.com/JiangZhigu/TongPin-ChatRoom/actions/runs/34637137650)：Windows Server 2025、macOS 26.6.2 arm64、Ubuntu 24.04.5各完成41项后端平台检查、435项前端测试和真实浏览器消息/待办持久化；Docker完成非root、只读根目录及持久挂载下真实HTTP/WebSocket检查。本机另完成212项后端全量与600秒100连接负载，6,005条消息全部持久化，ACK p95为217.14ms。具体版本、失败修复记录与测量边界见 [M8回归](implementation/M8_DELIVERY.zh-CN.md) 和 [M9交付准备](implementation/M9_DELIVERY.zh-CN.md)。
+
+本地交付包为UX前候选，另附SHA256和交付回执。最终独立Astra完整体验及其缺陷闭环仍待完成；当前证据不代表实机手机、全部Linux发行版或生产上线验收。
 
 - [安装、依赖与平台入口](docs/INSTALL.zh-CN.md)
 - [配置参考](docs/CONFIGURATION.zh-CN.md)
