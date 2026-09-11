@@ -3,6 +3,19 @@ let identityGeneration = 0;
 const expiredListeners = new Set<() => void>();
 const REQUEST_TIMEOUT_MS = 15000;
 
+// Resolve the store lazily: the store uses APIError but authentication owns its
+// lifecycle. Offline recovery reports its own storage availability errors.
+async function captureOfflineState() {
+  if (typeof indexedDB === 'undefined') return null;
+  const storage = await import('./outbox');
+  try { return { storage, identity: await storage.readOfflineIdentity() }; }
+  catch { return null; }
+}
+
+async function forgetCapturedState(captured: Awaited<ReturnType<typeof captureOfflineState>>) {
+  if (captured?.identity) await captured.storage.forgetIdentity(captured.identity.user.id, captured.identity.revision);
+}
+
 export class APIError extends Error {
   readonly code: string;
   readonly status: number;
@@ -45,19 +58,26 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   });
   try {
     return await Promise.race([interrupted, (async () => {
+      const localState = path.startsWith('/api/v1/') && !['/api/v1/auth/bootstrap', '/api/v1/auth/captcha', '/api/v1/auth/register', '/api/v1/auth/login', '/api/v1/auth/recover'].includes(path) ? await captureOfflineState() : null;
+      if (controller.signal.aborted) throw controller.signal.reason;
       const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store', headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), signal: controller.signal });
       const payload = await response.json().catch(() => null);
       if (controller.signal.aborted) throw controller.signal.reason;
       if (!response.ok) {
         const error = new APIError(response.status, payload?.error || { message: '服务暂不可用，请重试。' });
         if (['AUTH_REQUIRED', 'SESSION_REVOKED'].includes(error.code) && generation === identityGeneration) {
-          csrfToken = '';
-          identityGeneration += 1;
-          for (const listener of expiredListeners) listener();
+          try { await forgetCapturedState(localState); } finally {
+            if (generation === identityGeneration) {
+              csrfToken = '';
+              identityGeneration += 1;
+              for (const listener of expiredListeners) listener();
+            }
+          }
         }
         throw error;
       }
       if (!payload || !Object.hasOwn(payload, 'data')) throw new APIError(502, { code: 'INVALID_RESPONSE', message: '服务响应无效，请重新连接。' });
+      if (path === '/api/v1/auth/logout') await forgetCapturedState(localState);
       if (typeof payload.data?.csrfToken === 'string' && generation === identityGeneration) setCsrfToken(payload.data.csrfToken);
       return payload.data as T;
     })()]);
@@ -81,7 +101,16 @@ export function fetchBootstrap(): Promise<Bootstrap> {
   // A new identity waits for the previous request to settle so a delayed Set-Cookie
   // cannot arrive after the new identity's bootstrap response.
   const previous = bootstrapFlight;
-  const request = () => api<Bootstrap>('/api/v1/auth/bootstrap');
+  const request = async () => {
+    const expectedGeneration = identityGeneration;
+    const captured = typeof indexedDB === 'undefined' ? null : await captureOfflineState();
+    if (expectedGeneration !== identityGeneration) throw new APIError(409, { code: 'IDENTITY_CHANGED', message: '账号状态已改变，请重新连接。' });
+    const data = await api<Bootstrap>('/api/v1/auth/bootstrap');
+    // API's identity guard prevents an older response from installing its CSRF.
+    // Compare the captured store revision as well: another tab may have signed in.
+    if (data.user === null && csrfToken === data.csrfToken) await forgetCapturedState(captured);
+    return data;
+  };
   const flight = { generation: identityGeneration, promise: previous ? previous.promise.catch(() => undefined).then(request) : request() };
   bootstrapFlight = flight;
   void flight.promise.finally(() => { if (bootstrapFlight === flight) bootstrapFlight = undefined; }).catch(() => undefined);

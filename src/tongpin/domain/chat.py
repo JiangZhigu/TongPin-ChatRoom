@@ -212,6 +212,7 @@ class ChatService:
                 "hasMore": len(rows) > limit,
                 "nextCursor": str(rows[limit - 1]["seq"]) if len(rows) > limit else None,
                 "lastSeq": str(meta["row"]["last_seq"]),
+                "accessKey": meta["accessKey"],
             }
 
     def send(self, actor, cid, data):

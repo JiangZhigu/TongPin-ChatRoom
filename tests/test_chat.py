@@ -184,6 +184,7 @@ async def test_sequences_history_read_monotonic_and_privacy_suppresses_peer_even
     for number in range(5):
         runtime.chat.send(one, conversation["id"], command(conversation, str(number)))
     latest = runtime.chat.history(two, conversation["id"], limit=2)
+    assert latest["accessKey"] == runtime.chat.get(two, conversation["id"])["accessKey"]
     assert [m["seq"] for m in latest["items"]] == ["4", "5"]
     older = runtime.chat.history(two, conversation["id"], before=latest["nextCursor"], limit=2)
     assert [m["seq"] for m in older["items"]] == ["2", "3"]
@@ -250,6 +251,8 @@ async def test_http_contract_authoritative_fields_utf8_limits_and_shared_socket_
         assert (await client.get('/api/v1/sync?after=-1')).status_code == 422
         assert (await client.get('/api/v1/friends')).status_code == 200
         assert (await client.get('/api/v1/notifications')).json()["data"]["items"]
+        history = (await client.get(f'/api/v1/conversations/{conversation["id"]}/messages')).json()["data"]
+        assert history["accessKey"] == conversation["accessKey"]
     with pytest.raises(ValidationError):
         MessageInput(clientMessageId="not-uuid", text="bad", accessKey="invalid")
     expect_error("VALIDATION_ERROR", lambda: runtime.chat.send(one, conversation["id"], command(conversation, "\u0000")))

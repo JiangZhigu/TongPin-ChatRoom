@@ -25,6 +25,17 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('per-account IndexedDB transaction and delivery boundary (in-memory IDB model)', () => {
+  it('ignores an old captured revision after account A changes to B and back to A', async () => {
+    const previous = (await readOfflineIdentity())!;
+    await rememberIdentity(two, previous);
+    await rememberIdentity(one, await readOfflineIdentity());
+    const current = (await readOfflineIdentity())!;
+    expect(current.revision).not.toBe(previous.revision);
+    await forgetIdentity(one.id, previous.revision);
+    expect((await readOfflineIdentity())?.revision).toBe(current.revision);
+    await forgetIdentity(one.id, current.revision);
+    expect(await readOfflineSnapshot()).toBeNull();
+  });
   it('retains committed Blob bytes and rejects a rolled-back write instead of claiming queued', async () => {
     const first = entry(); first.files = [{ id: 'local-file', blob: new Blob(['preserved 中文 bytes']), name: 'test.txt', mime: 'text/plain' }];
     await addQueuedMessage(first);

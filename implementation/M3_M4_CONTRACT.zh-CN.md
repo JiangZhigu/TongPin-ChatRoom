@@ -29,6 +29,8 @@
 
 HTTP `/conversations/:id/messages` 与 Socket.IO `message.send` 调用同一领域服务。HTTP 输入是 SendPayload；WS 多出 `v:1,conversationId,requestId`，成功 `{ok:true,requestId,data:SendResult}`；失败 `{ok:false,requestId,error}`。不能提交 senderId、createdAt、seq 或角色。UUID v4 clientMessageId 在重试时保持不变；payload 变化返回 409。
 
+历史页返回 `items,nextCursor,hasMore,lastSeq,accessKey`；序号及游标为十进制字符串。页面合并前需核对响应权限期与当前会话；晚返回的历史不能覆盖请求期间的新事件、提交结果或撤回占位。旧窗口与新页不连续时保留连续尾部，提供向前补拉，不能假装中间没有消息。
+
 快照 `/sync/snapshot` 的首批好友、会话、申请及 cursor 来自同一 SQLite 读事务；分页显示明确“加载更多”。会话按更新时间及 ID 游标分页；已发出的增量事件负责补充快照窗口内移位/新增会话。增量 `/sync?after=...&limit=100` 只读当前账号引用并再次物化权限；应用成功后才推进游标，410 时重做快照并保留本机队列。后台 durable job 仅发送 `sync.available` 提示，真实消息和权限始终从已提交数据物化。
 
 实时连接打开后再做快照/补拉；连接掉线时使用 HTTP 同步并明确降级状态。重连每次获取新的单次 WS ticket。在线数按用户多个连接聚合；最后连接断开后防抖，好友提醒默认关闭，隐身/屏蔽/非好友不会收到上线提醒。好友上线提醒是当前连接内短暂提示，不向离线接收者补发“最近上线时间”。

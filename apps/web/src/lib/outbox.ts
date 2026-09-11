@@ -131,21 +131,24 @@ export function readOfflineIdentity(): Promise<OfflineIdentity | null> {
   return transaction(['meta'], 'readonly', async (tx) => (await requested(tx.objectStore('meta').get('active-user'))) || null);
 }
 
-export async function rememberIdentity(user: UserSummary, previous: OfflineIdentity | null): Promise<void> {
-  await transaction(['meta'], 'readwrite', async (tx) => {
+export async function rememberIdentity(user: UserSummary, previous: OfflineIdentity | null): Promise<OfflineIdentity> {
+  const identity = await transaction(['meta'], 'readwrite', async (tx) => {
     const store = tx.objectStore('meta');
     const current: OfflineIdentity | undefined = await requested(store.get('active-user'));
     if (current?.revision !== previous?.revision && current?.user.id !== user.id) throw new APIError(0, { code: 'LOCAL_IDENTITY_CHANGED', message: '另一标签页已切换账号，请重新连接。' });
-    await requested(store.put({ key: 'active-user', user: { id: user.id, username: user.username, nickname: user.nickname }, revision: current?.user.id === user.id ? current.revision : crypto.randomUUID(), savedAt: Date.now() } satisfies OfflineIdentity));
+    const next: OfflineIdentity = { key: 'active-user', user: { id: user.id, username: user.username, nickname: user.nickname }, revision: current?.user.id === user.id ? current.revision : crypto.randomUUID(), savedAt: Date.now() };
+    await requested(store.put(next));
+    return next;
   });
   if (previous?.user.id !== user.id) announceLocal('identity', user.id);
+  return identity;
 }
 
-export async function forgetIdentity(userId: string): Promise<void> {
+export async function forgetIdentity(userId: string, expectedRevision?: string): Promise<void> {
   const forgotten = await transaction(['meta'], 'readwrite', async (tx) => {
     const store = tx.objectStore('meta');
     const current: OfflineIdentity | undefined = await requested(store.get('active-user'));
-    if (current?.user.id !== userId) return false;
+    if (current?.user.id !== userId || (expectedRevision !== undefined && current.revision !== expectedRevision)) return false;
     await requested(store.delete('active-user'));
     return true;
   });

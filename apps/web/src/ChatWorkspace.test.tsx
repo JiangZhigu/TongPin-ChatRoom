@@ -186,8 +186,11 @@ describe('M3-M4 contacts UI', () => {
     const candidate: Contact = { ...peer, relationship: 'none' }; const props = contactsProps();
     const fetchMock = vi.fn((url: string, _options?: RequestInit) => response(url.includes('/users/search') ? { items: [candidate], nextCursor: null } : {})); vi.stubGlobal('fetch', fetchMock);
     render(<ContactsPage {...props} initialTab="search" />);
-    fireEvent.change(screen.getByLabelText('搜索用户名或昵称'), { target: { value: '测试好友' } }); fireEvent.click(screen.getByRole('button', { name: '搜索' }));
+    expect(screen.getByLabelText('搜索用户名')).toHaveAttribute('placeholder', '输入至少3位用户名');
+    expect(screen.queryByText(/用户名或昵称/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('搜索用户名'), { target: { value: 'ui_peer' } }); fireEvent.click(screen.getByRole('button', { name: '搜索' }));
     fireEvent.click(await screen.findByRole('button', { name: '添加' }));
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/v1/users/search?q=ui_peer')).toBe(true);
     fireEvent.change(screen.getByLabelText('申请说明（选填）'), { target: { value: '一起交流吧' } }); fireEvent.click(screen.getByRole('button', { name: '发送申请' }));
     await screen.findByText('好友申请已提交，可在“好友申请”中查看结果。');
     const posted = fetchMock.mock.calls.find(([url]) => url === '/api/v1/friend-requests');

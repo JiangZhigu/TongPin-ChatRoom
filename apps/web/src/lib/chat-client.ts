@@ -6,7 +6,13 @@ import { addQueuedMessage, changeQueuedMessage, clearLocalUser, forgetIdentity, 
 const initialState = (): ChatState => ({ phase: 'connecting', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null });
 const permanentErrors = new Set(['VALIDATION_ERROR', 'PAYLOAD_TOO_LARGE', 'IDEMPOTENCY_CONFLICT', 'STALE_ACCESS', 'FRIENDSHIP_REQUIRED', 'CONTACT_UNAVAILABLE', 'RESOURCE_UNAVAILABLE', 'MUTED', 'CONVERSATION_FROZEN', 'FILE_REJECTED', 'OUTBOX_EXPIRED']);
 const bySequence = (one: Message, two: Message) => BigInt(one.seq) < BigInt(two.seq) ? -1 : BigInt(one.seq) > BigInt(two.seq) ? 1 : one.id.localeCompare(two.id);
-export function mergeMessages(existing: Message[], additions: Message[]): Message[] { return [...new Map([...existing, ...additions].map((message) => [message.id, message])).values()].sort(bySequence); }
+export function mergeMessages(existing: Message[], additions: Message[]): Message[] {
+  const rows = new Map([...existing, ...additions].map((message) => [message.id, message]));
+  return [...rows.values()].map((message) => {
+    const source = message.reply ? rows.get(message.reply.id) : undefined;
+    return source && source.status !== 'sent' ? { ...message, reply: { ...message.reply!, status: 'unavailable' as const, text: '', author: '' } } : message;
+  }).sort(bySequence);
+}
 function mergeItems<T extends { id: string }>(existing: T[], additions: T[]): T[] { return [...new Map([...existing, ...additions].map((item) => [item.id, item])).values()]; }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : '暂时无法完成操作，请重试。'; }
 export function validateMessageText(text: string, allowEmpty = false) {
@@ -39,6 +45,7 @@ export class ChatClient {
   private instanceId = crypto.randomUUID();
   private windows = new Map<string, WindowCache>();
   private localReady = false;
+  private localIdentityRevision: string | null = null;
   private enqueueFlight: Promise<void> = Promise.resolve();
   private reading = new Set<string>();
   private online = () => { if (this.running) void this.reconnect(); };
@@ -96,7 +103,7 @@ export class ChatClient {
   private expire() {
     if (!this.running) return;
     this.stop();
-    void forgetIdentity(this.user.id).catch(() => undefined);
+    if (this.localIdentityRevision) void forgetIdentity(this.user.id, this.localIdentityRevision).catch(() => undefined);
     this.set({ ...initialState(), phase: 'expired', error: '登录身份已改变，请重新登录后继续。' });
   }
 
@@ -110,14 +117,14 @@ export class ChatClient {
 
   private async verifyIdentity(epoch: number) {
     let previous = null;
-    try { previous = await readOfflineIdentity(); this.localReady = true; }
+    try { previous = await readOfflineIdentity(); this.localReady = true; if (!this.localIdentityRevision && previous?.user.id === this.user.id) this.localIdentityRevision = previous.revision; }
     catch (error) { this.localReady = false; if (this.current(epoch)) this.set({ error: localError(error).message }); }
     const data = await this.request<{ user: User }>('/auth/me');
     if (!this.current(epoch)) return;
     if (data.user.id !== this.user.id) { this.expire(); throw new APIError(401, { code: 'AUTH_REQUIRED', message: '浏览器已切换账号。' }); }
     this.user = data.user;
     if (this.localReady) {
-      try { await rememberIdentity(this.user, previous); }
+      try { this.localIdentityRevision = (await rememberIdentity(this.user, previous)).revision; }
       catch (error) {
         if (error instanceof APIError && error.code === 'LOCAL_IDENTITY_CHANGED') throw error;
         this.localReady = false; this.set({ error: localError(error).message });
@@ -259,7 +266,8 @@ export class ChatClient {
 
   private upsertConversation(conversation: Conversation) {
     const cached = this.windows.get(conversation.id);
-    if (cached && cached.accessKey !== conversation.accessKey) {
+    const previous = this.state.conversations.find((item) => item.id === conversation.id);
+    if ((cached && cached.accessKey !== conversation.accessKey) || (previous && previous.accessKey !== conversation.accessKey)) {
       this.windows.delete(conversation.id);
       if (this.state.selectedId === conversation.id) this.set({ messages: [], historyBefore: null });
     }
@@ -300,12 +308,27 @@ export class ChatClient {
     const cache = this.windows.get(id);
     this.set({ selectedId: id, messages: cache?.messages || (previous === id ? this.state.messages : []), historyBefore: cache?.before || null, historyLoading: true });
     if (!navigator.onLine || !this.initialized) { this.set({ historyLoading: false }); return; }
+    const startedConversation = this.state.conversations.find((item) => item.id === id);
+    const startedMessages = this.state.messages;
+    const startedById = new Map(startedMessages.map((item) => [item.id, item]));
+    const startedBefore = this.state.historyBefore;
     try {
       const [conversation, history] = await Promise.all([this.request<Conversation>('/conversations/' + encodeURIComponent(id)), this.request<HistoryPage>('/conversations/' + encodeURIComponent(id) + '/messages?limit=50')]);
       if (!this.current(epoch) || this.selectionGeneration !== selection) return;
-      const matching = cache?.accessKey === conversation.accessKey;
-      this.upsertConversation(conversation);
-      this.set({ messages: mergeMessages(matching ? cache.messages : [], history.items), historyBefore: matching ? cache.before : history.nextCursor, historyLoading: false });
+      const currentConversation = this.state.conversations.find((item) => item.id === id);
+      const newerConversation = currentConversation !== startedConversation ? currentConversation : null;
+      if (history.accessKey !== conversation.accessKey || (newerConversation && newerConversation.accessKey !== history.accessKey)) throw new APIError(409, { code: 'STALE_HISTORY', message: '会话权限已改变，请重新加载当前可访问的历史。' });
+      // Only rows changed since this request began override its fresh history.
+      // This preserves new events/ACKs and tombstones without preserving stale cache bodies.
+      const duringRequest = this.state.messages.filter((item) => startedById.get(item.id) !== item);
+      const matching = (cache?.accessKey || startedConversation?.accessKey) === history.accessKey;
+      let combined = mergeMessages(mergeMessages(matching ? startedMessages : [], history.items), duringRequest);
+      let before = matching && startedMessages.length && (!history.items.length || BigInt(startedMessages[0].seq) <= BigInt(history.items[0].seq)) ? startedBefore : history.nextCursor;
+      let contiguousStart = 0;
+      for (let i = 1; i < combined.length; i++) if (BigInt(combined[i].seq) !== BigInt(combined[i - 1].seq) + 1n) contiguousStart = i;
+      if (contiguousStart) { combined = combined.slice(contiguousStart); before = combined[0].seq; }
+      if (!newerConversation) this.upsertConversation(conversation);
+      this.set({ messages: combined, historyBefore: before, historyLoading: false });
       this.cacheWindow(id);
     } catch (error) {
       if (!this.current(epoch) || this.selectionGeneration !== selection) return;
@@ -328,10 +351,12 @@ export class ChatClient {
     const cid = this.state.selectedId; const before = this.state.historyBefore;
     if (!cid || !before || this.state.historyLoading) return;
     const epoch = this.generation; const selection = this.selectionGeneration;
+    const accessKey = this.state.conversations.find((item) => item.id === cid)?.accessKey;
     this.set({ historyLoading: true });
     try {
       const history = await this.request<HistoryPage>('/conversations/' + encodeURIComponent(cid) + '/messages?limit=50&beforeSeq=' + encodeURIComponent(before));
       if (!this.current(epoch) || selection !== this.selectionGeneration) return;
+      if (accessKey !== history.accessKey || this.state.conversations.find((item) => item.id === cid)?.accessKey !== accessKey) throw new APIError(409, { code: 'STALE_HISTORY', message: '会话权限已改变，请重新加载历史。' });
       this.set({ messages: mergeMessages(history.items, this.state.messages), historyBefore: history.nextCursor, historyLoading: false });
       this.cacheWindow(cid);
     } catch (error) { if (this.current(epoch) && selection === this.selectionGeneration) this.set({ historyLoading: false, error: errorMessage(error) }); throw error; }
@@ -440,8 +465,6 @@ export class ChatClient {
     try {
       await api('/api/v1/auth/logout', { method: 'POST', body: {} });
       if (choice === 'delete') await clearLocalUser(this.user.id);
-      await forgetIdentity(this.user.id);
-      if (typeof BroadcastChannel !== 'undefined') { const channel = new BroadcastChannel('tongpin-state-v1'); channel.postMessage({ type: 'identity.changed', userId: null }); channel.close(); }
       this.set({ ...initialState(), phase: 'expired' });
     } catch (error) { void this.start(); throw error; }
   }

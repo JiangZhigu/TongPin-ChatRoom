@@ -3,11 +3,12 @@ import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatClient, mergeMessages, validateMessageText } from './chat-client';
 import { setCsrfToken, type User } from './api';
-import { openLocalDatabase, readQueue, readOfflineIdentity } from './outbox';
-import type { Conversation, Message } from './chat-types';
+import { openLocalDatabase, readQueue, readOfflineIdentity, rememberIdentity } from './outbox';
+import type { Conversation, Message, SyncEvent } from './chat-types';
 
+const socketEvents = vi.hoisted(() => new Map<string, () => void>());
 vi.mock('socket.io-client', () => ({ io: () => {
-  const events = new Map<string, () => void>();
+  const events = socketEvents;
   return { connected: false, on: (key: string, action: () => void) => events.set(key, action), connect: () => queueMicrotask(() => events.get('connect_error')?.()), disconnect: () => undefined, removeAllListeners: () => events.clear() };
 } }));
 const user: User = { id: 'u_client', username: 'client_user', nickname: '甲', bio: '', siteRole: 'user', status: 'active', createdAt: 1, preferences: { invisible: false, readReceipts: true, doNotDisturb: false } };
@@ -17,11 +18,12 @@ function message(id: string, seq: string, text = id): Message { return { id, seq
 const clients: ChatClient[] = [];
 let connected: boolean; let conversation: Conversation; let sent: unknown[]; let identity: User; let messages: Message[];
 let failSend: boolean;
+let syncEvents: SyncEvent[];
 function result(data: unknown, status = 200) { return { ok: status < 400, status, json: async () => status < 400 ? { data } : data }; }
 beforeEach(async () => {
   const windowMock = Object.assign(new EventTarget(), { location: { origin: 'http://localhost' } });
   vi.stubGlobal('window', windowMock); vi.stubGlobal('BroadcastChannel', undefined);
-  connected = true; conversation = structuredClone(originalConversation); identity = user; sent = []; messages = []; failSend = false;
+  connected = true; conversation = structuredClone(originalConversation); identity = user; sent = []; messages = []; failSend = false; syncEvents = []; socketEvents.clear();
   vi.stubGlobal('navigator', { get onLine() { return connected; } });
   vi.stubGlobal('document', { visibilityState: 'visible', hasFocus: () => true });
   setCsrfToken('synthetic-csrf');
@@ -31,7 +33,12 @@ beforeEach(async () => {
     if (url.endsWith('/auth/me')) return result({ user: identity });
     if (url.endsWith('/auth/ws-ticket')) return result({ ticket: 'synthetic-ticket' });
     if (url.endsWith('/sync/snapshot')) return result({ cursor: '0', contacts: { items: [], nextCursor: null }, conversations: { items: [conversation], nextCursor: null }, requests: { items: [], nextCursor: null }, policy: {} });
-    if (url.includes('/sync?')) return result({ items: [], cursor: '0', highWatermark: '0', hasMore: false });
+    if (url.includes('/sync?')) {
+      const after = new URL(url, 'http://localhost').searchParams.get('after') || '0';
+      const items = syncEvents.filter((event) => BigInt(event.cursor) > BigInt(after));
+      const cursor = syncEvents.at(-1)?.cursor || after;
+      return result({ items, cursor, highWatermark: cursor, hasMore: false });
+    }
     if (url.includes('/notifications?')) return result({ items: [], nextCursor: null, unreadCount: 0 });
     if (url.endsWith('/conversations/dm_client')) return result(conversation);
     if (url.includes('/conversations/dm_client/messages')) {
@@ -40,7 +47,7 @@ beforeEach(async () => {
         if (failSend) return result({ error: { code: 'TEMPORARY_UNAVAILABLE', message: 'Result not yet known' } }, 503);
         const accepted = { ...message('m_sent', '1', command.text), clientMessageId: command.clientMessageId }; messages = [accepted]; return result({ message: accepted, duplicate: false }, 201);
       }
-      return result({ items: messages, nextCursor: null, hasMore: false, lastSeq: conversation.lastSeq });
+      return result({ items: messages, nextCursor: null, hasMore: false, lastSeq: conversation.lastSeq, accessKey: conversation.accessKey });
     }
     if (url.endsWith('/auth/logout')) return result({ loggedOut: true });
     if (url.endsWith('/read')) return result({});
@@ -50,6 +57,16 @@ beforeEach(async () => {
 afterEach(async () => { for (const client of clients.splice(0)) client.stop(); await new Promise((resolve) => setTimeout(resolve, 5)); vi.restoreAllMocks(); vi.unstubAllGlobals(); setCsrfToken(''); });
 async function client() { const value = new ChatClient(user); clients.push(value); await value.start(); return value; }
 async function until(condition: () => boolean | Promise<boolean>) { for (let attempt = 0; attempt < 80; attempt++) { if (await condition()) return; await new Promise((resolve) => setTimeout(resolve, 10)); } throw new Error('Expected client state did not settle'); }
+function event(cursor: string, changes: Partial<SyncEvent>): SyncEvent { return { v: 1, eventId: cursor, cursor, type: 'message.created', entityRef: 'message', occurredAt: 1, conversationId: conversation.id, ...changes }; }
+function delayHistory() {
+  const fetchMock = vi.mocked(fetch); const original = fetchMock.getMockImplementation()!;
+  let finish!: (value: unknown) => void; let entered = false;
+  fetchMock.mockImplementation((url, options) => {
+    if (!entered && String(url).includes('/conversations/dm_client/messages') && options?.method !== 'POST') { entered = true; return new Promise((resolve) => { finish = resolve as (value: unknown) => void; }); }
+    return original(url, options);
+  });
+  return { ready: () => entered, finish: (items: Message[], accessKey = 'relation:1', before: string | null = null) => finish(result({ items, nextCursor: before, hasMore: before !== null, lastSeq: items.at(-1)?.seq || '0', accessKey })) };
+}
 
 describe('chat synchronization and outbox lifecycle', () => {
   it('merges duplicate updates using full decimal sequence precision and validates Unicode size', () => {
@@ -102,5 +119,65 @@ describe('chat synchronization and outbox lifecycle', () => {
     connected = false; window.dispatchEvent(new Event('offline')); messages = [{ ...messages[0], status: 'recalled', text: '' }];
     connected = true; await current.refresh();
     expect(current.getSnapshot().messages).toMatchObject([{ status: 'recalled', text: '' }]);
+  });
+
+  it('retains a newly synchronized message after a delayed history page and an empty subsequent sync', async () => {
+    const current = await client(); const delayed = delayHistory();
+    const selection = current.selectConversation(conversation.id); await until(delayed.ready);
+    const arriving = message('m11', '11', 'arrived while loading');
+    syncEvents = [event('11', { message: arriving, conversation: { ...conversation, lastSeq: '11' } })];
+    socketEvents.get('sync.available')?.(); await until(() => current.getSnapshot().messages.some((row) => row.id === 'm11'));
+    delayed.finish(Array.from({ length: 10 }, (_, i) => message('m' + (i + 1), String(i + 1)))); await selection;
+    socketEvents.get('sync.available')?.(); await until(() => vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/sync?after=11')));
+    expect(current.getSnapshot().messages.map((row) => row.seq)).toEqual(Array.from({ length: 11 }, (_, i) => String(i + 1)));
+    expect(current.getSnapshot().conversations[0].lastSeq).toBe('11');
+  });
+
+  it('retains a committed own-send result while the initial history response is delayed', async () => {
+    const current = await client(); const delayed = delayHistory(); const selection = current.selectConversation(conversation.id); await until(delayed.ready);
+    await current.queue(conversation.id, 'accepted while loading'); await until(() => current.getSnapshot().messages.some((row) => row.id === 'm_sent'));
+    delayed.finish([]); await selection;
+    expect(current.getSnapshot().messages).toMatchObject([{ id: 'm_sent', text: 'accepted while loading' }]);
+    expect(await readQueue(user.id)).toEqual([]);
+  });
+
+  it('keeps a recall and redacts a quote arriving in an older history response', async () => {
+    const current = await client(); const delayed = delayHistory(); const selection = current.selectConversation(conversation.id); await until(delayed.ready);
+    syncEvents = [event('1', { type: 'message.updated', message: { ...message('first', '1'), status: 'recalled', text: '' } })];
+    socketEvents.get('sync.available')?.(); await until(() => current.getSnapshot().messages[0]?.status === 'recalled');
+    delayed.finish([message('first', '1', 'old source'), { ...message('quote', '2'), replyToMessageId: 'first', reply: { id: 'first', status: 'available', text: 'old source', author: 'old author' } }]); await selection;
+    expect(current.getSnapshot().messages[0]).toMatchObject({ status: 'recalled', text: '' });
+    expect(current.getSnapshot().messages[1].reply).toEqual({ id: 'first', status: 'unavailable', text: '', author: '' });
+  });
+
+  it('rejects a late page from a previous permission period instead of rendering its bodies', async () => {
+    const current = await client(); const delayed = delayHistory(); const selection = current.selectConversation(conversation.id);
+    const rejected = expect(selection).rejects.toMatchObject({ code: 'STALE_HISTORY' }); await until(delayed.ready);
+    syncEvents = [event('1', { type: 'conversation.updated', conversation: { ...conversation, accessKey: 'relation:2' } })];
+    socketEvents.get('sync.available')?.(); await until(() => current.getSnapshot().conversations[0].accessKey === 'relation:2');
+    delayed.finish([message('old-period', '1', 'forbidden after rejoin')]); await rejected;
+    expect(current.getSnapshot().messages).toEqual([]);
+  });
+
+  it('offers older pagination at a gap between an old window and newer history', async () => {
+    messages = [message('old', '1')]; const current = await client(); await current.selectConversation(conversation.id);
+    messages = [message('new', '10'), message('latest', '11')]; await current.selectConversation(conversation.id);
+    expect(current.getSnapshot().messages.map((row) => row.seq)).toEqual(['10', '11']); expect(current.getSnapshot().historyBefore).toBe('10');
+  });
+
+  it('does not clear a newer A identity when an old A client discovers a changed cookie', async () => {
+    const current = await client(); await current.queue(conversation.id, 'settle initial delivery'); await until(async () => sent.length === 1 && (await readQueue(user.id)).length === 0);
+    const captured = (await readOfflineIdentity())!;
+    const fetchMock = vi.mocked(fetch); const original = fetchMock.getMockImplementation()!;
+    let finish!: (value: Response) => void; let entered = false;
+    fetchMock.mockImplementation((url, options) => {
+      if (String(url).endsWith('/auth/me')) { entered = true; return new Promise((resolve) => { finish = resolve; }); }
+      return original(url, options);
+    });
+    const refresh = current.refresh(); const rejected = expect(refresh).rejects.toMatchObject({ code: 'AUTH_REQUIRED' }); await until(() => entered);
+    const other = { ...user, id: 'u_other' }; await rememberIdentity(other, captured); await rememberIdentity(user, await readOfflineIdentity());
+    const renewed = (await readOfflineIdentity())!; expect(renewed.revision).not.toBe(captured.revision);
+    finish(result({ user: other }) as Response); await rejected;
+    expect((await readOfflineIdentity())?.revision).toBe(renewed.revision);
   });
 });
