@@ -226,7 +226,18 @@ class LifecycleService:
                     "DELETE FROM reauth_tokens WHERE session_id IN(SELECT id FROM sessions WHERE user_id=?)",
                     (uid,),
                 )
-                conn.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
+                # Pending previews no longer have an actor who can submit them.
+                # Completed command receipts retain only a non-authenticating
+                # session reference; device data and the old credential are erased.
+                conn.execute("DELETE FROM admin_previews WHERE actor_id=?", (uid,))
+                conn.execute(
+                    "UPDATE sessions SET token_hash='erased:'||id,device='',second_factor_at=NULL,revoked_at=COALESCE(revoked_at,?),expires_at=?,last_seen_at=0,idle_ms=0 WHERE user_id=?",
+                    (timestamp, timestamp, uid),
+                )
+                conn.execute(
+                    "DELETE FROM sessions WHERE user_id=? AND NOT EXISTS(SELECT 1 FROM admin_commands c WHERE c.session_id=sessions.id)",
+                    (uid,),
+                )
                 conn.execute("DELETE FROM recovery_codes WHERE user_id=?", (uid,))
                 conn.execute("DELETE FROM reset_credentials WHERE user_id=?", (uid,))
                 conn.execute("DELETE FROM bookmarks WHERE user_id=?", (uid,))

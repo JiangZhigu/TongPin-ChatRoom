@@ -178,13 +178,15 @@ class GroupsAdmin:
         ):
             raise conflict("会话冻结状态已变化。")
         snap = {key: row[key] for key in ("id", "status", "owner_id", "write_version")}
-        if not member:
+        if not member and not invite:
             snap.update(
                 roleVersion=row["role_version"], governanceVersion=row["admin_governance_version"]
             )
         if member:
             snap["member"] = dict(member)
         if invite:
+            # Another invitation in this same batch must not invalidate this
+            # target. Its own row and group access/owner state remain guarded.
             snap["invite"] = {key: value for key, value in dict(invite).items() if key != "token_digest"}
         if action == "group.owner.change":
             new_owner = conn.execute(
