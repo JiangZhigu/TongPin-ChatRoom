@@ -12,6 +12,7 @@ from tongpin.domain.auth import AuthService
 from tongpin.domain.chat import ChatService
 from tongpin.domain.contacts import ContactService
 from tongpin.domain.events import EventService
+from tongpin.domain.groups import GroupService
 from tongpin.domain.policy import PolicyService
 from tongpin.infra.cache import BoundedCache
 from tongpin.infra.db import Database
@@ -52,8 +53,10 @@ class Runtime:
         self.events = EventService(self)
         self.contacts = ContactService(self)
         self.chat = ChatService(self)
+        self.groups = GroupService(self)
         self.files = None
         self.runner.handlers["events.dispatch"] = self._dispatch_job
+        self.runner.handlers["groups.expire"] = self.groups.expire_job
 
     def initialize(self):
         self.paths.prepare()

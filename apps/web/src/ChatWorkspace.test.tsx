@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
@@ -72,6 +73,91 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(() => response({ items: [], nextCursor: null })));
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+describe('M5-UI revoked draft persistence race', () => {
+  it('preserves the actual IndexedDB draft when scrolling schedules a save during asynchronous revoked selection cleanup', async () => {
+    const storage = await vi.importActual<typeof import('./lib/outbox')>('./lib/outbox');
+    await storage.rememberIdentity(user, await storage.readOfflineIdentity());
+    await storage.saveLocalDraft(user.id, 'dm-a', '');
+    chat.getDraft.mockImplementation((id) => storage.readDraft(user.id, id));
+    chat.saveDraft.mockImplementation((id, text, position) => storage.saveLocalDraft(user.id, id, text, position as { scrollTop?: number; anchorId?: string }));
+    const group = { ...conversation(), kind: 'group' as const, peer: null, title: '解散草稿测试群' }; chat.state!.conversations = [group];
+    vi.stubGlobal('fetch', vi.fn(() => response({ conversation: group, version: 1, settings: { announcement: '', announcementPinned: false, reviewRequired: true, inviteRole: 'managers', everyoneMuted: false, slowSeconds: 0 }, capabilities: { canEdit: false, canInvite: false, canReview: false, canAssignRoles: false, canTransfer: false, canDissolve: false, canLeave: true }, transfer: null })));
+    showWorkspace(); await openConversation(group.title);
+    const text = '解散后保留的草稿：真实存储时序测试'; fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: text } });
+    // Establish the same persisted precondition as the real browser report.
+    await waitFor(async () => expect((await storage.readDraft(user.id, 'dm-a'))?.text).toBe(text));
+    fireEvent.click(screen.getByRole('button', { name: '群详情与管理' })); await screen.findByText('你当前没有编辑群资料的权限。');
+    const gate = deferred<void>(); let saving = false; const committed: Promise<void>[] = [];
+    chat.saveDraft.mockImplementation((id, value, position) => { const write = (async () => { saving = true; await gate.promise; await storage.saveLocalDraft(user.id, id, value, position as { scrollTop?: number; anchorId?: string }); })(); committed.push(write); return write; });
+    await act(async () => publish({ conversations: [], selectedId: null, messages: [], historyLoading: false })); await waitFor(() => expect(saving).toBe(true));
+    // Clearing messages/closing details can produce this scroll after the
+    // navigation save already cleared its first debounce timer.
+    fireEvent.scroll(screen.getByLabelText('消息记录'));
+    await act(async () => gate.resolve()); await screen.findByRole('heading', { name: '欢迎来到同频' });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 420)); await Promise.all(committed); });
+    expect((await storage.readDraft(user.id, 'dm-a'))?.text).toBe(text);
+    expect(await storage.localSummary(user.id)).toMatchObject({ drafts: 1 });
+  });
+  it('does not restore a submitted draft when an older scroll timer fires after queue commit', async () => {
+    const storage = await vi.importActual<typeof import('./lib/outbox')>('./lib/outbox');
+    await storage.rememberIdentity(user, await storage.readOfflineIdentity()); await storage.saveLocalDraft(user.id, 'dm-a', '');
+    chat.getDraft.mockImplementation((id) => storage.readDraft(user.id, id)); const committed: Promise<void>[] = [];
+    chat.saveDraft.mockImplementation((id, text, position) => { const write = storage.saveLocalDraft(user.id, id, text, position as { scrollTop?: number; anchorId?: string }); committed.push(write); return write; });
+    showWorkspace(); await openConversation(); const text = '已发送后不要复活为草稿'; fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: text } });
+    await waitFor(async () => expect((await storage.readDraft(user.id, 'dm-a'))?.text).toBe(text));
+    const queueCommit = deferred<void>(); chat.queue.mockImplementation(() => queueCommit.promise); fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.scroll(screen.getByLabelText('消息记录')); await act(async () => queueCommit.resolve()); await waitFor(() => expect(screen.getByLabelText('消息内容')).toHaveValue(''));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 420)); await Promise.all(committed); });
+    expect((await storage.readDraft(user.id, 'dm-a'))?.text).toBe(''); expect(await storage.localSummary(user.id)).toMatchObject({ drafts: 0 });
+  });
+});
+
+describe('M5-UI revoked conversation reconciliation', () => {
+  it('saves the current draft, closes details, and returns to the list after confirmed access revocation', async () => {
+    chat.state!.conversations = [{ ...conversation(), kind: 'group', peer: null, title: '被移出的群' }];
+    vi.stubGlobal('fetch', vi.fn(() => response({ conversation: chat.state!.conversations[0], version: 1, settings: { announcement: '', announcementPinned: false, reviewRequired: true, inviteRole: 'managers', everyoneMuted: false, slowSeconds: 0 }, capabilities: { canEdit: false, canInvite: false, canReview: false, canAssignRoles: false, canTransfer: false, canDissolve: false, canLeave: true }, transfer: null })));
+    showWorkspace(); await openConversation('被移出的群'); const editor = screen.getByLabelText('消息内容'); fireEvent.change(editor, { target: { value: '移出时尚未发送的草稿' } });
+    fireEvent.click(screen.getByRole('button', { name: '群详情与管理' })); await screen.findByText('你当前没有编辑群资料的权限。');
+    const commit = deferred<void>(); chat.saveDraft.mockImplementation(() => commit.promise);
+    await act(async () => publish({ conversations: [], selectedId: null, messages: [], historyLoading: false }));
+    await waitFor(() => expect(chat.saveDraft).toHaveBeenCalledWith('dm-a', '移出时尚未发送的草稿', expect.anything())); expect(screen.queryByRole('dialog', { name: '群详情与管理' })).not.toBeInTheDocument(); expect(editor).toHaveValue('移出时尚未发送的草稿'); expect(screen.getByRole('heading', { name: '会话访问已失效' })).toBeInTheDocument();
+    await act(async () => commit.resolve()); await screen.findByRole('heading', { name: '欢迎来到同频' }); expect(screen.getByText('“被移出的群”的访问权限已失效，已返回会话列表。本机草稿已保留。')).toBeInTheDocument(); expect(screen.queryByLabelText('消息内容')).not.toBeInTheDocument(); expect(chat.queue).not.toHaveBeenCalled();
+  });
+  it('retains the draft with an explicit retry when saving after revocation fails', async () => {
+    showWorkspace(); await openConversation(); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '必须保留的草稿' } }); chat.saveDraft.mockRejectedValue(new Error('本机存储写入失败'));
+    await act(async () => publish({ conversations: [], selectedId: null, messages: [], historyLoading: false }));
+    const retry = await screen.findByRole('button', { name: '重试保存草稿并返回' }); expect(retry).toBeEnabled(); expect(screen.getByLabelText('消息内容')).toHaveValue('必须保留的草稿'); expect(screen.getByText('本机存储写入失败')).toBeInTheDocument();
+    chat.saveDraft.mockResolvedValue(); fireEvent.click(retry); await screen.findByRole('heading', { name: '欢迎来到同频' }); expect(chat.saveDraft).toHaveBeenLastCalledWith('dm-a', '必须保留的草稿', expect.anything());
+  });
+  it('does not close a confirmed chat temporarily absent from a refreshing list while core still selects it', async () => {
+    showWorkspace(); await openConversation(); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '正常刷新时的草稿' } });
+    await act(async () => publish({ conversations: [], selectedId: 'dm-a', historyLoading: true }));
+    expect(screen.getByLabelText('消息内容')).toHaveValue('正常刷新时的草稿'); expect(chat.select).not.toHaveBeenCalledWith(null); expect(screen.queryByText(/访问权限已失效/)).not.toBeInTheDocument();
+    await act(async () => publish({ conversations: [conversation()], historyLoading: false })); expect(screen.getByLabelText('消息内容')).toBeEnabled();
+  });
+  it('does not interpret an uncompleted first selection missing from the list as revoked', async () => {
+    const loading = deferred<void>(); chat.select.mockImplementation(async (id) => { await loading.promise; publish({ conversations: [conversation()], selectedId: id, historyLoading: false }); });
+    showWorkspace(); fireEvent.click(within(screen.getByLabelText('会话列表')).getByRole('button', { name: /测试好友/ })); await waitFor(() => expect(chat.select).toHaveBeenCalledWith('dm-a'));
+    await act(async () => publish({ conversations: [], selectedId: null, historyLoading: true })); expect(chat.select).not.toHaveBeenCalledWith(null); expect(screen.queryByText(/访问权限已失效/)).not.toBeInTheDocument();
+    await act(async () => loading.resolve()); await waitFor(() => expect(screen.getByLabelText('消息内容')).toBeEnabled()); expect(chat.select).not.toHaveBeenCalledWith(null);
+  });
+});
+
+describe('M5-UI workspace integration', () => {
+  it('offers both group entries and does not queue or clear an existing draft while opening creation', async () => {
+    showWorkspace(); await openConversation(); const editor = screen.getByLabelText('消息内容'); fireEvent.change(editor, { target: { value: '打开群功能前的草稿' } });
+    const list = within(screen.getByLabelText('会话列表')); expect(list.getByRole('button', { name: '加入群聊' })).toBeEnabled(); fireEvent.click(list.getByRole('button', { name: '创建群聊' }));
+    expect(screen.getByRole('dialog', { name: '创建群聊' })).toBeInTheDocument(); expect(editor).toHaveValue('打开群功能前的草稿'); expect(chat.queue).not.toHaveBeenCalled(); fireEvent(screen.getByRole('dialog', { name: '创建群聊' }), new Event('cancel', { cancelable: true })); expect(editor).toHaveValue('打开群功能前的草稿');
+  });
+  it('routes group settings to actual management without marking group messages as globally read', async () => {
+    chat.state!.conversations = [{ ...conversation(), kind: 'group', peer: null, title: '真实群入口', role: 'member', memberCount: 3 }];
+    chat.histories['dm-a'] = [{ ...message(), senderId: user.id, sender: user }];
+    vi.stubGlobal('fetch', vi.fn((url: string) => url === '/api/v1/groups/dm-a' ? response({ conversation: chat.state!.conversations[0], version: 1, settings: { announcement: '', announcementPinned: false, reviewRequired: true, inviteRole: 'managers', everyoneMuted: false, slowSeconds: 0 }, capabilities: { canEdit: false, canInvite: false, canReview: false, canAssignRoles: false, canTransfer: false, canDissolve: false, canLeave: true }, transfer: null }) : response({ items: [], nextCursor: null })));
+    showWorkspace(); await openConversation('真实群入口'); expect(screen.getByText('已发送')).toBeInTheDocument(); expect(screen.queryByText('已读')).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: '群详情与管理' }));
+    const panel = await screen.findByRole('dialog', { name: '群详情与管理' }); await within(panel).findByText('你当前没有编辑群资料的权限。'); expect(within(panel).getByRole('checkbox', { name: '置顶会话' })).toBeEnabled(); expect(chat.read).not.toHaveBeenCalled();
+  });
+});
 
 describe('M3-M4 chat transaction and draft UI', () => {
   it('waits for the queue transaction and preserves edits made while saving', async () => {

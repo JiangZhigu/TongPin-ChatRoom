@@ -257,6 +257,27 @@ class ChatService:
                     "duplicate": True,
                 }
             else:
+                if (
+                    access["row"]["kind"] == "group"
+                    and access["role"] == "member"
+                    and access["row"]["slow_seconds"]
+                ):
+                    last = conn.execute(
+                        "SELECT MAX(created_at) FROM messages WHERE conversation_id=? AND sender_id=?",
+                        (cid, actor.id),
+                    ).fetchone()[0]
+                    delay = (
+                        (last + access["row"]["slow_seconds"] * 1000 - now_ms())
+                        if last is not None
+                        else 0
+                    )
+                    if delay > 0:
+                        raise APIError(
+                            "SLOW_MODE",
+                            "群聊启用了慢速模式，请稍后重试这条消息。",
+                            429,
+                            retry_after_ms=delay,
+                        )
                 if data.replyToMessageId:
                     original, _ = self.runtime.access.message(conn, actor.id, data.replyToMessageId)
                     if original["conversation_id"] != cid or original["status"] != "sent":

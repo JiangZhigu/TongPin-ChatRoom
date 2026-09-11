@@ -282,6 +282,7 @@ export class ChatClient {
 
   private async applyEvent(event: SyncEvent, epoch: number) {
     if (event.type === 'access.revoked' && event.conversationId) { this.revokeConversation(event.conversationId); return; }
+    const refreshHistory = event.conversation && this.state.selectedId === event.conversation.id && this.state.conversations.some((item) => item.id === event.conversation!.id && item.accessKey !== event.conversation!.accessKey);
     if (event.conversation) this.upsertConversation(event.conversation);
     if (event.message) {
       const message = event.message;
@@ -298,6 +299,9 @@ export class ChatClient {
         await this.loadLocal(epoch); this.announce();
       }
     }
+    // Permission changes invalidate the old window, including write-only changes
+    // such as mute/role updates. Reload the authorized history for the open chat.
+    if (refreshHistory && this.current(epoch) && this.state.selectedId === event.conversation!.id) await this.selectConversation(event.conversation!.id);
   }
 
   async selectConversation(id: string | null): Promise<void> {

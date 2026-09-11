@@ -7,6 +7,8 @@ import type { AuthResult, BootstrapView, UserView } from './auth-types';
 import { AuthPage } from './AuthPage';
 import { ChatWorkspace } from './ChatWorkspace';
 import { OfflineRecoveryPage } from './OfflineRecoveryPage';
+import { GroupInviteEntry } from './GroupInviteEntry';
+import { dismissInvitation, readInvitation } from './lib/invitation';
 import { EmptyState } from './components/EmptyState';
 
 const DevelopmentPreview = import.meta.env.DEV ? lazy(() => import('./DevelopmentPreview')) : null;
@@ -60,6 +62,16 @@ export function App() {
 function AccountApplication({ admin }: { admin: boolean }) {
   const [bootstrap, setBootstrap] = useState<BootstrapView | null>(null); const [error, setError] = useState('');
   const [showLocalContent, setShowLocalContent] = useState(false);
+  const [invitationToken, setInvitationToken] = useState(readInvitation); const [invitationOpen, setInvitationOpen] = useState(true);
+  function closeInvitation() { dismissInvitation(); setInvitationToken(null); setInvitationOpen(false); }
+  useEffect(() => {
+    const captureInvitation = () => {
+      if (!window.location.hash.startsWith('#invite=')) return;
+      setInvitationToken(readInvitation()); setInvitationOpen(true);
+    };
+    window.addEventListener('hashchange', captureInvitation);
+    return () => window.removeEventListener('hashchange', captureInvitation);
+  }, []);
   const generation = useRef(0); const mounted = useRef(false); const expiryRefreshPending = useRef(false);
   const reloadBootstrap = useCallback(() => {
     const requestGeneration = ++generation.current;
@@ -97,8 +109,8 @@ function AccountApplication({ admin }: { admin: boolean }) {
     return <main className="boot-screen"><Brand /><EmptyState title={error ? '暂时无法连接服务' : '正在连接同频'} description={error || '正在确认服务与账号状态。'} action={error ? <><button className="primary-button" onClick={reloadBootstrap}><RefreshCw size={16} />重新连接</button><button className="text-button" onClick={() => setShowLocalContent(true)}>查看本机待发与草稿</button></> : undefined} /></main>;
   }
   if (!bootstrap.accountsEnabled) return <WelcomePage />;
-  if (!bootstrap.user) return <AuthPage bootstrap={bootstrap} admin={admin} onAuthenticated={authenticated} />;
+  if (!bootstrap.user) return <><AuthPage bootstrap={bootstrap} admin={admin} onAuthenticated={authenticated} />{invitationToken && (invitationOpen ? <GroupInviteEntry key={invitationToken} token={invitationToken} userId={null} onClose={closeInvitation} onSignIn={() => setInvitationOpen(false)} onOpenGroup={async () => {}} /> : <button className="invitation-resume-button secondary-button" onClick={() => setInvitationOpen(true)}>继续查看群邀请</button>)}</>;
   if (admin) return <AdminEntry onSignedOut={signedOut} />;
   const user = bootstrap.user;
-  return <ChatWorkspace key={user.id} user={user} onUserChange={userChanged} onSignedOut={signedOut} />;
+  return <ChatWorkspace key={user.id} user={user} onUserChange={userChanged} onSignedOut={signedOut} invitationToken={invitationToken} onInvitationDismiss={closeInvitation} />;
 }

@@ -72,9 +72,20 @@ class EventService:
                 event["conversation"] = self.runtime.chat.conversation_view(
                     conn, actor.id, row["conversation_id"]
                 )
+                if row['kind'] == 'access.revoked':
+                    # The recipient has a new valid membership now; an old revocation
+                    # is a synchronization hint, not authority to close that new period.
+                    event['type'] = 'conversation.updated'
                 if row["kind"].startswith("message."):
-                    message, _ = self.runtime.access.message(conn, actor.id, row["entity_ref"])
-                    event["message"] = self.runtime.chat.message_view(conn, actor.id, message)
+                    try:
+                        message, _ = self.runtime.access.message(conn, actor.id, row["entity_ref"])
+                        event["message"] = self.runtime.chat.message_view(conn, actor.id, message)
+                    except APIError as error:
+                        if error.status not in (403, 404):
+                            raise
+                        # Rejoining may retain events from an older membership period.
+                        # An inaccessible old message must not revoke the current group.
+                        event["type"] = "message.unavailable"
             except APIError as error:
                 if error.status not in (403, 404):
                     raise
@@ -156,6 +167,46 @@ class EventService:
                             if row["kind"] == "friend.requested"
                             else "好友申请已通过"
                         )
+                elif row["kind"].startswith("group."):
+                    labels = {
+                        "group.invited": "收到群聊邀请，请查看群邀请",
+                        "group.application": "收到新的入群申请",
+                        "group.application.updated": "入群申请状态已更新",
+                        "group.transfer": "收到群主转让，请打开群详情确认",
+                        "group.transfer.updated": "群主转让状态已更新",
+                    }
+                    item["text"] = labels.get(row["kind"], "群聊状态已更新")
+                    cid = None
+                    if row["kind"] == "group.invited":
+                        ref = conn.execute(
+                            "SELECT conversation_id FROM group_invites WHERE id=? AND target_id=?",
+                            (row["entity_ref"], actor.id),
+                        ).fetchone()
+                        cid = ref[0] if ref else None
+                    elif row["kind"].startswith("group.application"):
+                        ref = conn.execute(
+                            "SELECT conversation_id,user_id FROM group_applications WHERE id=?",
+                            (row["entity_ref"],),
+                        ).fetchone()
+                        if ref and (
+                            ref["user_id"] == actor.id
+                            or conn.execute(
+                                "SELECT 1 FROM memberships WHERE conversation_id=? AND user_id=? AND left_at IS NULL AND role IN('owner','admin')",
+                                (ref["conversation_id"], actor.id),
+                            ).fetchone()
+                        ):
+                            cid = ref["conversation_id"]
+                    elif row["kind"].startswith("group.transfer"):
+                        if conn.execute(
+                            "SELECT 1 FROM memberships WHERE conversation_id=? AND user_id=? AND left_at IS NULL",
+                            (row["entity_ref"], actor.id),
+                        ).fetchone():
+                            cid = row["entity_ref"]
+                    if cid:
+                        group = conn.execute(
+                            "SELECT name FROM conversations WHERE id=?", (cid,)
+                        ).fetchone()
+                        item.update(conversationId=cid, groupName=group["name"])
                 items.append(item)
             unread = conn.execute(
                 "SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL",

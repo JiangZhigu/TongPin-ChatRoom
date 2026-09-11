@@ -152,11 +152,27 @@ describe('chat synchronization and outbox lifecycle', () => {
 
   it('rejects a late page from a previous permission period instead of rendering its bodies', async () => {
     const current = await client(); const delayed = delayHistory(); const selection = current.selectConversation(conversation.id);
-    const rejected = expect(selection).rejects.toMatchObject({ code: 'STALE_HISTORY' }); await until(delayed.ready);
-    syncEvents = [event('1', { type: 'conversation.updated', conversation: { ...conversation, accessKey: 'relation:2' } })];
-    socketEvents.get('sync.available')?.(); await until(() => current.getSnapshot().conversations[0].accessKey === 'relation:2');
-    delayed.finish([message('old-period', '1', 'forbidden after rejoin')]); await rejected;
-    expect(current.getSnapshot().messages).toEqual([]);
+    await until(delayed.ready);
+    conversation = { ...conversation, accessKey: 'relation:2' }; messages = [message('new-period', '2', 'current authorized history')];
+    syncEvents = [event('1', { type: 'conversation.updated', conversation })];
+    socketEvents.get('sync.available')?.(); await until(() => current.getSnapshot().messages[0]?.id === 'new-period');
+    delayed.finish([message('old-period', '1', 'forbidden after rejoin')]); await selection;
+    expect(current.getSnapshot().messages).toMatchObject([{ id: 'new-period', text: 'current authorized history' }]);
+  });
+
+  it('reloads readable history after live mute and role changes without reopening the conversation', async () => {
+    messages = [message('readable', '1', 'history survives a sending restriction')];
+    const current = await client(); await current.selectConversation(conversation.id);
+    conversation = { ...conversation, accessKey: 'relation:2', canSend: false, sendErrorCode: 'MUTED', sendDisabledReason: '当前处于禁言状态' };
+    syncEvents = [event('1', { type: 'conversation.updated', conversation })]; socketEvents.get('sync.available')?.();
+    await until(() => current.getSnapshot().conversations[0].accessKey === 'relation:2' && !current.getSnapshot().historyLoading);
+    expect(current.getSnapshot().messages).toMatchObject([{ id: 'readable', text: 'history survives a sending restriction' }]);
+    expect(current.getSnapshot().conversations[0].canSend).toBe(false);
+    conversation = { ...conversation, accessKey: 'relation:3', role: 'admin', canSend: true, sendErrorCode: null, sendDisabledReason: null };
+    syncEvents.push(event('2', { type: 'conversation.updated', conversation })); socketEvents.get('sync.available')?.();
+    await until(() => current.getSnapshot().conversations[0].accessKey === 'relation:3' && !current.getSnapshot().historyLoading);
+    expect(current.getSnapshot().messages).toMatchObject([{ id: 'readable' }]);
+    expect(current.getSnapshot().conversations[0].role).toBe('admin');
   });
 
   it('offers older pagination at a gap between an old window and newer history', async () => {

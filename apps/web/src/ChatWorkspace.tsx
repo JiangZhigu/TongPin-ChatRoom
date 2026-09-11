@@ -8,6 +8,9 @@ import { AccountSettings } from './AccountSettings';
 import { ContactsPage, type ContactsTab } from './ContactsPage';
 import { NotificationsPage } from './NotificationsPage';
 import { OfflineQueuePage } from './OfflineQueuePage';
+import { CreateGroupDialog } from './CreateGroupDialog';
+import { GroupInviteEntry } from './GroupInviteEntry';
+import { GroupManagementPanel } from './GroupManagementPanel';
 import { AppShell } from './components/AppShell';
 import { ChatHeader } from './components/ChatHeader';
 import { Composer } from './components/Composer';
@@ -17,6 +20,7 @@ import { MessageTimeline, type MessageView } from './components/MessageTimeline'
 import { Modal } from './components/Modal';
 import type { MainSection } from './components/NavigationRail';
 import './styles-chat.css';
+import './styles-groups.css';
 
 const describeError = (cause: unknown) => cause instanceof APIError ? [cause.message, ...Object.values(cause.fieldErrors || {}), cause.retryAfterMs ? `请在 ${Math.ceil(cause.retryAfterMs / 1000)} 秒后重试。` : ''].filter(Boolean).join(' ') : cause instanceof Error ? cause.message : '操作失败，请重试。';
 const sequence = (value?: string | null) => { try { return BigInt(value || '0'); } catch { return 0n; } };
@@ -26,7 +30,7 @@ type SavedPosition = { scrollTop: number; anchorId?: string; anchorOffset?: numb
 type LogoutPrompt = { pending: number; drafts: number };
 function cancelledLogout() { const error = new Error('已取消退出。'); error.name = 'LogoutCancelled'; return error; }
 
-export function ChatWorkspace({ user, onUserChange, onSignedOut }: { user: UserView; onUserChange: (user: UserView) => void; onSignedOut: () => void }) {
+export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken, onInvitationDismiss }: { user: UserView; onUserChange: (user: UserView) => void; onSignedOut: () => void; invitationToken?: string | null; onInvitationDismiss?: () => void }) {
   const [client] = useState(() => new ChatClient(user));
   const subscribe = useCallback((listener: () => void) => client.subscribe(listener), [client]);
   const getSnapshot = useCallback(() => client.getSnapshot(), [client]);
@@ -40,11 +44,15 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut }: { user: UserV
   const [sending, setSending] = useState(false); const queueBusy = useRef(false);
   const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [operationBusy, setOperationBusy] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false); const [newMessages, setNewMessages] = useState(0);
+  const [createGroupOpen, setCreateGroupOpen] = useState(false); const [joinGroupOpen, setJoinGroupOpen] = useState(false);
   const [jumpVersion, setJumpVersion] = useState(0); const forceJump = useRef(false);
   const [dismissedOnlineNotice, setDismissedOnlineNotice] = useState<string | null>(null);
   const [logoutPrompt, setLogoutPrompt] = useState<LogoutPrompt | null>(null); const [logoutBusy, setLogoutBusy] = useState(false); const [logoutError, setLogoutError] = useState('');
   const logoutResolver = useRef<{ resolve: () => void; reject: (cause: Error) => void } | null>(null);
   const mounted = useRef(false); const selectionGeneration = useRef(0);
+  const selectionInFlight = useRef<number | null>(null); const [selectionSettled, setSelectionSettled] = useState(0);
+  const confirmedSelection = useRef<{ id: string; title: string } | null>(null);
+  const [revokedSelection, setRevokedSelection] = useState<{ id: string; title: string; saving: boolean } | null>(null);
   const viewport = useRef<HTMLElement | null>(null); const input = useRef<HTMLTextAreaElement | null>(null);
   const positions = useRef(new Map<string, SavedPosition>()); const restorePosition = useRef<{ id: string; position?: SavedPosition } | null>(null);
   const atBottom = useRef(true); const layout = useRef<{ id: string; height: number; lastSeq: string } | null>(null);
@@ -100,10 +108,14 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut }: { user: UserV
 
   async function selectConversation(id: string | null): Promise<boolean> {
     const generation = ++selectionGeneration.current;
+    selectionInFlight.current = generation;
     setError(''); setNotice(''); setDetailsOpen(false);
     try {
       await saveCurrentDraft();
       if (!mounted.current || generation !== selectionGeneration.current) return false;
+      // A scroll caused by history removal can schedule another save while
+      // the awaited transaction is running. It belongs to the outgoing editor.
+      clearTimeout(draftTimer.current);
       selectedRef.current = id; setSelectedId(id); draftReady.current = false; draftRef.current = ''; setDraft(''); setDraftNotice(''); setDraftLoading(!!id); setNewMessages(0); setSection('messages'); layout.current = null; atBottom.current = true;
       const [, saved] = await Promise.all([client.selectConversation(id), id ? client.getDraft(id) : Promise.resolve(null)]);
       if (!mounted.current || generation !== selectionGeneration.current) return false;
@@ -128,7 +140,31 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut }: { user: UserV
       }
       setDraftLoading(false); return true;
     } catch (cause) { if (mounted.current && generation === selectionGeneration.current) { setError(describeError(cause)); setDraftLoading(false); } return false; }
+    finally { if (selectionInFlight.current === generation) { selectionInFlight.current = null; if (mounted.current) setSelectionSettled((value) => value + 1); } }
   }
+  function returnFromRevoked(conversation: { id: string; title: string }) {
+    // Reuse the same serialized draft save and selection-generation guard as
+    // ordinary navigation. A later user selection must win this transition.
+    const returning = selectConversation(null);
+    const generation = selectionGeneration.current;
+    setRevokedSelection({ ...conversation, saving: true });
+    setNotice(`“${conversation.title}”的访问权限已失效，正在保存本机草稿。`);
+    void returning.then((completed) => {
+      if (!mounted.current || generation !== selectionGeneration.current) return;
+      if (completed) { setRevokedSelection(null); setNotice(`“${conversation.title}”的访问权限已失效，已返回会话列表。本机草稿已保留。`); }
+      else { setRevokedSelection({ ...conversation, saving: false }); setNotice('会话访问已失效。草稿暂未保存，仍保留在编辑器中，请重试保存后返回。'); }
+    });
+  }
+  useEffect(() => {
+    if (!selectedId) { confirmedSelection.current = null; return; }
+    if (revokedSelection && revokedSelection.id !== selectedId) setRevokedSelection(null);
+    if (selectionInFlight.current !== null || draftLoading || state.phase === 'expired') return;
+    if (selected && state.selectedId === selectedId) { confirmedSelection.current = { id: selectedId, title: selected.title }; return; }
+    // A list can be temporarily incomplete during snapshot/selection loading.
+    // Only reconcile a previously opened conversation which core has cleared.
+    const confirmed = confirmedSelection.current;
+    if (confirmed?.id === selectedId && !selected && state.selectedId === null && !state.historyLoading && !revokedSelection) returnFromRevoked(confirmed);
+  }, [selectedId, selected, state.selectedId, state.historyLoading, state.phase, draftLoading, selectionSettled, revokedSelection]);
   async function navigate(next: MainSection, tab?: ContactsTab) {
     if (next === section && !(tab && next === 'contacts')) return;
     const generation = ++selectionGeneration.current;
@@ -147,6 +183,12 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut }: { user: UserV
     await client.refresh();
     if (!mounted.current || generation !== selectionGeneration.current) return;
     if (!await selectConversation(conversation.id)) throw new Error('会话或草稿未能加载，请重新打开。');
+  }
+  async function openGroup(id: string, details = false) {
+    await client.refresh();
+    if (!mounted.current) return;
+    if (!await selectConversation(id)) throw new Error('群聊或草稿未能加载，请重新打开。');
+    if (details) setDetailsOpen(true);
   }
   async function send() {
     const id = selectedRef.current; const text = draftRef.current;
@@ -172,20 +214,26 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut }: { user: UserV
   }
   const reportRead = useCallback(() => {
     const element = viewport.current;
-    if (!mounted.current || section !== 'messages' || !selectedId || state.selectedId !== selectedId || draftLoading || !atBottom.current || !element || element.scrollHeight - element.scrollTop - element.clientHeight > 32 || detailsOpen || logoutPrompt || document.visibilityState !== 'visible' || !document.hasFocus() || document.querySelector('dialog[open]')) return;
+    if (!mounted.current || section !== 'messages' || !selectedId || state.selectedId !== selectedId || draftLoading || !atBottom.current || !element || element.scrollHeight - element.scrollTop - element.clientHeight > 32 || detailsOpen || createGroupOpen || joinGroupOpen || invitationToken || logoutPrompt || document.visibilityState !== 'visible' || !document.hasFocus() || document.querySelector('dialog[open]')) return;
     const last = state.messages.at(-1); if (!last || last.conversationId !== selectedId) return;
     const conversation = state.conversations.find((item) => item.id === selectedId);
     if (sequence(last.seq) <= sequence(conversation?.readSeq) || sequence(last.seq) <= sequence(readRequests.current.get(selectedId))) return;
     readRequests.current.set(selectedId, last.seq);
     void client.read(selectedId, last.seq).catch((cause) => { if (readRequests.current.get(selectedId) === last.seq) readRequests.current.delete(selectedId); if (mounted.current) setError(describeError(cause)); });
-  }, [client, section, selectedId, state.selectedId, state.messages, state.conversations, draftLoading, detailsOpen, logoutPrompt]);
+  }, [client, section, selectedId, state.selectedId, state.messages, state.conversations, draftLoading, detailsOpen, createGroupOpen, joinGroupOpen, invitationToken, logoutPrompt]);
   useEffect(() => { window.addEventListener('focus', reportRead); document.addEventListener('visibilitychange', reportRead); return () => { window.removeEventListener('focus', reportRead); document.removeEventListener('visibilitychange', reportRead); }; }, [reportRead]);
   function scrolled() {
     const position = capturePosition(); const id = selectedRef.current;
     if (position) { atBottom.current = position.atBottom; if (position.atBottom) setNewMessages(0); }
     if (id && draftReady.current) {
+      const text = draftRef.current; const generation = selectionGeneration.current; const revision = draftRevision.current.get(id) || 0;
       clearTimeout(draftTimer.current);
-      draftTimer.current = setTimeout(() => { void persistDraft(id, draftRef.current, position).catch((cause) => { if (mounted.current) setError(`阅读位置未能保存到本机。${describeError(cause)}`); }); }, 350);
+      draftTimer.current = setTimeout(() => {
+        // Never combine an old conversation ID with a later editor's content,
+        // nor restore a submitted draft after send cleared that editor.
+        if (selectedRef.current !== id || !draftReady.current || selectionGeneration.current !== generation || draftRef.current !== text || (draftRevision.current.get(id) || 0) !== revision) return;
+        void persistDraft(id, text, position).catch((cause) => { if (mounted.current) setError(`阅读位置未能保存到本机。${describeError(cause)}`); });
+      }, 350);
     }
     reportRead();
   }
@@ -247,8 +295,8 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut }: { user: UserV
   const contactsProps = { contacts: state.contacts, requests: state.requests, nextContacts: state.nextContacts, nextRequests: state.nextRequests, onRefresh: () => client.refresh(), onOpenConversation: openDirect, onLoadMoreContacts: () => client.loadMoreContacts(), onLoadMoreRequests: () => client.loadMoreRequests() };
   let content: React.ReactNode;
   if (section === 'contacts') content = <ContactsPage key={contactsTab} {...contactsProps} initialTab={contactsTab} />;
-  else if (section === 'notifications') content = <NotificationsPage items={state.notifications} hasMore={!!state.nextNotifications} onLoadMore={() => client.loadMoreNotifications()} onRefresh={() => client.refresh()} onOpenRequests={() => void navigate('contacts', 'requests')} />;
+  else if (section === 'notifications') content = <NotificationsPage items={state.notifications} hasMore={!!state.nextNotifications} onLoadMore={() => client.loadMoreNotifications()} onRefresh={() => client.refresh()} onOpenRequests={() => void navigate('contacts', 'requests')} onOpenGroup={(id) => openGroup(id, true)} />;
   else if (section === 'queue') content = <OfflineQueuePage items={state.outbox} onRetry={(id) => client.retry(id)} onCancel={(id) => client.cancel(id)} onCopyToDraft={copyToDraft} />;
   else if (section === 'settings') content = <AccountSettings user={user} onUserChange={onUserChange} onSignedOut={onSignedOut} onLogout={requestLogout} />;
-  return <div className="chat-workspace"><div className={`connection-bar ${state.phase}`} role="status"><span className="connection-copy">{state.phase === 'offline' ? <WifiOff size={15} /> : state.phase === 'online' ? <Wifi size={15} /> : <RefreshCw size={15} />}<strong>{connection[0]}</strong><span>{connection[1]}</span></span><button className="text-button" disabled={operationBusy} onClick={() => void perform(() => client.refresh())}>重新同步</button>{state.outbox.length > 0 && <button className="text-button" onClick={() => void navigate('queue')}><Clock3 size={14} />本机待发 {state.outbox.length}</button>}</div>{(error || state.error) && <div className="workspace-error" role="alert"><span>{error || state.error}</span>{error && <button className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={16} /></button>}</div>}{notice && <div className="workspace-notice" role="status"><span>{notice}</span><button className="icon-button" aria-label="关闭操作提示" onClick={() => setNotice('')}><X size={16} /></button></div>}{state.onlineNotice && state.onlineNotice.id !== dismissedOnlineNotice && <div className="online-notice" role="status"><span>{state.onlineNotice.user.nickname} 上线了</span><button className="text-button" onClick={() => setDismissedOnlineNotice(state.onlineNotice!.id)}>关闭</button></div>}<AppShell conversations={conversationViews} selectedId={selectedId || undefined} onSelectConversation={(id) => void selectConversation(id)} activeSection={section} onNavigate={(next) => void navigate(next)} badges={{ messages: state.conversations.filter((item) => !item.preferences.muted).reduce((sum, item) => sum + item.unreadCount, 0), contacts: state.requests.filter((item) => item.direction === 'incoming' && item.status === 'pending').length, notifications: activeNotificationCount, queue: state.outbox.length }} listContent={<ConversationList conversations={conversationViews} selectedId={selectedId || undefined} onSelect={(id) => void selectConversation(id)} onAdd={() => void navigate('contacts', 'search')} hasMore={!!state.nextConversations} loading={operationBusy} onLoadMore={() => void perform(() => client.loadMoreConversations())} />} accountFooter={<div className="account-footer"><span className="avatar">{user.nickname.slice(0, 1)}</span><div><strong>{user.nickname}</strong><small>@{user.username}</small></div><a href="/admin" aria-label="管理入口"><ShieldCheck size={19} /></a></div>} sectionContent={content}>{selectedId ? <><ChatHeader title={selected?.title || '正在加载会话'} description={selected?.peer ? selected.peer.online ? '在线' : '未显示在线' : selected?.description} onBack={() => void selectConversation(null)} onToggleDetails={selected ? () => setDetailsOpen(true) : undefined} detailsOpen={detailsOpen} /><div className="timeline-container"><MessageTimeline messages={visibleMessages} viewportRef={viewport} onScroll={scrolled} hasOlder={showingCurrent && !!state.historyBefore} loading={state.historyLoading || draftLoading} onLoadOlder={() => void loadOlder()} />{newMessages > 0 && <button className="new-messages-button" onClick={() => { forceJump.current = true; setJumpVersion((value) => value + 1); }}><ArrowDown size={15} />{newMessages} 条新消息</button>}</div>{!draftLoading && !draftReady.current && <button className="load-more-button" onClick={() => void selectConversation(selectedId)}>重新加载会话和草稿</button>}<Composer value={draft} onChange={editDraft} onSend={() => void send()} sending={sending} inputRef={input} disabledReason={draftLoading ? '正在加载会话草稿…' : !draftReady.current ? '会话或草稿尚未就绪' : !selected?.canSend ? selected?.sendDisabledReason || '当前会话不允许发送新消息，草稿已保留。' : undefined} notice={state.phase === 'offline' ? '离线发送将保存到本机' : draftNotice || undefined} /></> : <EmptyState title="欢迎来到同频" description="选择一段会话继续交流，或添加好友开始新的对话。" action={<button className="primary-button" onClick={() => void navigate('contacts', 'search')}>查找好友</button>} />}</AppShell><Modal open={detailsOpen} title="会话设置" dismissible={!operationBusy} onClose={() => setDetailsOpen(false)}>{selected && <><div className="contact-detail"><span className="avatar">{selected.title.slice(0, 1)}</span><h3>{selected.title}</h3>{selected.peer && <p>@{selected.peer.username}</p>}</div>{([{ key: 'pinned', label: '置顶会话', help: '在会话列表优先显示。' }, { key: 'muted', label: '消息免打扰', help: '保留未读记录，减少提醒。' }, { key: 'archived', label: '归档会话', help: '会话移入“已归档”，不会删除消息。' }] as const).map(({ key, label, help }) => <label className="preference-row" key={key}><span><strong>{label}</strong><small>{help}</small></span><input type="checkbox" checked={selected.preferences[key]} disabled={operationBusy} onChange={(event) => void perform(() => changeConversationPreference(key, event.target.checked))} /></label>)}{!selected.canSend && <p className="warning-note">{selected.sendDisabledReason || '当前会话不能发送新消息。'}</p>}{detailsOpen && error && <p className="form-error" role="alert">{error}</p>}</>}</Modal><Modal open={!!logoutPrompt} title="退出前，处理本机内容" dismissible={!logoutBusy} onClose={cancelLogout}><p>当前账号在本机有 {logoutPrompt?.pending} 条待发消息、{logoutPrompt?.drafts} 份草稿。其他账号不会看到这些内容。</p><p>保留后可在下次登录此账号时继续；删除只影响本机内容，不删除服务器已经收到的消息。</p>{logoutError && <p className="form-error" role="alert">{logoutError}</p>}<div className="logout-options"><button className="primary-button" disabled={logoutBusy} onClick={() => void completeLogout('keep')}>保留，待下次登录继续</button><button className="secondary-button danger-text" disabled={logoutBusy} onClick={() => void completeLogout('delete')}>删除本机内容并退出</button><button className="text-button" disabled={logoutBusy} onClick={cancelLogout}>取消退出</button></div></Modal></div>;
+  return <div className="chat-workspace"><div className={`connection-bar ${state.phase}`} role="status"><span className="connection-copy">{state.phase === 'offline' ? <WifiOff size={15} /> : state.phase === 'online' ? <Wifi size={15} /> : <RefreshCw size={15} />}<strong>{connection[0]}</strong><span>{connection[1]}</span></span><button className="text-button" disabled={operationBusy} onClick={() => void perform(() => client.refresh())}>重新同步</button>{state.outbox.length > 0 && <button className="text-button" onClick={() => void navigate('queue')}><Clock3 size={14} />本机待发 {state.outbox.length}</button>}</div>{(error || state.error) && <div className="workspace-error" role="alert"><span>{error || state.error}</span>{error && <button className="icon-button" aria-label="关闭错误提示" onClick={() => setError('')}><X size={16} /></button>}</div>}{notice && <div className="workspace-notice" role="status"><span>{notice}</span><button className="icon-button" aria-label="关闭操作提示" onClick={() => setNotice('')}><X size={16} /></button></div>}{state.onlineNotice && state.onlineNotice.id !== dismissedOnlineNotice && <div className="online-notice" role="status"><span>{state.onlineNotice.user.nickname} 上线了</span><button className="text-button" onClick={() => setDismissedOnlineNotice(state.onlineNotice!.id)}>关闭</button></div>}<AppShell conversations={conversationViews} selectedId={selectedId || undefined} onSelectConversation={(id) => void selectConversation(id)} activeSection={section} onNavigate={(next) => void navigate(next)} badges={{ messages: state.conversations.filter((item) => !item.preferences.muted).reduce((sum, item) => sum + item.unreadCount, 0), contacts: state.requests.filter((item) => item.direction === 'incoming' && item.status === 'pending').length, notifications: activeNotificationCount, queue: state.outbox.length }} listContent={<ConversationList conversations={conversationViews} selectedId={selectedId || undefined} onSelect={(id) => void selectConversation(id)} onAdd={() => void navigate('contacts', 'search')} onCreateGroup={() => setCreateGroupOpen(true)} onJoinGroup={() => setJoinGroupOpen(true)} hasMore={!!state.nextConversations} loading={operationBusy} onLoadMore={() => void perform(() => client.loadMoreConversations())} />} accountFooter={<div className="account-footer"><span className="avatar">{user.nickname.slice(0, 1)}</span><div><strong>{user.nickname}</strong><small>@{user.username}</small></div><a href="/admin" aria-label="管理入口"><ShieldCheck size={19} /></a></div>} sectionContent={content}>{selectedId ? <><ChatHeader group={selected?.kind === 'group'} title={revokedSelection?.id === selectedId ? '会话访问已失效' : selected?.title || '正在加载会话'} description={selected?.peer ? selected.peer.online ? '在线' : '未显示在线' : selected?.description} onBack={() => void selectConversation(null)} onToggleDetails={selected ? () => setDetailsOpen(true) : undefined} detailsOpen={detailsOpen} /><div className="timeline-container"><MessageTimeline messages={visibleMessages} viewportRef={viewport} onScroll={scrolled} hasOlder={showingCurrent && !!state.historyBefore} loading={state.historyLoading || draftLoading} onLoadOlder={() => void loadOlder()} />{newMessages > 0 && <button className="new-messages-button" onClick={() => { forceJump.current = true; setJumpVersion((value) => value + 1); }}><ArrowDown size={15} />{newMessages} 条新消息</button>}</div>{revokedSelection?.id === selectedId && <button className="load-more-button" disabled={revokedSelection.saving} onClick={() => returnFromRevoked(revokedSelection)}>{revokedSelection.saving ? '正在保存草稿并返回…' : '重试保存草稿并返回'}</button>}{!draftLoading && !draftReady.current && <button className="load-more-button" onClick={() => void selectConversation(selectedId)}>重新加载会话和草稿</button>}<Composer value={draft} onChange={editDraft} onSend={() => void send()} sending={sending} inputRef={input} disabledReason={draftLoading ? '正在加载会话草稿…' : !draftReady.current ? '会话或草稿尚未就绪' : !selected?.canSend ? selected?.sendDisabledReason || '当前会话不允许发送新消息，草稿已保留。' : undefined} notice={state.phase === 'offline' ? '离线发送将保存到本机' : draftNotice || undefined} /></> : <EmptyState title="欢迎来到同频" description="选择一段会话继续交流，或添加好友开始新的对话。" action={<button className="primary-button" onClick={() => void navigate('contacts', 'search')}>查找好友</button>} />}</AppShell>{createGroupOpen && <CreateGroupDialog friends={state.contacts} hasMore={!!state.nextContacts} onLoadMore={() => client.loadMoreContacts()} onClose={() => setCreateGroupOpen(false)} onCreated={openGroup} />}{(joinGroupOpen || invitationToken) && <GroupInviteEntry key={invitationToken || 'manual'} token={invitationToken} userId={user.id} onClose={() => { setJoinGroupOpen(false); onInvitationDismiss?.(); }} onOpenGroup={async (id) => { await openGroup(id); setJoinGroupOpen(false); onInvitationDismiss?.(); }} />}{detailsOpen && selected?.kind === 'group' && <GroupManagementPanel key={selected.id} conversationId={selected.id} userId={user.id} friends={state.contacts} hasMoreFriends={!!state.nextContacts} onLoadMoreFriends={() => client.loadMoreContacts()} onClose={() => setDetailsOpen(false)} onRefresh={() => client.refresh()} onBeforeLeave={saveCurrentDraft} onLeft={async () => { await client.refresh(); await selectConversation(null); }} ><section aria-label="群会话偏好">{([{ key: 'pinned', label: '置顶会话' }, { key: 'muted', label: '消息免打扰' }, { key: 'archived', label: '归档会话' }] as const).map(({ key, label }) => <label className="preference-row" key={key}><strong>{label}</strong><input type="checkbox" checked={selected.preferences[key]} disabled={operationBusy} onChange={(event) => void perform(() => changeConversationPreference(key, event.target.checked))} /></label>)}</section></GroupManagementPanel>}<Modal open={detailsOpen && selected?.kind !== 'group'} title="会话设置" dismissible={!operationBusy} onClose={() => setDetailsOpen(false)}>{selected && <><div className="contact-detail"><span className="avatar">{selected.title.slice(0, 1)}</span><h3>{selected.title}</h3>{selected.peer && <p>@{selected.peer.username}</p>}</div>{([{ key: 'pinned', label: '置顶会话', help: '在会话列表优先显示。' }, { key: 'muted', label: '消息免打扰', help: '保留未读记录，减少提醒。' }, { key: 'archived', label: '归档会话', help: '会话移入“已归档”，不会删除消息。' }] as const).map(({ key, label, help }) => <label className="preference-row" key={key}><span><strong>{label}</strong><small>{help}</small></span><input type="checkbox" checked={selected.preferences[key]} disabled={operationBusy} onChange={(event) => void perform(() => changeConversationPreference(key, event.target.checked))} /></label>)}{!selected.canSend && <p className="warning-note">{selected.sendDisabledReason || '当前会话不能发送新消息。'}</p>}{detailsOpen && error && <p className="form-error" role="alert">{error}</p>}</>}</Modal><Modal open={!!logoutPrompt} title="退出前，处理本机内容" dismissible={!logoutBusy} onClose={cancelLogout}><p>当前账号在本机有 {logoutPrompt?.pending} 条待发消息、{logoutPrompt?.drafts} 份草稿。其他账号不会看到这些内容。</p><p>保留后可在下次登录此账号时继续；删除只影响本机内容，不删除服务器已经收到的消息。</p>{logoutError && <p className="form-error" role="alert">{logoutError}</p>}<div className="logout-options"><button className="primary-button" disabled={logoutBusy} onClick={() => void completeLogout('keep')}>保留，待下次登录继续</button><button className="secondary-button danger-text" disabled={logoutBusy} onClick={() => void completeLogout('delete')}>删除本机内容并退出</button><button className="text-button" disabled={logoutBusy} onClick={cancelLogout}>取消退出</button></div></Modal></div>;
 }
