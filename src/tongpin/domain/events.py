@@ -67,6 +67,16 @@ class EventService:
             "occurredAt": row["created_at"],
             "conversationId": row["conversation_id"],
         }
+        if row['kind'] in {'task.created', 'task.updated', 'task.deleted', 'task.restored', 'task.assignment.changed', 'task.comment.created'}:
+            try:
+                self.runtime.tasks.enabled()
+                self.runtime.tasks.task_access(conn, actor.id, row['entity_ref'])
+            except APIError as error:
+                if error.status not in (403, 404, 503):
+                    raise
+                event['type'] = 'task.access.revoked'
+            # Task events are invalidation references, never chat or task bodies.
+            return event
         if row["conversation_id"]:
             try:
                 event["conversation"] = self.runtime.chat.conversation_view(
@@ -200,6 +210,22 @@ class EventService:
                         item['text'] = '系统通知当前不可访问。'
                 elif row['kind'] == 'administrator.invited':
                     item['text'] = '收到管理员验证器绑定邀请，请在账号与安全中核对。'
+                elif row['kind'] == 'task.report.updated':
+                    report = conn.execute("SELECT status,resolution FROM todo_reports WHERE id=? AND reporter_id=? AND (status='open' OR closed_at>?)", (row['entity_ref'], actor.id, now_ms() - 30 * 86400000)).fetchone()
+                    item['text'] = ('你的待办举报已结案：' + (report['resolution'] or '') if report['status'] == 'closed' else '你的待办举报已重新打开') if report else '待办举报材料已到期或当前不可用'
+                elif row['kind'] == 'task.report.created':
+                    item['text'] = '收到待办举报，请进入全站后台的待办治理。' if actor.user['site_role'] == 'super_admin' else '此管理通知当前不可访问。'
+                elif row['kind'].startswith('task.'):
+                    item.update(text='相关待办当前不可用', available=False)
+                    try:
+                        self.runtime.tasks.enabled()
+                        task, meta, _, _ = self.runtime.tasks.task_access(conn, actor.id, row['entity_ref'])
+                        if task['deleted_at'] is None and (not meta or row['created_at'] >= meta['membership']['joined_at']):
+                            labels = {'task.assigned': '有待办分配给你', 'task.comment': '待办有新评论', 'task.completed': '待办已完成', 'task.due': '待办到期提醒'}
+                            item.update(text=labels.get(row['kind'], '待办已更新') + '：' + task['title'], available=True, taskId=task['id'])
+                    except APIError as error:
+                        if error.status not in (403, 404, 503):
+                            raise
                 elif row["kind"] == "report.created":
                     if actor.user["site_role"] == "super_admin":
                         item.update(text="收到新的治理举报，请进入全站后台处理", reportId=row["entity_ref"])

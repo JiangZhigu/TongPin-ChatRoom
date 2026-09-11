@@ -6,10 +6,31 @@ from tongpin.admin.authz import bounded_limit
 from tongpin.contracts.admin import AdminExecuteInput, AdminPreviewInput
 from tongpin.contracts.admin_s2 import ContentSearch, FileRead, FileSearch, SensitiveRead
 from tongpin.contracts.admin_s3 import AuditFilters, LogFilters, OperationDownload
+from tongpin.contracts.admin_tasks import GroupTaskRead, GroupTasksRead
 from tongpin.transports.http.auth import parse, principal, runtime, success
 from tongpin.transports.http.files import send_content
 
 admin_blueprint = Blueprint("admin", __name__, url_prefix="/api/v1/admin")
+
+
+@admin_blueprint.post("/tasks/search")
+def task_group_search():
+    return success(runtime().admin.task_group_search(principal(admin=True), parse(GroupTasksRead), g.request_id))
+
+
+@admin_blueprint.post("/tasks/<tid>/read")
+def task_group_read(tid):
+    return success(runtime().admin.task_group_read(principal(admin=True), tid, parse(GroupTaskRead), g.request_id))
+
+
+@admin_blueprint.get("/task-reports")
+def task_reports_list():
+    return success(runtime().admin.task_reports_list(principal(admin=True), request.args.get("status", ""), **pagination()))
+
+
+@admin_blueprint.post("/task-reports/<rid>/read")
+def task_report_read(rid):
+    return success(runtime().admin.task_report_read(principal(admin=True), rid, parse(SensitiveRead), g.request_id))
 
 
 @admin_blueprint.before_request

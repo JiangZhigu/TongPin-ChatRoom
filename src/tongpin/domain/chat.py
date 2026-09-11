@@ -81,6 +81,8 @@ class ChatService:
         }
         if getattr(self.runtime, "interactions", None):
             result.update(self.runtime.interactions.decorate(conn, actor_id, row))
+        if visible and conn.execute('SELECT 1 FROM todo_message_cards WHERE message_id=?', (row['id'],)).fetchone():
+            result['taskCard'] = self.runtime.tasks.card_in(conn, actor_id, row['id'])
         return result
 
     def conversation_view(self, conn, actor_id, cid):
@@ -222,6 +224,13 @@ class ChatService:
 
     def send(self, actor, cid, data):
         self.runtime.auth.security.rate("message-send", actor.id, 120, 60)
+        with self.runtime.db.write() as conn:
+            result = self.send_in(conn, actor, cid, data)
+        # ACK means the message and every enclosing domain effect committed.
+        return result
+
+    def send_in(self, conn, actor, cid, data):
+        """Shared insertion path; callers own the surrounding write transaction."""
         attachments = list(data.attachmentIds)
         mentions = sorted(set(data.mentionedUserIds))
         text = message_text(data.text, allow_empty=bool(attachments))
@@ -242,101 +251,99 @@ class ChatService:
         payload_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
         ).hexdigest()
-        with self.runtime.db.write() as conn:
-            actor = self.runtime.auth.current_in_transaction(conn, actor)
-            if data.actorContext is not None and data.actorContext != actor.id:
-                raise APIError("AUTH_REQUIRED", "浏览器账号已改变，请重新连接后继续。", 401)
-            access = self.runtime.access.conversation(conn, actor.id, cid, write=True)
-            if access["accessKey"] != data.accessKey:
-                raise APIError("STALE_ACCESS", "会话权限已改变，请检查并重新编辑待发内容。", 409)
-            duplicate = conn.execute(
-                "SELECT * FROM messages WHERE sender_id=? AND client_message_id=?",
-                (actor.id, data.clientMessageId),
-            ).fetchone()
-            if duplicate:
-                if duplicate["payload_hash"] != payload_hash:
+        actor = self.runtime.auth.current_in_transaction(conn, actor)
+        if data.actorContext is not None and data.actorContext != actor.id:
+            raise APIError("AUTH_REQUIRED", "浏览器账号已改变，请重新连接后继续。", 401)
+        access = self.runtime.access.conversation(conn, actor.id, cid, write=True)
+        if access["accessKey"] != data.accessKey:
+            raise APIError("STALE_ACCESS", "会话权限已改变，请检查并重新编辑待发内容。", 409)
+        duplicate = conn.execute(
+            "SELECT * FROM messages WHERE sender_id=? AND client_message_id=?",
+            (actor.id, data.clientMessageId),
+        ).fetchone()
+        if duplicate:
+            if duplicate["payload_hash"] != payload_hash:
+                raise APIError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "消息标识对应的内容已改变，请保留草稿并检查发送结果。",
+                    409,
+                )
+            self.runtime.access.message(conn, actor.id, duplicate["id"])
+            result = {
+                "message": self.message_view(conn, actor.id, duplicate),
+                "duplicate": True,
+            }
+        else:
+            if (
+                access["row"]["kind"] == "group"
+                and access["role"] == "member"
+                and access["row"]["slow_seconds"]
+            ):
+                last = conn.execute(
+                    "SELECT MAX(created_at) FROM messages WHERE conversation_id=? AND sender_id=?",
+                    (cid, actor.id),
+                ).fetchone()[0]
+                delay = (
+                    (last + access["row"]["slow_seconds"] * 1000 - now_ms())
+                    if last is not None
+                    else 0
+                )
+                if delay > 0:
                     raise APIError(
-                        "IDEMPOTENCY_CONFLICT",
-                        "消息标识对应的内容已改变，请保留草稿并检查发送结果。",
-                        409,
+                        "SLOW_MODE",
+                        "群聊启用了慢速模式，请稍后重试这条消息。",
+                        429,
+                        retry_after_ms=delay,
                     )
-                self.runtime.access.message(conn, actor.id, duplicate["id"])
-                result = {
-                    "message": self.message_view(conn, actor.id, duplicate),
-                    "duplicate": True,
-                }
-            else:
-                if (
-                    access["row"]["kind"] == "group"
-                    and access["role"] == "member"
-                    and access["row"]["slow_seconds"]
-                ):
-                    last = conn.execute(
-                        "SELECT MAX(created_at) FROM messages WHERE conversation_id=? AND sender_id=?",
-                        (cid, actor.id),
-                    ).fetchone()[0]
-                    delay = (
-                        (last + access["row"]["slow_seconds"] * 1000 - now_ms())
-                        if last is not None
-                        else 0
-                    )
-                    if delay > 0:
-                        raise APIError(
-                            "SLOW_MODE",
-                            "群聊启用了慢速模式，请稍后重试这条消息。",
-                            429,
-                            retry_after_ms=delay,
-                        )
-                if data.replyToMessageId:
-                    original, _ = self.runtime.access.message(conn, actor.id, data.replyToMessageId)
-                    if original["conversation_id"] != cid or original["status"] != "sent":
-                        raise APIError("RESOURCE_UNAVAILABLE", "引用的消息已无法使用。", 404)
-                recipients = self.runtime.access.recipients(conn, cid)
-                if data.mentionAll and (access["row"]["kind"] != "group" or access["role"] not in {"owner", "admin"}):
-                    raise APIError("FORBIDDEN", "只有当前群主和管理员可以提醒全体成员。", 403)
-                if any(uid not in recipients for uid in mentions):
-                    raise APIError("VALIDATION_ERROR", "只能提及当前会话中的成员。", 422)
-                if attachments:
-                    if not getattr(self.runtime, "files", None):
-                        raise APIError("FILES_UNAVAILABLE", "附件服务尚未启用。", 503)
-                    self.runtime.files.validate_for_message(conn, actor, cid, attachments)
-                policy = self.runtime.policy.get(conn)
-                message_text(
+            if data.replyToMessageId:
+                original, _ = self.runtime.access.message(conn, actor.id, data.replyToMessageId)
+                if original["conversation_id"] != cid or original["status"] != "sent":
+                    raise APIError("RESOURCE_UNAVAILABLE", "引用的消息已无法使用。", 404)
+            recipients = self.runtime.access.recipients(conn, cid)
+            if data.mentionAll and (access["row"]["kind"] != "group" or access["role"] not in {"owner", "admin"}):
+                raise APIError("FORBIDDEN", "只有当前群主和管理员可以提醒全体成员。", 403)
+            if any(uid not in recipients for uid in mentions):
+                raise APIError("VALIDATION_ERROR", "只能提及当前会话中的成员。", 422)
+            if attachments:
+                if not getattr(self.runtime, "files", None):
+                    raise APIError("FILES_UNAVAILABLE", "附件服务尚未启用。", 503)
+                self.runtime.files.validate_for_message(conn, actor, cid, attachments)
+            policy = self.runtime.policy.get(conn)
+            message_text(
+                text,
+                max_chars=policy["message_codepoints"],
+                max_bytes=policy["message_bytes"],
+                allow_empty=bool(attachments),
+            )
+            seq = access["row"]["last_seq"] + 1
+            mid, timestamp = identifier("m_"), now_ms()
+            conn.execute(
+                "UPDATE conversations SET last_seq=?,updated_at=? WHERE id=?",
+                (seq, timestamp, cid),
+            )
+            conn.execute(
+                "INSERT INTO messages(id,conversation_id,seq,sender_id,client_message_id,payload_hash,text,reply_id,mentioned_ids,created_at,mention_all) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    mid,
+                    cid,
+                    seq,
+                    actor.id,
+                    data.clientMessageId,
+                    payload_hash,
                     text,
-                    max_chars=policy["message_codepoints"],
-                    max_bytes=policy["message_bytes"],
-                    allow_empty=bool(attachments),
-                )
-                seq = access["row"]["last_seq"] + 1
-                mid, timestamp = identifier("m_"), now_ms()
-                conn.execute(
-                    "UPDATE conversations SET last_seq=?,updated_at=? WHERE id=?",
-                    (seq, timestamp, cid),
-                )
-                conn.execute(
-                    "INSERT INTO messages(id,conversation_id,seq,sender_id,client_message_id,payload_hash,text,reply_id,mentioned_ids,created_at,mention_all) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        mid,
-                        cid,
-                        seq,
-                        actor.id,
-                        data.clientMessageId,
-                        payload_hash,
-                        text,
-                        data.replyToMessageId,
-                        json.dumps(mentions),
-                        timestamp,
-                        int(data.mentionAll),
-                    ),
-                )
-                if attachments:
-                    self.runtime.files.bind_message(conn, actor, mid, attachments)
-                self.runtime.events.publish(conn, recipients, "message.created", mid, cid)
-                for uid in set(recipients if data.mentionAll else mentions) - {actor.id}:
-                    self.runtime.events.notify(conn, uid, "message.mentioned", mid, actor.id)
-                row = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
-                result = {"message": self.message_view(conn, actor.id, row), "duplicate": False}
-        # This return is deliberately outside the transaction: ACK means committed.
+                    data.replyToMessageId,
+                    json.dumps(mentions),
+                    timestamp,
+                    int(data.mentionAll),
+                ),
+            )
+            if attachments:
+                self.runtime.files.bind_message(conn, actor, mid, attachments)
+            self.runtime.events.publish(conn, recipients, "message.created", mid, cid)
+            for uid in set(recipients if data.mentionAll else mentions) - {actor.id}:
+                self.runtime.events.notify(conn, uid, "message.mentioned", mid, actor.id)
+            row = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
+            result = {"message": self.message_view(conn, actor.id, row), "duplicate": False}
         return result
 
     def read(self, actor, cid, value):

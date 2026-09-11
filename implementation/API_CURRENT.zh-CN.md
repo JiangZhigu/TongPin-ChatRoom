@@ -54,3 +54,37 @@ SA07–SA10全站内容审阅、文件治理、举报处理、站点策略与邀
 SA11–SA14公告、本人管理员绑定、安全治理、审计/运行日志、受控导出、备份验证/隔离恢复及空间清理见[S3契约](M7_ADMIN_S3_CONTRACTS.zh-CN.md)。普通通知新增已送达对象可读的系统公告详情；撤回清空正文并推送更新。管理邀请只有本人密码再认证和真实TOTP绑定后才授予权限，恢复码仅一次显示。
 
 运维任务拥有独立持久队列、进度、取消与最终结果；命令接受回执不代表产物完成。下载为带理由的鉴权POST；导出绑定创建会话且每次重查内容，备份下载另需行动绑定再认证。二进制请求允许最长600秒并可取消，JSON15秒和上传120秒时限保持各自规则。恢复结果必须明确`isolatedOnly=true`、`activationAllowed=false`，不会替换当前数据库。
+
+## V3 待办 P0 / P1
+
+正式DTO与输入见 `apps/web/src/lib/tasks-types.ts` / `src/tongpin/contracts/tasks.py`，集成与边界见[V3契约](V3_TASKS_CONTRACT.zh-CN.md)。下表前缀均为 `/api/v1`。普通任务请求携带 `X-Actor-Context`；服务端仍以当前Cookie会话决定身份。写命令使用UUID v4 `Idempotency-Key`，修改已有实体增加当前 `If-Match`。先核对当前身份/访问权限，再检查同key去重，最后对新命令比较版本；未知结果只能用原key和原载荷重试。
+
+| 方法/路径 | 作用与data |
+|---|---|
+| GET /tasks/meta | 权威功能开关、本人偏好/清单标签、有效限额和创建能力 |
+| GET /tasks | mine/personal/group/created/followed/bookmarked视图、群/状态/优先级/负责人/日期/关键词/清单/标签/回收筛选；`{items,total,actorId,nextCursor}`，授权后计数 |
+| POST /tasks | 个人/群创建，可指定当前有权读的来源消息或已分享静态消息；201 `{task,duplicate}` 和Location |
+| GET /tasks/:id | 当前Task DTO；HTTP ETag与DTO etag一致，private/no-store |
+| PATCH /tasks/:id | 编辑、状态及分配，完成有未勾项时需explicit confirmIncomplete；返回`{task,duplicate}` |
+| DELETE /tasks/:id | 软删除，返回当前回收DTO，HTTP200 |
+| POST /tasks/:id/claim, /release, /restore | 认领、释放、恢复，条件写入，返回`{task,duplicate}` |
+| POST /tasks/:id/check-items | 新检查项，最多50；返回当前任务 |
+| PATCH / DELETE /tasks/:id/check-items/:itemId | 修改/勾选/删除检查项，按结构和进度能力分别鉴权 |
+| GET /tasks/:id/activities, /comments | 当前加入期可读活动/评论分页 |
+| POST /tasks/:id/comments | 提交纯文本评论，带命令key与当前任务版本 |
+| DELETE /tasks/:id/comments/:commentId | 按本人或管理权限删除评论 |
+| PUT /tasks/:id/my-reminder | 本人none/day_before/due_day规则及本地时间；不产生公共活动 |
+| PATCH /tasks/:id/my-marks | 本人关注/收藏，不改变公共任务版本 |
+| POST /tasks/:id/shares | 明确目标会话、live/snapshot、是否包含描述；201 `{messageId,conversationId,duplicate}` |
+| POST /tasks/:id/group-copies | 本人个人任务复制到当前群，必须确认当前/未来成员可见，201新实体 |
+| GET /tasks/cards/:messageId | 当前有权读的live任务、独立snapshot或unavailable；不返回失权历史正文 |
+| PATCH /tasks/preferences | 本人分配/评论/完成/到期四项通知偏好及时区 |
+| POST /tasks/labels; PATCH / DELETE /tasks/labels/:id | 本人list/tag创建/改名/删除；只组织本人私人任务 |
+| GET / PATCH /tasks/groups/:groupId/settings | 当前群members/managers创建策略、计数、配额、etag与能力；修改需管理权限 |
+| POST /tasks/:id/reports | 本人可访问的明确任务或评论提交最小举报材料，201回执 |
+
+412不会自动覆盖：客户端保留本地输入，重新核对当前Task后由本人决定。任务事件只广播引用；临时失效立即隐藏旧实体和普通通知预览，迟到读取不能恢复撤权正文。静态副本不含原任务ID、检查项、评论或来源；用户明确选择描述时才包含描述。
+
+管理员 `POST /admin/tasks/search` 要求明确群和读取理由，`POST /admin/tasks/:id/read` 再次按理由读取。`GET /admin/task-reports`只提供工单元信息；`POST /admin/task-reports/:id/read`读取具体提交材料。管理动作 `task.delete/task.restore/task.comment.delete/task.group.policy/task_report.close/task_report.reopen` 进入既有preview→reauth→command流程。不存在私人任务常规后台列表或批量导出。现有聊天审阅DTO补充 `taskCard`：已分享静态字段或群实时引用，不自动展开原任务正文。
+
+任务草稿留在本机IndexedDB的独立taskDrafts仓库，不是自动同步服务端队列。任务提醒则使用服务端持久jobs与唯一回执；修改截止日/提醒、完成或失权会使旧工作失效，重启不会重复通知。

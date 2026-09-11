@@ -4,6 +4,7 @@ import type { ChatSnapshot, ChatState, Contact, Conversation, Draft, FriendReque
 import { uploadLocalAttachment, validateLocalFiles } from './files';
 import type { MessageLocation, TypingUser } from './interactions-types';
 import { closeBrowserNotifications, showBrowserNotification } from './browser-notifications';
+import { readTaskDrafts } from './task-drafts';
 import { addQueuedMessage, changeQueuedMessage, clearLocalUser, forgetIdentity, localError, localSummary, OUTBOX_AGE_MS, readDraft, readOfflineIdentity, readQueue, rememberIdentity, saveLocalDraft, withDeliveryLock } from './outbox';
 
 const initialState = (): ChatState => ({ phase: 'connecting', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyAfter: null, locatedMessageId: null, typingUsers: [], historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null });
@@ -18,6 +19,7 @@ export function mergeMessages(existing: Message[], additions: Message[]): Messag
 }
 function mergeItems<T extends { id: string }>(existing: T[], additions: T[]): T[] { return [...new Map([...existing, ...additions].map((item) => [item.id, item])).values()]; }
 function errorMessage(error: unknown) { return error instanceof Error ? error.message : '暂时无法完成操作，请重试。'; }
+const notificationProjectionChanged = (type: string) => type.startsWith('task.') || ['access.revoked', 'conversation.updated', 'account.changed', 'message.updated'].includes(type);
 export function validateMessageText(text: string, allowEmpty = false) {
   if ([...text].length > 4000 || new TextEncoder().encode(text).byteLength > 16384) throw new APIError(413, { code: 'PAYLOAD_TOO_LARGE', message: '消息最多4000字且不超过16 KiB。' });
   if (!allowEmpty && !text.trim()) throw new APIError(422, { code: 'VALIDATION_ERROR', message: '请填写消息内容。' });
@@ -30,10 +32,12 @@ export class ChatClient {
   private user: User;
   private state = initialState();
   private listeners = new Set<() => void>();
+  private taskListeners = new Set<(event: { type: string; entityRef: string; conversationId: string | null }) => void>();
   private running = false;
   private generation = 0;
   private selectionGeneration = 0;
   private contentRevision = 0;
+  private notificationRevision = 0;
   private messageUpdateTokens = new WeakSet<MessageUpdateToken>();
   private controller = new AbortController();
   private socket: Socket | null = null;
@@ -66,6 +70,7 @@ export class ChatClient {
   constructor(user: User) { this.user = user; }
   getSnapshot = (): ChatState => this.state;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  subscribeTaskEvents = (listener: (event: { type: string; entityRef: string; conversationId: string | null }) => void): (() => void) => { this.taskListeners.add(listener); return () => { this.taskListeners.delete(listener); }; };
   updateUser(user: User) { if (user.id === this.user.id) this.user = user; }
   private set(patch: Partial<ChatState>) { this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener(); }
   private current(epoch: number) { return this.running && epoch === this.generation; }
@@ -231,6 +236,7 @@ export class ChatClient {
     await this.loadNotifications(epoch, false);
     if (!this.current(epoch)) return;
     this.initialized = true; this.retryAttempt = 0;
+    for (const listener of this.taskListeners) listener({ type: 'task.resync', entityRef: '', conversationId: null });
     this.set({ phase: this.socket?.connected ? 'online' : 'degraded', error: this.localReady ? null : this.state.error });
     if (this.state.selectedId) await this.selectConversation(this.state.selectedId);
     if (this.current(epoch)) this.alertsEnabled = true;
@@ -272,7 +278,7 @@ export class ChatClient {
           if (BigInt(event.cursor) <= BigInt(this.cursor)) continue;
           await this.applyEvent(event, epoch);
           contactsChanged ||= event.type === 'contacts.changed';
-          notificationsChanged ||= event.type.startsWith('notification.');
+          notificationsChanged ||= event.type.startsWith('notification.') || notificationProjectionChanged(event.type);
         }
         if (contactsChanged) {
           const [contacts, requests] = await Promise.all([this.request<Page<Contact>>('/friends?limit=100'), this.request<Page<FriendRequest>>('/friend-requests?limit=100')]);
@@ -304,6 +310,20 @@ export class ChatClient {
   }
 
   private async applyEvent(event: SyncEvent, epoch: number) {
+    if (notificationProjectionChanged(event.type)) {
+      this.notificationRevision++;
+      // Reference previews lose authority as soon as a change arrives. A fresh
+      // projection may restore them, but an older paginated response may not.
+      this.set({ notifications: this.state.notifications.map((item) =>
+        item.type.startsWith('task.') && !item.type.startsWith('task.report.')
+          ? { ...item, text: '相关待办当前不可用', available: false, taskId: undefined }
+          : item.type === 'message.mentioned'
+            ? { ...item, text: '提及消息正在重新核对', available: false, messageId: undefined, conversationId: undefined }
+            : item) });
+    }
+    if (event.type.startsWith('task.') || event.type === 'access.revoked' || event.type === 'conversation.updated' || event.type === 'account.changed' || event.type === 'message.updated') {
+      for (const listener of this.taskListeners) listener(event);
+    }
     if (event.type === 'message.updated') this.contentRevision++;
     if (event.type === 'account.changed') {
       const account = await this.request<{ user: User }>('/auth/me');
@@ -674,7 +694,7 @@ export class ChatClient {
 
   getDraft(conversationId: string): Promise<Draft | null> { return readDraft(this.user.id, conversationId); }
   saveDraft(conversationId: string, text: string, position: Pick<Draft, 'scrollTop' | 'anchorId' | 'files' | 'replyToMessageId' | 'mentionedUserIds' | 'mentionAll'> = {}): Promise<void> { return saveLocalDraft(this.user.id, conversationId, text, position); }
-  async getLocalSummary(): Promise<{ pending: number; drafts: number }> { await this.enqueueFlight.catch(() => undefined); return localSummary(this.user.id); }
+  async getLocalSummary(): Promise<{ pending: number; drafts: number; taskDrafts: number }> { await this.enqueueFlight.catch(() => undefined); const [summary, tasks] = await Promise.all([localSummary(this.user.id), readTaskDrafts(this.user.id)]); return { ...summary, taskDrafts: tasks.length }; }
   async logout(choice: 'keep' | 'delete'): Promise<void> {
     const pendingSave = this.enqueueFlight; const pendingSend = this.drainFlight;
     this.stop();
@@ -715,8 +735,9 @@ export class ChatClient {
   private async loadNotifications(epoch: number, more: boolean) {
     const cursor = more ? this.state.nextNotifications : null;
     if (more && !cursor) return;
+    const revision = this.notificationRevision;
     const page = await this.request<Page<NotificationItem> & { unreadCount: number }>('/notifications?limit=100' + (cursor ? '&after=' + encodeURIComponent(cursor) : ''));
-    if (this.current(epoch)) this.set({ notifications: more ? mergeItems(this.state.notifications, page.items) : page.items, notificationCount: page.unreadCount, nextNotifications: page.nextCursor });
+    if (this.current(epoch) && revision === this.notificationRevision) this.set({ notifications: more ? mergeItems(this.state.notifications, page.items) : page.items, notificationCount: page.unreadCount, nextNotifications: page.nextCursor });
   }
   async loadMoreNotifications(): Promise<void> { await this.loadNotifications(this.generation, true); }
   async loadMoreConversations(): Promise<void> { const cursor = this.state.nextConversations; if (!cursor) return; const epoch = this.generation; const page = await this.request<Page<Conversation>>('/conversations?limit=100&after=' + encodeURIComponent(cursor)); if (this.current(epoch)) { for (const item of page.items) this.upsertConversation(item); this.set({ nextConversations: page.nextCursor }); } }

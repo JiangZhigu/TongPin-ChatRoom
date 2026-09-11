@@ -288,6 +288,48 @@ describe('rich message persistence, located windows and live hints', () => {
     expect(current.getSnapshot().outbox).toEqual([]);
   });
 });
+describe('notification reference authority', () => {
+  const notice = { id: 'assigned', type: 'task.assigned', entityRef: 't_private', taskId: 't_private', available: true, text: '撤权后不可留下的标题', createdAt: 1, readAt: null };
+  it.each(['access.revoked', 'task.deleted', 'conversation.updated'])('hides cached task and mention previews before %s revalidation finishes', async (type) => {
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    let held = false; let entered = false; let release!: () => void;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (String(url).includes('/notifications?')) {
+        if (held) { entered = true; await new Promise<void>((resolve) => { release = resolve; }); return result({ items: [{ ...notice, text: '相关待办当前不可用', taskId: undefined, available: false }], nextCursor: null, unreadCount: 1 }) as Response; }
+        return result({ items: [notice, { ...notice, id: 'mention', type: 'message.mentioned', taskId: undefined, messageId: 'm_old', conversationId: conversation.id }, { ...notice, id: 'report', type: 'task.report.updated', text: '举报结案反馈', taskId: undefined }], nextCursor: null, unreadCount: 3 }) as Response;
+      }
+      return original(url, init);
+    });
+    const current = await client(); expect(current.getSnapshot().notifications[0].text).toBe(notice.text);
+    held = true; syncEvents.push(event('1', { type, entityRef: notice.entityRef })); socketEvents.get('sync.available')?.();
+    await until(() => entered);
+    expect(current.getSnapshot().notifications[0]).toMatchObject({ available: false, taskId: undefined });
+    expect(current.getSnapshot().notifications[0].text).not.toContain(notice.text);
+    expect(current.getSnapshot().notifications[1]).toMatchObject({ available: false, messageId: undefined, conversationId: undefined });
+    expect(current.getSnapshot().notifications[2].text).toBe('举报结案反馈');
+    release(); await until(() => current.getSnapshot().notifications.length === 1);
+    expect(current.getSnapshot().notifications[0].available).toBe(false);
+  });
+  it('discards a paginated notification response captured before access revocation', async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    let revoked = false; let entered = false; let release!: () => void;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (String(url).includes('/notifications?')) {
+        if (String(url).includes('&after=')) { entered = true; await new Promise<void>((resolve) => { release = resolve; }); return result({ items: [{ ...notice, id: 'late' }], nextCursor: null, unreadCount: 2 }) as Response; }
+        return result({ items: revoked ? [{ ...notice, text: '已撤权', available: false, taskId: undefined }] : [notice], nextCursor: revoked ? null : 'older', unreadCount: 1 }) as Response;
+      }
+      return original(url, init);
+    });
+    const current = await client(); const pending = current.loadMoreNotifications(); await until(() => entered);
+    revoked = true; syncEvents.push(event('1', { type: 'access.revoked' })); socketEvents.get('sync.available')?.();
+    await until(() => current.getSnapshot().notifications[0].text === '已撤权');
+    release(); await pending;
+    expect(current.getSnapshot().notifications).toHaveLength(1);
+    expect(current.getSnapshot().notifications[0]).toMatchObject({ text: '已撤权', available: false });
+    expect(current.getSnapshot().nextNotifications).toBeNull();
+  });
+});
+
 afterEach(async () => { for (const client of clients.splice(0)) client.stop(); await new Promise((resolve) => setTimeout(resolve, 5)); vi.restoreAllMocks(); vi.unstubAllGlobals(); setCsrfToken(''); });
 async function client() { const value = new ChatClient(user); clients.push(value); await value.start(); return value; }
 async function until(condition: () => boolean | Promise<boolean>) { for (let attempt = 0; attempt < 200; attempt++) { if (await condition()) return; await new Promise((resolve) => setTimeout(resolve, 10)); } throw new Error('Expected client state did not settle'); }

@@ -17,9 +17,10 @@ import { ContentPage } from './ContentPage';
 import { FilesPage } from './FilesPage';
 import { ReportsPage } from './ReportsPage';
 import { SettingsPage } from './SettingsPage';
+import { TasksPage } from './TasksPage';
 import '../styles-admin.css';
 
-const navigation = [['/admin', '运营概览'], ['/admin/monitoring', '系统监控'], ['/admin/users', '用户管理'], ['/admin/sessions', '会话与连接'], ['/admin/relations', '好友与关系'], ['/admin/groups', '群聊管理'], ['/admin/content', '消息治理'], ['/admin/files', '文件与空间'], ['/admin/reports', '举报工单'], ['/admin/settings', '站点策略'], ['/admin/announcements', '公告与通知'], ['/admin/administrators', '管理员安全'], ['/admin/audit', '审计与日志'], ['/admin/operations', '运维与备份']];
+const navigation = [['/admin', '运营概览'], ['/admin/monitoring', '系统监控'], ['/admin/users', '用户管理'], ['/admin/sessions', '会话与连接'], ['/admin/relations', '好友与关系'], ['/admin/groups', '群聊管理'], ['/admin/content', '消息治理'], ['/admin/tasks', '待办治理'], ['/admin/files', '文件与空间'], ['/admin/reports', '举报工单'], ['/admin/settings', '站点策略'], ['/admin/announcements', '公告与通知'], ['/admin/administrators', '管理员安全'], ['/admin/audit', '审计与日志'], ['/admin/operations', '运维与备份']];
 function currentLocation() { return window.location.pathname + window.location.search; }
 function Route({ url }: { url: string }) {
   const parsed = new URL(url, window.location.origin); const path = parsed.pathname.replace(/\/$/, ''); const params = parsed.searchParams;
@@ -30,6 +31,7 @@ function Route({ url }: { url: string }) {
   if (path === '/admin/relations') return <RelationsPage params={params} />;
   if (path === '/admin/groups') return <GroupsPage params={params} />;
   if (path === '/admin/content') return <ContentPage params={params} />;
+  if (path === '/admin/tasks') return <TasksPage initialGroupId={params.get('groupId') || ''} />;
   if (path === '/admin/files') return <FilesPage params={params} />;
   if (path === '/admin/reports') return <ReportsPage params={params} />;
   if (path === '/admin/settings') return <SettingsPage params={params} />;

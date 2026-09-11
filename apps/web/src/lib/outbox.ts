@@ -1,8 +1,9 @@
 import { APIError } from './api';
 import type { Draft, LocalAttachment, QueuedMessage, UserSummary } from './chat-types';
+import type { TaskDraft } from './tasks-types';
 
 const DATABASE = 'tongpin-local-v1';
-const VERSION = 1;
+const VERSION = 2;
 export const OUTBOX_LIMIT = 100;
 export const OUTBOX_BLOB_LIMIT = 50 * 1024 * 1024;
 export const OUTBOX_AGE_MS = 7 * 86400000;
@@ -24,11 +25,11 @@ export function openLocalDatabase(): Promise<IDBDatabase> {
     request.onupgradeneeded = () => {
       const db = request.result;
       for (const name of ['outbox', 'drafts']) {
-        const store = db.createObjectStore(name, { keyPath: 'key' });
-        store.createIndex('userId', 'userId');
+        if (!db.objectStoreNames.contains(name)) { const store = db.createObjectStore(name, { keyPath: 'key' }); store.createIndex('userId', 'userId'); }
       }
-      db.createObjectStore('leases', { keyPath: 'userId' });
-      db.createObjectStore('meta', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('leases')) db.createObjectStore('leases', { keyPath: 'userId' });
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('taskDrafts')) { const store = db.createObjectStore('taskDrafts', { keyPath: 'id' }); store.createIndex('userId', 'userId'); }
     };
     request.onerror = () => { clearTimeout(timer); reject(localError(request.error)); };
     request.onsuccess = () => {
@@ -68,7 +69,7 @@ async function transaction<T>(names: string[], mode: IDBTransactionMode, work: (
 
 export type OfflineIdentity = { key: 'active-user'; user: UserSummary; revision: string; savedAt: number };
 
-export type OfflineLocalSnapshot = { identity: OfflineIdentity; outbox: QueuedMessage[]; drafts: Draft[]; nextDraftCursor: string | null };
+export type OfflineLocalSnapshot = { identity: OfflineIdentity; outbox: QueuedMessage[]; drafts: Draft[]; taskDrafts: TaskDraft[]; nextDraftCursor: string | null };
 
 function identityChanged(): APIError { return new APIError(0, { code: 'LOCAL_IDENTITY_CHANGED', message: '本机账号状态已改变，请关闭旧内容并重新连接。' }); }
 
@@ -83,7 +84,7 @@ function announceLocal(kind: 'identity' | 'content', userId?: string) {
 
 /** Local recovery is deliberately separate from authenticated chat state. */
 export function readOfflineSnapshot(expectedRevision?: string, afterDraftKey?: string): Promise<OfflineLocalSnapshot | null> {
-  return transaction(['meta', 'outbox', 'drafts'], 'readonly', async (tx) => {
+  return transaction(['meta', 'outbox', 'drafts', 'taskDrafts'], 'readonly', async (tx) => {
     const identity: OfflineIdentity | undefined = await requested(tx.objectStore('meta').get('active-user'));
     if (expectedRevision && identity?.revision !== expectedRevision) throw identityChanged();
     if (!identity) return null;
@@ -100,16 +101,18 @@ export function readOfflineSnapshot(expectedRevision?: string, afterDraftKey?: s
         row.continue();
       };
     });
-    return { identity, outbox: outbox.filter((row) => row.userId === identity.user.id).sort((a, b) => a.createdAt - b.createdAt), drafts: drafts.slice(0, 100), nextDraftCursor: drafts.length > 100 ? drafts[99].key : null };
+    const taskDrafts: TaskDraft[] = await requested(tx.objectStore('taskDrafts').index('userId').getAll(IDBKeyRange.only(identity.user.id), 100));
+    return { identity, outbox: outbox.filter((row) => row.userId === identity.user.id).sort((a, b) => a.createdAt - b.createdAt), drafts: drafts.slice(0, 100), taskDrafts, nextDraftCursor: drafts.length > 100 ? drafts[99].key : null };
   });
 }
 
-export async function removeOfflineItem(expectedRevision: string, kind: 'outbox' | 'draft', key: string): Promise<void> {
-  const userId = await transaction(['meta', kind === 'draft' ? 'drafts' : 'outbox'], 'readwrite', async (tx) => {
+export async function removeOfflineItem(expectedRevision: string, kind: 'outbox' | 'draft' | 'taskDraft', key: string): Promise<void> {
+  const name = kind === 'draft' ? 'drafts' : kind === 'taskDraft' ? 'taskDrafts' : 'outbox';
+  const userId = await transaction(['meta', name], 'readwrite', async (tx) => {
     const identity: OfflineIdentity | undefined = await requested(tx.objectStore('meta').get('active-user'));
     if (!identity || identity.revision !== expectedRevision) throw identityChanged();
-    const store = tx.objectStore(kind === 'draft' ? 'drafts' : 'outbox');
-    const row: Draft | QueuedMessage | undefined = await requested(store.get(key));
+    const store = tx.objectStore(name);
+    const row: Draft | QueuedMessage | TaskDraft | undefined = await requested(store.get(key));
     if (row && row.userId !== identity.user.id) throw identityChanged();
     if (row) await requested(store.delete(key));
     return identity.user.id;
@@ -234,8 +237,8 @@ export function localSummary(userId: string): Promise<{ pending: number; drafts:
 }
 
 export function clearLocalUser(userId: string): Promise<void> {
-  return transaction(['outbox', 'drafts', 'leases'], 'readwrite', async (tx) => {
-    for (const name of ['outbox', 'drafts']) {
+  return transaction(['outbox', 'drafts', 'taskDrafts', 'leases'], 'readwrite', async (tx) => {
+    for (const name of ['outbox', 'drafts', 'taskDrafts']) {
       const store = tx.objectStore(name);
       const keys = await requested(store.index('userId').getAllKeys(IDBKeyRange.only(userId)));
       for (const key of keys) await requested(store.delete(key));

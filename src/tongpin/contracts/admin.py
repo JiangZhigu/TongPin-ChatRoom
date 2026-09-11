@@ -37,6 +37,8 @@ AdminAction = Literal[
     "administrator.invite", "administrator.cancel", "administrator.revoke", "administrator.factor_reset",
     "export.create", "backup.create", "backup.verify", "backup.drill", "storage.cleanup",
     "operation.cancel", "operation.retry", "job.retry",
+    "task.delete", "task.restore", "task.comment.delete", "task.group.policy",
+    "task_report.close", "task_report.reopen",
 ]
 
 

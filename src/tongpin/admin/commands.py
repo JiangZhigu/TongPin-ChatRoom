@@ -7,6 +7,7 @@ from tongpin.admin.audit import safe_details
 from tongpin.admin.authz import compact, conflict, fingerprint, mute_until, unavailable
 from tongpin.admin.monitoring import validate_thresholds
 from tongpin.admin.operations import OPERATION_ACTIONS
+from tongpin.admin.tasks import TASK_ACTIONS, validate_task_parameters
 from tongpin.admin.validation import validate_s2_parameters
 from tongpin.admin.validation_s3 import validate_s3_parameters
 from tongpin.contracts.base import APIError
@@ -20,6 +21,12 @@ class CommandsAdmin:
     def action_impacts(payload):
         action, parameters = payload["action"], payload["parameters"]
         descriptions = {
+            'task.delete': '管理删除指定群待办并立即停止普通访问；30天保留期内可审计恢复。',
+            'task.restore': '撤销保留期内的管理删除；当前账号与群权限继续适用。',
+            'task.comment.delete': '删除指定群待办评论，保留被删除提示。',
+            'task.group.policy': '更改指定群待办创建资格；既有待办保留。',
+            'task_report.close': '仅处置本举报对应对象，保存反馈并通知举报者；结案材料保留30天。',
+            'task_report.reopen': '重新打开尚在保留期的具体待办举报。',
             'announcement.create': '创建持久发送任务，以系统身份投递到预览中的固定名单。实际发送结果请查看公告记录。',
             'announcement.withdraw': '停止未发送部分，已收到者重新读取时看到撤回提示。',
             'administrator.invite': '发出24小时内有效的管理邀请。目标本人必须验证密码及新验证器后才能获得权限。',
@@ -96,6 +103,8 @@ class CommandsAdmin:
 
     @staticmethod
     def validate_parameters(action, targets, parameters):
+        if validate_task_parameters(action, targets, parameters):
+            return
         if validate_s3_parameters(action, targets, parameters):
             return
         if validate_s2_parameters(action, targets, parameters):
@@ -135,6 +144,8 @@ class CommandsAdmin:
             validate_thresholds(parameters["values"])
 
     def inspect_target(self, conn, action, target, parameters):
+        if action in TASK_ACTIONS:
+            return self.inspect_task_admin(conn, action, target, parameters)
         if action in OPERATION_ACTIONS:
             return self.inspect_operation(conn, action, target, parameters)
         if action.startswith('announcement.'):
@@ -400,7 +411,9 @@ class CommandsAdmin:
             before = safe_details(snap)
             if fingerprint(snap) != item["fingerprint"]:
                 raise conflict()
-            if command['action'] in OPERATION_ACTIONS:
+            if command['action'] in TASK_ACTIONS:
+                message = self.apply_task_admin(conn, command, item['target_id'], parameters)
+            elif command['action'] in OPERATION_ACTIONS:
                 message = self.apply_operation(conn, command, item['target_id'], parameters)
             elif command['action'].startswith('announcement.'):
                 message = self.apply_announcement(conn, command, item['target_id'], parameters)

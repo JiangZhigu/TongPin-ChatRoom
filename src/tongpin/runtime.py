@@ -28,6 +28,7 @@ from tongpin.infra.runtime_lock import RuntimeLock
 from tongpin.infra.runtime_logs import RuntimeLogs
 from tongpin.jobs.repository import JobRepository
 from tongpin.jobs.runner import JobRunner
+from tongpin.tasks.service import TaskService
 
 
 class Runtime:
@@ -64,6 +65,7 @@ class Runtime:
         self.contacts = ContactService(self)
         self.chat = ChatService(self)
         self.groups = GroupService(self)
+        self.tasks = TaskService(self)
         self.files = FileService(self)
         self.interactions = InteractionService(self)
         self.lifecycle = LifecycleService(self)
@@ -75,6 +77,7 @@ class Runtime:
         self.runner.handlers["files.cleanup"] = self.files.cleanup
         self.file_runner.handlers["files.process"] = self.files.process
         self.runner.handlers["retention.cleanup"] = self.lifecycle.cleanup
+        self.runner.handlers['tasks.remind'] = self.tasks.remind
         self.admin_runner.handlers['admin.execute'] = self.admin.process_command
         self.jobs.failure_handlers['admin.execute'] = self.admin.fail_command
         self.runner.handlers['announcements.publish'] = self.admin.publish_announcement
@@ -164,6 +167,8 @@ class Runtime:
             "chat": self.auth is not None,
             "admin": self.auth is not None,
             "files": self.auth is not None,
+            'tasks': self.auth is not None and self.settings.feature_tasks,
+            'tasksEnhanced': self.auth is not None and self.settings.feature_tasks and self.settings.feature_tasks_enhanced,
         }
 
     def connections_snapshot(self):

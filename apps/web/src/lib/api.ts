@@ -38,10 +38,13 @@ export function onAuthExpired(listener: () => void): () => void {
   return () => { expiredListeners.delete(listener); };
 }
 
-export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; inviteToken?: string; responseType?: 'blob'; timeoutMs?: number; upload?: { id: string; blob: Blob } } = {}): Promise<T> {
+export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; inviteToken?: string; responseType?: 'blob'; timeoutMs?: number; ifMatch?: string; idempotencyKey?: string; actorContext?: string; upload?: { id: string; blob: Blob } } = {}): Promise<T> {
   const method = options.method || 'GET';
   const generation = identityGeneration;
   const headers: Record<string, string> = { Accept: 'application/json' };
+  if (options.ifMatch) headers['If-Match'] = options.ifMatch;
+  if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey;
+  if (options.actorContext) headers['X-Actor-Context'] = options.actorContext;
   if (options.inviteToken) headers['X-Group-Invite'] = options.inviteToken;
   if (!['GET', 'HEAD'].includes(method)) headers['X-CSRF-Token'] = csrfToken;
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';

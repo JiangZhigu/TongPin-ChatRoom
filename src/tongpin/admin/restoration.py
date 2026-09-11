@@ -36,6 +36,7 @@ def upsert_row(conn, table, row, keys=("id",)):
 
 def apply_current_authority(clone, authority_path, check):
     """Apply a coherent current snapshot before any restored account can log in."""
+    from tongpin.admin.task_restoration import rebuild_reminders, replay_tasks
     source = sqlite3.connect(authority_path.as_uri() + "?mode=ro", uri=True)
     source.row_factory = sqlite3.Row
     result = {
@@ -265,6 +266,7 @@ def apply_current_authority(clone, authority_path, check):
                 "UPDATE conversation_preferences SET read_seq=MIN(read_seq,(SELECT last_seq FROM conversations WHERE id=conversation_id))"
             )
             # Terminal states no longer enter the ordinary expiry selectors.
+            result.update(replay_tasks(clone, conn, source, check))
             # Reapply the same erasure to old snapshot relations before success.
             for row in conn.execute("SELECT id FROM messages WHERE status='purged'").fetchall():
                 check()
@@ -272,6 +274,7 @@ def apply_current_authority(clone, authority_path, check):
             for row in conn.execute("SELECT id FROM users WHERE status='deleted'").fetchall():
                 check()
                 clone.lifecycle.purge_account_in(conn, row[0], now_ms())
+            rebuild_reminders(clone, conn, check)
             audit(
                 conn,
                 None,
@@ -302,13 +305,15 @@ def isolated_restore(runtime, archive_path, manifest, target, authority_path, ch
         clone.db.migrate()
         clone.auth = AuthService(clone)
         replay = apply_current_authority(clone, authority_path, check)
-        cleanup = {"messagesPurged": 0, "accountsPurged": 0, "filesRemoved": 0, "bytesReleased": 0}
+        cleanup = {"messagesPurged": 0, "accountsPurged": 0, "filesRemoved": 0, "bytesReleased": 0, "tasksPurged": 0, "taskReportsPurged": 0}
         for _ in range(1000):
             check()
             result = clone.lifecycle.cleanup()
             files = clone.files.cleanup()
             cleanup["messagesPurged"] += result["messagesPurged"]
             cleanup["accountsPurged"] += result["accountsPurged"]
+            cleanup["tasksPurged"] += result.get("tasksPurged", 0)
+            cleanup["taskReportsPurged"] += result.get("taskReportsPurged", 0)
             cleanup["filesRemoved"] += files.get("filesRemoved", 0)
             cleanup["bytesReleased"] += files.get("bytesReleased", 0)
             if not result.get("morePending") and files["removed"] < 100:

@@ -38,6 +38,8 @@ DEFAULT_POLICY = {
     "message_per_minute": 120,
     "group_create_per_hour": 30,
     "online_notifications": True,
+    "task_personal_quota": 5000,
+    "task_group_quota": 10000,
 }
 
 
@@ -67,6 +69,10 @@ class Settings:
     scanner_timeout: float = 8.0
     allow_unscanned_files: bool = False
     max_connections: int = 200
+    feature_tasks: bool = True
+    feature_tasks_enhanced: bool = True
+    task_personal_quota: int = 5000
+    task_group_quota: int = 10000
     web_dist: Path = field(default_factory=lambda: PROJECT_ROOT / "apps/web/dist")
 
     @classmethod
@@ -101,6 +107,10 @@ class Settings:
             scanner_host=env.get("TONGPIN_CLAMD_HOST", "127.0.0.1"),
             scanner_port=int(env.get("TONGPIN_CLAMD_PORT", "0")),
             allow_unscanned_files=env.get("TONGPIN_ALLOW_UNSCANNED_FILES", "0") == "1",
+            feature_tasks=env.get('TONGPIN_FEATURE_TASKS', '1') == '1',
+            feature_tasks_enhanced=env.get('TONGPIN_FEATURE_TASKS_ENHANCED', '1') == '1',
+            task_personal_quota=int(env.get('TONGPIN_TASK_PERSONAL_QUOTA', '5000')),
+            task_group_quota=int(env.get('TONGPIN_TASK_GROUP_QUOTA', '10000')),
         )
         result.validate()
         return result
@@ -114,6 +124,8 @@ class Settings:
             raise ValueError("TONGPIN_ENV must be development, test, or production")
         if not 1 <= self.port <= 65535 or self.http_concurrency < 1:
             raise ValueError("Invalid server port or concurrency")
+        if not 1 <= self.task_personal_quota <= 5000 or not 1 <= self.task_group_quota <= 10000:
+            raise ValueError('Task quotas must be positive and within the configured single-instance bounds')
         if (
             self.data_root.resolve() == Path(self.data_root.anchor)
             or self.data_root.resolve() == PROJECT_ROOT

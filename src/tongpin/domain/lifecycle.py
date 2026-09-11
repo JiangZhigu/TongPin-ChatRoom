@@ -135,6 +135,7 @@ class LifecycleService:
 
     def purge_message_in(self, conn, mid, timestamp):
         """Idempotent erasure shared by live retention and authority replay."""
+        conn.execute('DELETE FROM todo_message_cards WHERE message_id=?', (mid,))
         conn.execute(
             "UPDATE attachments SET message_id=NULL,state='expired',expires_at=?,error_code='CONTENT_PURGED' WHERE message_id=?",
             (timestamp, mid),
@@ -147,6 +148,7 @@ class LifecycleService:
 
     def purge_account_in(self, conn, uid, timestamp):
         """Erase private data after memberships close, retaining audited references."""
+        self.runtime.tasks.purge_account_in(conn, uid)
         conn.execute(
             "UPDATE users SET status='deleted',nickname='已注销用户',bio='',password_hash='!',site_role='user',preferences='{}',totp_secret=NULL,totp_last_counter=-1,avatar_id=NULL,muted_until=NULL,quota_bytes=NULL,updated_at=? WHERE id=?",
             (timestamp, uid),
@@ -191,6 +193,7 @@ class LifecycleService:
                 self.schedule(conn, 60000)
                 return counts | {"heldByBackup": True}
             policy, timestamp = self.runtime.policy.get(conn), now_ms()
+            counts.update(self.runtime.tasks.cleanup_in(conn, timestamp))
             removed = conn.execute(
                 "SELECT id,conversation_id FROM messages WHERE status IN('recalled','moderated') AND removed_at<=? ORDER BY removed_at,id LIMIT 100",
                 (timestamp - policy["deleted_content_days"] * DAY,),
@@ -284,6 +287,9 @@ class LifecycleService:
                 or len(users) == 20
                 or len(old_events) == 1000
                 or counts["auditPurged"] == 1000
+                or counts.get("tasksPurged", 0) == 100
+                or counts.get("taskReportsPurged", 0) == 100
+                or counts.get("taskKeysPurged", 0) == 1000
             )
             self.schedule(conn, 1000 if more else 3600000)
             conn.execute(

@@ -12,10 +12,19 @@ import { Composer } from './components/Composer';
 import { OfflineRecoveryPage } from './OfflineRecoveryPage';
 import { APIError } from './lib/api';
 import type { OfflineLocalSnapshot } from './lib/outbox';
+import type { Task, TaskMeta, TaskState, TaskDraft } from './lib/tasks-types';
+import { NotificationsPage } from './NotificationsPage';
+import { NavigationRail } from './components/NavigationRail';
+const taskUI = vi.hoisted(() => ({ state: null as TaskState | null, listeners: new Set<() => void>(), start: vi.fn(), stop: vi.fn(), meta: vi.fn(), get: vi.fn(), list: vi.fn(), card: vi.fn(), create: vi.fn(), groupSettings: vi.fn(), activities: vi.fn(), comments: vi.fn(), users: [] as string[] }));
+vi.mock('./lib/tasks-client', () => ({ taskCommandKey: () => crypto.randomUUID(), TaskClient: class {
+  userId: string; constructor(id: string) { this.userId = id; taskUI.users.push(id); }
+  subscribe = (fn: () => void) => { taskUI.listeners.add(fn); return () => { taskUI.listeners.delete(fn); }; }; getSnapshot = () => taskUI.state!;
+  start = taskUI.start; stop = taskUI.stop; meta = taskUI.meta; get = taskUI.get; list = taskUI.list; card = taskUI.card; create = taskUI.create; groupSettings = taskUI.groupSettings; activities = taskUI.activities; comments = taskUI.comments;
+} }));
 
 const offline = vi.hoisted(() => ({
   read: vi.fn<(revision?: string, cursor?: string) => Promise<OfflineLocalSnapshot | null>>(),
-  remove: vi.fn<(revision: string, kind: 'outbox' | 'draft', key: string) => Promise<void>>(),
+  remove: vi.fn<(revision: string, kind: 'outbox' | 'draft' | 'taskDraft', key: string) => Promise<void>>(),
   listeners: new Set<(kind: 'identity' | 'content' | 'check') => void>(),
 }));
 vi.mock('./lib/outbox', () => ({
@@ -30,8 +39,8 @@ const chat = vi.hoisted(() => ({
   queue: vi.fn<(id: string, text: string, options?: { files: LocalAttachment[]; replyToMessageId?: string | null; mentionedUserIds?: string[]; mentionAll?: boolean }) => Promise<void>>(), retry: vi.fn<(id: string) => Promise<void>>(), cancel: vi.fn<(id: string) => Promise<void>>(),
   getDraft: vi.fn<(id: string) => Promise<Draft | null>>(), saveDraft: vi.fn<(id: string, text: string, position?: unknown) => Promise<void>>(),
   refresh: vi.fn<() => Promise<void>>(), read: vi.fn<(id: string, seq: string) => Promise<void>>(),
-  summary: vi.fn<() => Promise<{ pending: number; drafts: number }>>(), logout: vi.fn<(choice: 'keep' | 'delete') => Promise<void>>(),
-  jump: vi.fn<(id: string) => Promise<void>>(), newer: vi.fn<() => Promise<void>>(), typing: vi.fn(), beginUpdate: vi.fn(), bookmark: vi.fn(), apply: vi.fn(), finishDeletion: vi.fn(),
+  summary: vi.fn<() => Promise<{ pending: number; drafts: number; taskDrafts?: number }>>(), logout: vi.fn<(choice: 'keep' | 'delete') => Promise<void>>(),
+  jump: vi.fn<(id: string) => Promise<void>>(), newer: vi.fn<() => Promise<void>>(), typing: vi.fn(), beginUpdate: vi.fn(), bookmark: vi.fn(), apply: vi.fn(), finishDeletion: vi.fn(), prepareDeletion: vi.fn(), resumeDeletion: vi.fn(),
   more: vi.fn<() => Promise<void>>(), histories: {} as Record<string, Message[]>,
 }));
 vi.mock('./lib/chat-client', () => ({ ChatClient: class {
@@ -40,7 +49,7 @@ vi.mock('./lib/chat-client', () => ({ ChatClient: class {
   start = chat.start; stop = chat.stop; updateUser = chat.updateUser; selectConversation = chat.select; loadOlder = chat.older;
   queue = chat.queue; retry = chat.retry; cancel = chat.cancel; getDraft = chat.getDraft; saveDraft = chat.saveDraft;
   refresh = chat.refresh; read = chat.read; getLocalSummary = chat.summary; logout = chat.logout;
-  jumpToMessage = chat.jump; loadNewer = chat.newer; typing = chat.typing; applyMessage = chat.apply; beginMessageUpdate = chat.beginUpdate; applyBookmark = chat.bookmark; finishAccountDeletion = chat.finishDeletion;
+  jumpToMessage = chat.jump; loadNewer = chat.newer; typing = chat.typing; applyMessage = chat.apply; beginMessageUpdate = chat.beginUpdate; applyBookmark = chat.bookmark; finishAccountDeletion = chat.finishDeletion; prepareAccountDeletion = chat.prepareDeletion; resumeAccountAfterDeletionFailure = chat.resumeDeletion;
   loadMoreConversations = chat.more; loadMoreContacts = chat.more; loadMoreRequests = chat.more; loadMoreNotifications = chat.more;
 } }));
 
@@ -65,6 +74,8 @@ function dimensions(element: HTMLElement, initialHeight = 1000, initialTop = 200
 beforeEach(() => {
   for (const value of Object.values(chat)) if (vi.isMockFunction(value)) value.mockReset();
   chat.listeners.clear(); chat.state = freshState(); chat.histories = {};
+  for (const value of Object.values(taskUI)) if (vi.isMockFunction(value)) value.mockReset(); taskUI.listeners.clear(); taskUI.users = [];
+  taskUI.state = { revision: 0, listRevision: 0, entities: {}, invalid: {}, online: false, enabled: true, enhanced: true, error: null };
   offline.read.mockReset().mockResolvedValue(null); offline.remove.mockReset().mockResolvedValue(); offline.listeners.clear();
   chat.start.mockResolvedValue(); chat.queue.mockResolvedValue(); chat.retry.mockResolvedValue(); chat.cancel.mockResolvedValue(); chat.older.mockResolvedValue();
   chat.getDraft.mockResolvedValue(null); chat.saveDraft.mockResolvedValue(); chat.refresh.mockResolvedValue(); chat.read.mockResolvedValue(); chat.logout.mockResolvedValue(); chat.more.mockResolvedValue(); chat.summary.mockResolvedValue({ pending: 0, drafts: 0 });
@@ -449,13 +460,13 @@ describe('M3-M4 contacts UI', () => {
   });
 });
 
-const offlineData = (): OfflineLocalSnapshot => ({ identity: { key: 'active-user', user, revision: 'revision-a', savedAt: 1 }, outbox: [queued('离线保存的正文')], drafts: [{ key: 'draft-a', userId: user.id, conversationId: 'dm-a', text: '离线保存的草稿', updatedAt: 1 }], nextDraftCursor: null });
+const offlineData = (): OfflineLocalSnapshot => ({ identity: { key: 'active-user', user, revision: 'revision-a', savedAt: 1 }, outbox: [queued('离线保存的正文')], drafts: [{ key: 'draft-a', userId: user.id, conversationId: 'dm-a', text: '离线保存的草稿', updatedAt: 1 }], taskDrafts: [], nextDraftCursor: null });
 describe('M3-M4 unverified offline recovery UI', () => {
   it('does not expose kept content without an active local identity or start the authenticated client', async () => {
     render(<OfflineRecoveryPage onBack={vi.fn()} onReconnect={vi.fn()} />);
     expect(await screen.findByText('没有可展示的本机内容')).toBeInTheDocument();
     expect(screen.queryByText(user.nickname)).not.toBeInTheDocument(); expect(chat.start).not.toHaveBeenCalled();
-    expect(screen.getByText('账号状态尚未验证，重新连接后确认身份再补发。')).toBeInTheDocument();
+    expect(screen.getByText('账号状态尚未验证。聊天待发可在验证身份后继续投递；任务草稿须本人联网复核并确认提交。')).toBeInTheDocument();
   });
   it('clears the old identity immediately and never restores it from a late read', async () => {
     const late = deferred<OfflineLocalSnapshot | null>();
@@ -487,7 +498,7 @@ describe('M3-M4 unverified offline recovery UI', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '删除本机草稿' })[0]);
     expect(offline.remove).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '确认删除本机条目' }));
     await waitFor(() => expect(offline.remove).toHaveBeenCalledWith('revision-a', 'draft', 'draft-a'));
-    expect(await screen.findByText('本机条目已删除；服务器已经收到的消息不受影响。')).toBeInTheDocument();
+    expect(await screen.findByText('本机条目已删除；服务器已经收到的消息与任务不受影响。')).toBeInTheDocument();
     expect(chat.queue).not.toHaveBeenCalled(); expect(chat.start).not.toHaveBeenCalled();
   });
 });
@@ -610,5 +621,67 @@ describe('M7-FIX-UI workspace mutation wiring', () => {
     const token = Object.freeze({ generation: 2, contentRevision: 8 }); chat.beginUpdate.mockReturnValue(token); const original = { ...message(), capabilities: { canInteract: true, canRecall: false, canModerate: false } }; chat.histories['dm-a'] = [original]; const pending = deferred<{ ok: boolean; status: number; json: () => Promise<unknown> }>();
     const fetchMock = vi.mocked(fetch); fetchMock.mockImplementationOnce(() => pending.promise as Promise<Response>); showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '收藏' })); const tombstone = { ...original, status: 'recalled' as const, text: '', reactions: [] }; act(() => publish({ messages: [tombstone] })); await act(async () => pending.resolve({ ok: true, status: 200, json: async () => ({ data: { bookmarked: true } }) })); expect(chat.beginUpdate).toHaveBeenCalledOnce(); expect(chat.beginUpdate.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]); expect(chat.bookmark).toHaveBeenCalledExactlyOnceWith(original.id, true, token); expect(chat.apply).not.toHaveBeenCalled(); expect(screen.getByText('这条消息已撤回')).toBeInTheDocument();
     act(() => publish({ messages: [original] })); fetchMock.mockImplementationOnce(() => response({ message: original }) as Promise<Response>); fireEvent.click(screen.getByRole('button', { name: '👍' })); await waitFor(() => expect(chat.apply).toHaveBeenCalledExactlyOnceWith(original, token)); expect(chat.beginUpdate).toHaveBeenCalledTimes(2);
+  });
+});
+
+const integrationMeta: TaskMeta = { actorId: user.id, enabled: true, enhanced: true, canCreatePersonal: true, writeReason: null, preferences: { assignments: true, comments: true, completed: true, due: true, timezone: 'Asia/Shanghai' }, labels: [], limits: { personal: 500, group: 500, checkItems: 30, draftDays: 7, draftCount: 50 } };
+const integrationTask: Task = { id: 'task-one', viewerId: user.id, scope: 'personal', groupId: null, groupName: null, ownerId: user.id, creator: user, assignee: user, title: '任务真实标题', description: '任务独立正文', status: 'todo', priority: 'normal', dueOn: null, dueTimezone: 'Asia/Shanghai', overdue: false, completedAt: null, createdAt: 1, updatedAt: 1, deletedAt: null, version: 1, etag: '"task-v1"', checkItems: [], source: null, capabilities: { edit: true, progress: true, assign: true, claim: false, release: false, checkStructure: true, checkToggle: true, remove: true, restore: false, comment: true, share: true, copyToGroup: true, writeReason: null }, followed: false, bookmarked: false, listId: null, tagIds: [], reminder: { rule: 'none', time: '09:00' } };
+function enableTasks() {
+  taskUI.state = { ...taskUI.state!, online: true, entities: { [integrationTask.id]: integrationTask } };
+  taskUI.meta.mockResolvedValue(integrationMeta); taskUI.get.mockResolvedValue(integrationTask); taskUI.create.mockResolvedValue(integrationTask);
+  taskUI.list.mockResolvedValue({ actorId: user.id, items: [integrationTask], nextCursor: null, total: 1 }); taskUI.activities.mockResolvedValue({ items: [], nextCursor: null }); taskUI.comments.mockResolvedValue({ items: [], nextCursor: null });
+  taskUI.groupSettings.mockResolvedValue({ groupId: 'g1', canManage: false, canCreate: true, writeReason: null, createPolicy: 'members', count: 0, quota: 500, etag: 'group-v1' });
+}
+
+describe('V3 task shell integration', () => {
+  it('starts one task client for the account and stops it on unmount', async () => {
+    enableTasks(); const view = showWorkspace(); await waitFor(() => expect(taskUI.meta).toHaveBeenCalled()); expect(taskUI.users).toEqual([user.id]); expect(taskUI.start).toHaveBeenCalledTimes(1); view.unmount(); expect(taskUI.stop).toHaveBeenCalledTimes(1); expect(taskUI.listeners.size).toBe(0);
+  });
+  it('preserves chat draft and pauses read immediately while opening a task and while a non-dialog overlay state remains', async () => {
+    enableTasks(); showWorkspace(); await openConversation(); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '未发送的聊天输入' } }); const viewport = screen.getByLabelText('消息记录'); dimensions(viewport, 1000, 700); const saving = deferred<void>(); chat.saveDraft.mockReturnValue(saving.promise);
+    fireEvent.click(screen.getByRole('button', { name: '新建待办' })); vi.mocked(document.hasFocus).mockReturnValue(true); act(() => publish({ messages: [message()] })); fireEvent.focus(window); expect(chat.read).not.toHaveBeenCalled(); await act(async () => saving.resolve()); const dialog = await screen.findByRole('dialog', { name: '新建待办' });
+    dialog.removeAttribute('open'); fireEvent.focus(window); fireEvent.scroll(viewport); expect(chat.read).not.toHaveBeenCalled(); fireEvent.click(within(dialog).getByRole('button', { name: '关闭', hidden: true })); expect(screen.getByLabelText('消息内容')).toHaveValue('未发送的聊天输入'); expect(screen.getByLabelText('消息记录')).toBe(viewport); fireEvent.focus(window); await waitFor(() => expect(chat.read).toHaveBeenCalledWith('dm-a', '1')); expect(chat.typing).toHaveBeenCalledWith(false);
+  });
+  it('does not open a task form when saving the outgoing chat draft fails', async () => {
+    enableTasks(); showWorkspace(); await openConversation(); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '必须保留' } }); chat.saveDraft.mockRejectedValue(new Error('聊天草稿未能保存')); fireEvent.click(screen.getByRole('button', { name: '新建待办' })); await screen.findByText('聊天草稿未能保存'); expect(screen.queryByRole('dialog', { name: '新建待办' })).not.toBeInTheDocument(); expect(screen.getByLabelText('消息内容')).toHaveValue('必须保留');
+  });
+  it('opens a source form as personal by default and only offers its own group as shared scope', async () => {
+    enableTasks(); chat.state!.conversations = [{ ...conversation('g1', '来源群'), kind: 'group', peer: null }, { ...conversation('g2', '另一群'), kind: 'group', peer: null }]; chat.histories.g1 = [{ ...message(), conversationId: 'g1', text: '确认来源文字' }]; showWorkspace(); await openConversation('来源群'); fireEvent.click(screen.getByRole('button', { name: '转为待办' })); await screen.findByRole('dialog', { name: '从消息创建待办' }); expect(screen.getByLabelText('可见范围')).toHaveValue('personal'); fireEvent.change(screen.getByLabelText('可见范围'), { target: { value: 'group' } }); expect(screen.getByLabelText('所属群')).toHaveValue('g1'); expect(within(screen.getByLabelText('所属群')).queryByRole('option', { name: '另一群' })).not.toBeInTheDocument(); expect(taskUI.create).not.toHaveBeenCalled();
+  });
+  it('renders current card data rather than stale DTO text and switches to neutral content when disabled', async () => {
+    enableTasks(); taskUI.card.mockResolvedValue({ kind: 'unavailable' }); chat.histories['dm-a'] = [{ ...message('card1', '1', 'OLD-LEAK-TITLE'), taskCard: { kind: 'live', task: { ...integrationTask, title: 'OLD-LEAK-CARD' } } }]; showWorkspace(); await openConversation(); await screen.findByText('待办暂不可用'); expect(screen.queryByText('OLD-LEAK-TITLE')).not.toBeInTheDocument(); expect(screen.queryByText('OLD-LEAK-CARD')).not.toBeInTheDocument(); act(() => { taskUI.state = { ...taskUI.state!, enabled: false }; taskUI.listeners.forEach((fn) => fn()); }); expect(screen.getByText('当前未启用待办功能。')).toBeInTheDocument();
+  });
+  it('opens the independent snapshot save form only from a verified card result', async () => {
+    enableTasks(); const snapshot = { title: '已确认静态副本', priority: 'normal', dueOn: null, dueTimezone: 'Asia/Shanghai' }; taskUI.card.mockResolvedValue({ kind: 'snapshot', snapshot }); chat.histories['dm-a'] = [{ ...message('snapshot1'), taskCard: { kind: 'unavailable' } }]; showWorkspace(); await openConversation(); fireEvent.click(await screen.findByRole('button', { name: '存为我的待办' })); await screen.findByRole('dialog', { name: '将静态副本存为我的待办' }); expect(screen.getByLabelText(/待办标题/)).toHaveValue('已确认静态副本'); expect(screen.getByLabelText('可见范围')).toBeDisabled(); expect(taskUI.create).not.toHaveBeenCalled();
+  });
+  it('keeps all low-frequency entries and pending failures reachable from the mobile more menu', () => {
+    const go = vi.fn(); render(<NavigationRail active="tasks" onNavigate={go} badges={{ queue: 2, contacts: 1 }} failedCount={1} />); fireEvent.click(screen.getByRole('button', { name: '更多' })); const more = screen.getByRole('region', { name: '更多功能' }); expect(more).toHaveTextContent('有 1 条消息投递失败'); for (const label of ['联系人', '待发', '文件', '设置']) expect(within(more).getByRole('button', { name: new RegExp(label) })).toBeEnabled(); fireEvent.click(within(more).getByRole('button', { name: /待发/ })); expect(go).toHaveBeenCalledWith('queue');
+  });
+  it('loads later conversation pages from the task workspace and displays newly loaded groups', async () => {
+    enableTasks(); chat.state!.nextConversations = 'group-page2'; chat.more.mockImplementation(async () => { publish({ conversations: [...chat.state!.conversations, { ...conversation('later-group', '后续页群组'), kind: 'group' }], nextConversations: null }); }); showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '待办' })); await screen.findByText('任务真实标题'); fireEvent.click(screen.getByRole('button', { name: '加载更多会话与群' })); await screen.findByRole('button', { name: '后续页群组' }); expect(chat.more).toHaveBeenCalledTimes(1);
+  });
+  it('includes task-only drafts in logout confirmation, stops only after confirmation, and resumes after failure', async () => {
+    enableTasks(); chat.summary.mockResolvedValue({ pending: 0, drafts: 0, taskDrafts: 2 }); chat.logout.mockRejectedValue(new Error('退出未成功')); showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '设置' })); fireEvent.click(await screen.findByRole('button', { name: '退出登录' })); const prompt = await screen.findByRole('dialog', { name: '退出前，处理本机内容' }); expect(prompt).toHaveTextContent('2 份任务草稿'); expect(taskUI.stop).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '删除本机内容并退出' })); await screen.findByText('退出未成功'); expect(taskUI.stop).toHaveBeenCalledTimes(1); expect(taskUI.stop.mock.invocationCallOrder[0]).toBeLessThan(chat.logout.mock.invocationCallOrder[0]); expect(taskUI.start).toHaveBeenCalledTimes(2);
+  });
+  it('task notifications require available target and recheck the task before opening detail', async () => {
+    enableTasks(); chat.state!.notifications = [{ id: 'n-task', type: 'task.assigned', entityRef: 'task-one', taskId: 'task-one', available: true, text: '分配给你的待办', readAt: 1, createdAt: 1 }]; showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '通知' })); fireEvent.click(await screen.findByRole('button', { name: '核对并查看待办' })); await screen.findByRole('dialog', { name: '待办详情' }); expect(taskUI.get).toHaveBeenCalledWith('task-one');
+  });
+  it('unavailable task notification hides its old text and cannot navigate to a task or friend requests', () => {
+    const open = vi.fn(); const requests = vi.fn(); render(<NotificationsPage actorContext={user.id} items={[{ id: 'n1', type: 'task.assigned', taskId: 'private-old', entityRef: 'private-old', available: false, text: 'OLD-PRIVATE-NOTIFICATION', readAt: 1, createdAt: 1 }]} hasMore={false} onLoadMore={vi.fn()} onRefresh={vi.fn()} onOpenRequests={requests} onOpenTask={open} />); expect(screen.queryByText('OLD-PRIVATE-NOTIFICATION')).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: '核对并查看待办' })).toBeDisabled(); expect(open).not.toHaveBeenCalled(); expect(requests).not.toHaveBeenCalled();
+  });
+  it('offline recovery filters task drafts by identity and deletes through the exact revision-scoped task-draft API', async () => {
+    const draft: TaskDraft = { id: 'draft-task', userId: user.id, taskId: null, kind: 'create', baseEtag: null, payload: { title: '本机任务输入', description: '不能自动提交' }, createdAt: 1, updatedAt: 2, expiresAt: 3 }; const data: OfflineLocalSnapshot = { identity: { key: 'active-user', user, revision: 'task-rev', savedAt: 1 }, outbox: [], drafts: [], taskDrafts: [draft, { ...draft, id: 'other', userId: 'other-user', payload: { title: '不可展示的他人草稿' } }], nextDraftCursor: null }; offline.read.mockResolvedValue(data); render(<OfflineRecoveryPage onBack={vi.fn()} onReconnect={vi.fn()} />); await screen.findByText('本机任务输入'); expect(screen.queryByText('不可展示的他人草稿')).not.toBeInTheDocument(); expect(screen.getByText('已过期，仅可保留或复制输入', { exact: false })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: '删除本机任务草稿' })); expect(offline.remove).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '确认删除本机条目' })); await waitFor(() => expect(offline.remove).toHaveBeenCalledWith('task-rev', 'taskDraft', 'draft-task')); expect(taskUI.start).not.toHaveBeenCalled();
+  });
+  it('offline identity change closes task draft content before later operations', async () => {
+    const draft = { id: 'd1', userId: user.id, taskId: null, kind: 'create', baseEtag: null, payload: { title: '旧身份任务输入' }, createdAt: 1, updatedAt: 1, expiresAt: 2 } as TaskDraft; offline.read.mockResolvedValue({ identity: { key: 'active-user', user, revision: 'task-old', savedAt: 1 }, outbox: [], drafts: [], taskDrafts: [draft], nextDraftCursor: null }); render(<OfflineRecoveryPage onBack={vi.fn()} onReconnect={vi.fn()} />); await screen.findByText('旧身份任务输入'); act(() => offline.listeners.forEach((fn) => fn('identity'))); expect(screen.queryByText('旧身份任务输入')).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: '删除本机任务草稿' })).not.toBeInTheDocument(); expect(offline.remove).not.toHaveBeenCalled();
+  });
+});
+describe('V3 deletion and IME integration', () => {
+  it('passes all three local counts into deletion and resumes task state if reauthentication fails', async () => {
+    enableTasks(); chat.summary.mockResolvedValue({ pending: 1, drafts: 2, taskDrafts: 3 }); vi.stubGlobal('fetch', vi.fn((url: string) => url === '/api/v1/account/deletion-preview' ? response({ coolingDays: 7, ownedGroups: [], lastAdministrator: false, sharedMessagesRetained: true }) : url === '/api/v1/auth/reauth' ? Promise.resolve({ ok: false, status: 403, json: async () => ({ error: { code: 'REAUTH_FAILED', message: '再次验证失败' } }) }) : response({ items: [], nextCursor: null })));
+    showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '设置' })); fireEvent.click(await screen.findByRole('button', { name: '查看注销影响' })); const dialog = await screen.findByRole('dialog', { name: '注销账号' }); await within(dialog).findByText('当前账号本机有 1 条待发消息、2 份聊天草稿、3 份任务草稿。'); expect(taskUI.stop).not.toHaveBeenCalled(); fireEvent.change(within(dialog).getByLabelText('当前密码'), { target: { value: 'private-test-password' } }); fireEvent.change(within(dialog).getByLabelText(`输入登录名 ${user.username} 确认注销`), { target: { value: user.username } }); fireEvent.change(within(dialog).getByLabelText('本机内容处理'), { target: { value: 'delete' } }); fireEvent.click(within(dialog).getByRole('button', { name: '验证身份并注销账号' })); await within(dialog).findByText('再次验证失败'); expect(taskUI.stop).toHaveBeenCalledTimes(1); expect(chat.prepareDeletion).toHaveBeenCalledTimes(1); expect(chat.resumeDeletion).toHaveBeenCalledTimes(1); expect(taskUI.start).toHaveBeenCalledTimes(2); expect(chat.finishDeletion).not.toHaveBeenCalled();
+  });
+  it('keeps IME enter and task buttons separate from the chat send action', () => {
+    const send = vi.fn(); const create = vi.fn(); render(<Composer value="正在输入" onChange={vi.fn()} onSend={send} onCreateTask={create} />); const input = screen.getByLabelText('消息内容'); fireEvent.compositionStart(input); fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: true }); expect(send).not.toHaveBeenCalled(); expect(screen.getByRole('button', { name: '新建待办' })).toBeDisabled(); fireEvent.compositionEnd(input); fireEvent.click(screen.getByRole('button', { name: '新建待办' })); expect(create).toHaveBeenCalledTimes(1); expect(send).not.toHaveBeenCalled(); fireEvent.keyDown(input, { key: 'Enter', shiftKey: true }); expect(send).not.toHaveBeenCalled(); fireEvent.keyDown(input, { key: 'Enter' }); expect(send).toHaveBeenCalledTimes(1);
   });
 });

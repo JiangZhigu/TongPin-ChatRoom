@@ -15,6 +15,7 @@ from tongpin.admin.relations import RelationsAdmin
 from tongpin.admin.reports import ReportsAdmin
 from tongpin.admin.sessions import SessionsAdmin
 from tongpin.admin.settings import SettingsAdmin
+from tongpin.admin.tasks import TasksAdmin
 from tongpin.admin.users import UsersAdmin
 from tongpin.infra.cache import BoundedCache
 
@@ -24,6 +25,7 @@ class AdminService(
     ContentAdmin, FilesAdmin, ReportsAdmin, SettingsAdmin,
     AnnouncementsAdmin, AdministratorsAdmin, AuditAdmin,
     ExportsAdmin, OperationsAdmin, OperationWorker,
+    TasksAdmin,
 ):
     def __init__(self, runtime):
         self.runtime = runtime

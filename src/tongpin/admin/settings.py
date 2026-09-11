@@ -23,6 +23,10 @@ def field(key, label, group, kind, minimum=None, maximum=None, help_text="", opt
 
 
 POLICY_FIELDS = [
+    field("task_personal_quota", "每人个人待办上限", "待办", "integer", 1, 5000,
+          "包含回收中的待办；缩小只限制新建。部署上限较小时按较小值执行。"),
+    field("task_group_quota", "每群待办上限", "待办", "integer", 1, 10000,
+          "包含回收中的待办；缩小不删除已有待办。部署上限较小时按较小值执行。"),
     field(
         "registration_mode",
         "注册准入",
@@ -176,6 +180,7 @@ class SettingsAdmin:
                 "effect": "immediate",
                 "environment": self.runtime.settings.environment,
                 "readOnly": [
+                    f"待办部署上限：每人{self.runtime.settings.task_personal_quota}条、每群{self.runtime.settings.task_group_quota}条；实际按部署上限与本页配额中较小值执行。",
                     "用户名4–24位、密码15–128字符、CAPTCHA及单次再认证属于安全硬限制。",
                     "已有设备会话到期日与客户端离线100条/7天/50MiB上限不在这里追溯改写。",
                     "部署密钥、监听地址、并发数、扫描器连接及生产严格扫描由启动器配置，不能在后台降低。",

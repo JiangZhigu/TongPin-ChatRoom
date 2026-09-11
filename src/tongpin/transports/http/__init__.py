@@ -17,6 +17,7 @@ from tongpin.transports.http.chat import chat_blueprint
 from tongpin.transports.http.files import files_blueprint
 from tongpin.transports.http.groups import groups_blueprint
 from tongpin.transports.http.interactions import interactions_blueprint
+from tongpin.transports.http.tasks import tasks_blueprint
 
 
 def create_http_app(runtime):
@@ -44,6 +45,9 @@ def create_http_app(runtime):
             raise APIError("TEMPORARY_UNAVAILABLE", "服务正在准备，请稍后重试。", 503)
         if request.path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}:
             require_csrf()
+        context = request.headers.get('X-Actor-Context')
+        if context and request.path.startswith('/api/v1/') and principal().id != context:
+            raise APIError('AUTH_REQUIRED', '浏览器账号已改变，请重新连接。', 401)
 
     @app.after_request
     def after_request(response):
@@ -135,6 +139,7 @@ def create_http_app(runtime):
     app.register_blueprint(interactions_blueprint)
     app.register_blueprint(files_blueprint)
     app.register_blueprint(admin_blueprint)
+    app.register_blueprint(tasks_blueprint)
 
     @app.route(
         "/api/v1/admin", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]

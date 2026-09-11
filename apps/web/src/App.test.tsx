@@ -9,6 +9,11 @@ import { api, setCsrfToken } from './lib/api';
 import type { UserView } from './auth-types';
 import { StrictMode } from 'react';
 
+vi.mock('./lib/tasks-client', () => ({ TaskClient: class {
+  userId: string; constructor(id: string) { this.userId = id; }
+  private state = { revision: 0, listRevision: 0, entities: {}, invalid: {}, online: false, enabled: true, enhanced: true, error: null };
+  getSnapshot = () => this.state; subscribe = () => () => undefined; start = () => undefined; stop = () => undefined;
+} }));
 // Authentication tests retain the real App/ChatWorkspace/settings components.
 // Only the unrelated chat transport is isolated; bootstrap and auth use real api().
 vi.mock('./lib/chat-client', () => ({

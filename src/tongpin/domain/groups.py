@@ -104,6 +104,7 @@ class GroupService:
             "INSERT INTO memberships(id,conversation_id,user_id,role,visible_from_seq,joined_at) VALUES(?,?,?,?,?,?)",
             (period, cid, uid, role, group["last_seq"] + 1, stamp),
         )
+        self.runtime.tasks.member_joined(conn, period)
         conn.execute(
             "INSERT INTO conversation_preferences(user_id,conversation_id,read_seq) VALUES(?,?,?) ON CONFLICT(user_id,conversation_id) DO UPDATE SET read_seq=excluded.read_seq,archived=0",
             (uid, cid, group["last_seq"]),
@@ -338,6 +339,7 @@ class GroupService:
             "UPDATE memberships SET left_at=?,left_reason=?,write_version=write_version+1 WHERE conversation_id=? AND user_id=? AND left_at IS NULL",
             (now_ms(), reason, cid, uid),
         )
+        self.runtime.tasks.member_left(conn, cid, uid)
         conn.execute(
             "UPDATE group_transfers SET status='cancelled',updated_at=? WHERE conversation_id=? AND to_id=? AND status='pending'",
             (now_ms(), cid, uid),

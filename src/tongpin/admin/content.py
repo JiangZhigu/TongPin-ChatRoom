@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from tongpin.admin.authz import conflict, identity, page, unavailable
 from tongpin.admin.sensitive import (
     like_query,
@@ -14,6 +16,27 @@ DAY = 86400000
 
 
 class ContentAdmin:
+    @staticmethod
+    def shared_task_card(conn, message_id):
+        card = conn.execute(
+            "SELECT * FROM todo_message_cards WHERE message_id=?", (message_id,)
+        ).fetchone()
+        if not card:
+            return None
+        if card["kind"] == "snapshot":
+            # This is already-shared chat material. There is deliberately no
+            # reference through which an administrator can read a private task.
+            return {"kind": "snapshot", "snapshot": json.loads(card["snapshot_json"])}
+        task = conn.execute(
+            "SELECT id,group_id FROM todo_tasks WHERE id=? AND scope='group' AND deleted_at IS NULL AND moderated_deleted=0 AND report_only=0",
+            (card["task_id"],),
+        ).fetchone()
+        return (
+            {"kind": "live", "taskId": task["id"], "groupId": task["group_id"]}
+            if task
+            else {"kind": "unavailable"}
+        )
+
     def content_retained(self, conn, row):
         return row["status"] == "sent" or (
             row["status"] in ("recalled", "moderated")
@@ -49,6 +72,7 @@ class ContentAdmin:
             "sender": identity(conn, row["sender_id"]) if row["sender_id"] else None,
             "kind": row["kind"],
             "text": row["text"] if retained else None,
+            "taskCard": self.shared_task_card(conn, row["id"]) if retained else None,
             "status": row["status"],
             "moderationKind": row["moderation_kind"],
             "createdAt": row["created_at"],
