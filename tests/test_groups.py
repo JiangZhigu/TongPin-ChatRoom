@@ -712,3 +712,134 @@ async def test_old_admin_cannot_approve_after_demotion_and_direct_invite_respect
     error('CONTACT_UNAVAILABLE', lambda: rt.groups.invites.apply(direct_target, direct['invite']['id'], GroupCommand(clientRequestId=key())))
     with rt.db.read() as conn:
         assert rt.groups.invites.reserved(conn, cid, direct['invite']['id']) == 0
+
+
+async def test_full_settings_http_preserves_queued_access_for_metadata_and_noop(groups_app):
+    app, (owner, user, *_), tokens = groups_app
+    rt = app.runtime
+    detail = create(rt, owner)
+    cid = detail["conversation"]["id"]
+    join(rt, owner, user, cid)
+    detail = rt.groups.get(owner, cid)
+    old_access = rt.chat.get(user, cid)["accessKey"]
+    old_seq = rt.chat.get(user, cid)["lastSeq"]
+    headers = {
+        "Origin": ORIGIN,
+        "Cookie": f"{rt.auth.cookie_name}={tokens[0]}",
+        "X-CSRF-Token": rt.auth.security.csrf(tokens[0]),
+    }
+    payload = detail["settings"] | {
+        "expectedVersion": detail["version"],
+        "name": "只改群名",
+        "description": "只改简介",
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as client:
+        changed = await client.patch(f"/api/v1/groups/{cid}", json=payload, headers=headers)
+        assert changed.status_code == 200, changed.text
+        current = changed.json()["data"]
+        assert current["version"] == detail["version"] + 1
+        assert current["conversation"]["title"] == "只改群名"
+        assert rt.chat.get(user, cid)["accessKey"] == old_access
+        assert rt.chat.get(user, cid)["lastSeq"] == old_seq
+        payload["expectedVersion"] = current["version"]
+        noop = await client.patch(f"/api/v1/groups/{cid}", json=payload, headers=headers)
+        assert noop.status_code == 200
+        assert noop.json()["data"]["version"] == current["version"]
+        assert rt.chat.get(user, cid)["accessKey"] == old_access
+        assert rt.chat.get(user, cid)["lastSeq"] == old_seq
+    queued = MessageInput(clientMessageId=key(), text="排队后只改了群名", accessKey=old_access)
+    assert rt.chat.send(user, cid, queued)["message"]["text"] == queued.text
+    setting(rt, owner, cid, announcement="真正的新公告")
+    assert rt.chat.get(user, cid)["accessKey"] == old_access
+    with rt.db.read() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id=? AND text='群公告已更新'",
+            (cid,),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE action='group.settings' AND subject_id=?",
+            (cid,),
+        ).fetchone()[0] == 2
+    setting(rt, owner, cid, slowSeconds=60)
+    assert rt.chat.get(user, cid)["accessKey"] != old_access
+    error("STALE_ACCESS", lambda: rt.chat.send(user, cid, queued))
+    before_mute = rt.chat.get(user, cid)["accessKey"]
+    setting(rt, owner, cid, everyoneMuted=True)
+    assert rt.chat.get(user, cid)["accessKey"] != before_mute
+    error("MUTED", lambda: text(rt, user, cid))
+    setting(rt, owner, cid, everyoneMuted=False)
+    error("STALE_ACCESS", lambda: rt.chat.send(user, cid, queued))
+
+
+@pytest.mark.parametrize("decision,terminal", [("reject", "rejected"), ("cancel", "cancelled")])
+async def test_preview_http_returns_terminal_then_latest_request_and_current_membership(
+    groups_app, decision, terminal
+):
+    app, (owner, user, outsider, *_), tokens = groups_app
+    rt = app.runtime
+    cid = create(rt, owner)["conversation"]["id"]
+    invitation = link(rt, owner, cid)
+    iid, token = invitation["invite"]["id"], invitation["token"]
+    headers = {"Cookie": f"{rt.auth.cookie_name}={tokens[1]}", "X-Group-Invite": token}
+    first_key = GroupCommand(clientRequestId=key())
+    pending = rt.groups.invites.apply(user, iid, first_key, token)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as client:
+        async def preview():
+            response = await client.get("/api/v1/group-invites/preview", headers=headers)
+            assert response.status_code == 200
+            return response.json()["data"]
+
+        assert (await preview())["application"]["id"] == pending["id"]
+        rt.groups.invites.decide(owner if decision == "reject" else user, pending["id"], decision)
+        ended = await preview()
+        assert ended["state"] == "available"
+        assert ended["application"]["status"] == terminal
+        assert not ended["application"]["currentMember"]
+        assert rt.groups.invites.apply(user, iid, first_key, token)["id"] == pending["id"]
+        again = rt.groups.invites.apply(user, iid, GroupCommand(clientRequestId=key()), token)
+        assert again["id"] != pending["id"]
+        assert (await preview())["application"]["id"] == again["id"]
+        rt.groups.invites.decide(owner, again["id"], "approve")
+        approved = await preview()
+        assert approved["state"] == "already_member"
+        assert approved["application"]["currentMember"]
+        rt.groups.leave(user, cid)
+        left = await preview()
+        assert left["state"] == "available"
+        assert left["application"]["status"] == "approved"
+        assert not left["application"]["currentMember"]
+        assert rt.groups.invites.preview(token)["application"] is None
+        assert rt.groups.invites.preview(token, outsider)["application"] is None
+
+
+async def test_direct_invite_mine_http_exposes_latest_owned_application_only(groups_app):
+    app, (owner, user, outsider, *_), tokens = groups_app
+    rt = app.runtime
+    befriend(rt, owner, user)
+    cid = create(rt, owner, [user])["conversation"]["id"]
+    invite = rt.groups.invites.mine(user)["items"][0]
+    assert invite["application"] is None
+    first = GroupCommand(clientRequestId=key())
+    pending = rt.groups.invites.apply(user, invite["id"], first)
+    headers = {"Cookie": f"{rt.auth.cookie_name}={tokens[1]}"}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as client:
+        async def current():
+            response = await client.get("/api/v1/group-invites/mine", headers=headers)
+            assert response.status_code == 200
+            return response.json()["data"]["items"][0]
+
+        assert (await current())["application"]["id"] == pending["id"]
+        rt.groups.invites.decide(user, pending["id"], "cancel")
+        ended = await current()
+        assert ended["state"] == "available" and ended["application"]["status"] == "cancelled"
+        assert rt.groups.invites.apply(user, invite["id"], first)["id"] == pending["id"]
+        second = rt.groups.invites.apply(user, invite["id"], GroupCommand(clientRequestId=key()))
+        assert second["id"] != pending["id"]
+        rt.groups.invites.decide(owner, second["id"], "reject")
+        assert (await current())["application"]["status"] == "rejected"
+        third = rt.groups.invites.apply(user, invite["id"], GroupCommand(clientRequestId=key()))
+        rt.groups.invites.decide(owner, third["id"], "approve")
+        assert (await current())["application"]["currentMember"]
+        rt.groups.leave(user, cid)
+        assert not (await current())["application"]["currentMember"]
+    assert not rt.groups.invites.mine(outsider)["items"]

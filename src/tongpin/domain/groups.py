@@ -228,6 +228,11 @@ class GroupService:
             self.version(meta, data.expectedVersion)
             if set(values) & {"reviewRequired", "inviteRole"} and meta["role"] != "owner":
                 raise APIError("FORBIDDEN", "只有群主能修改入群和邀请策略。", 403)
+            values = {
+                key: value for key, value in values.items() if meta["row"][columns[key]] != value
+            }
+            if not values:
+                return self.detail_in(conn, actor, cid)
             for key, value in values.items():
                 conn.execute(
                     f"UPDATE conversations SET {columns[key]}=? WHERE id=?",

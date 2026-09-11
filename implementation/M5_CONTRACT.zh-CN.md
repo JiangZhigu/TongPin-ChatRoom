@@ -16,7 +16,7 @@
 
 - `POST /groups` `{clientRequestId:UUIDv4,name,description,friendUserIds:string[]}` → `GroupDetail`。好友最多20个，不强行入群；成功后刷新ChatClient再选群。
 - `GET /groups/:cid` → `GroupDetail`，含 `conversation,version,settings,capabilities,transfer`。成员身份只读；界面根据服务端能力显示操作，最终权限仍由服务端检查。
-- `PATCH /groups/:cid` `{expectedVersion,name?,description?,announcement?,announcementPinned?,reviewRequired?,inviteRole?:'managers'|'members',everyoneMuted?,slowSeconds?}` → `GroupDetail`。慢速0–3600秒仅约束普通成员的新消息，重试原成功消息不触发慢速；禁止伪造成功。
+- `PATCH /groups/:cid` `{expectedVersion,name?,description?,announcement?,announcementPinned?,reviewRequired?,inviteRole?:'managers'|'members',everyoneMuted?,slowSeconds?}` → `GroupDetail`。慢速0–3600秒仅约束普通成员的新消息，重试原成功消息不触发慢速；禁止伪造成功。同一事务内比较实际字段值：仅真实禁言/慢速改变才提升发送权限版本，元数据变更不停止权限未变的待发消息；公告实际改变才生成系统消息。完整表单原值重提交为空操作，不产生虚假审计、事件或版本变化。
 - `GET /groups/:cid/members` → `Page<GroupMember>`；`GroupMember={user,periodId,role,joinedAt,mutedUntil}`。`PATCH /groups/:cid/members/:uid` `{expectedVersion,periodId,role?:'admin'|'member',mutedUntil?:number|null}` → `GroupDetail`；移出用 `POST .../:uid/remove {expectedVersion,periodId,reason}`。只有服务端允许的目标能操作，旧成员期不能作用于重新加入的同一用户。
 - `POST /groups/:cid/leave {}` → `{left:true}`；`POST /groups/:cid/dissolve {expectedVersion,reauthToken}` → `{dissolved:true}`，随后刷新并清理选择。再认证使用现有 `/auth/reauth`，action=`group_dissolve:CID`。
 - `GET /groups/:cid/audit` → `Page<GroupAudit>`，仅管理者；展示群操作，不显示站点级敏感日志。
@@ -25,9 +25,9 @@
 
 - `POST /groups/:cid/invites` `{clientRequestId,kind:'link'|'direct',targetUserId?:string,maxUses:1..200,expiresHours:24|168}` → `{invite:GroupInvite,token:string|null}`。直接邀请必须是当前好友，限1个名额；链接token仅首次创建响应有值，重试同key时返回null并说明可撤销后新建，不能伪装已复制链接。
 - `GET /groups/:cid/invites` 管理者/有创建权限成员查看自己可管的邀请；`POST /groups/:cid/invites/:iid/revoke {}` 撤销本人或管理者可管邀请。
-- `GET /group-invites/preview`，调用 `api(path,{inviteToken:token})` → `InvitePreview`。状态包含 available/expired/revoked/exhausted/full/already_member/pending/unavailable。
+- `GET /group-invites/preview`，调用 `api(path,{inviteToken:token})` → `InvitePreview`。状态包含 available/expired/revoked/exhausted/full/already_member/pending/unavailable。已登录时返回本群仍有效的pending，或本邀请本人的最新申请（包含终态）；`currentMember`始终读取当前成员期。匿名及其他账号不获得申请记录。
 - `POST /group-invites/:iid/apply {clientRequestId}`，链接附同一请求头，直接邀请无需头 → `GroupApplication`。返回pending明确待审核，approved且currentMember才可打开群；已是成员返回already_member，不消费名额。
-- `GET /group-invites/mine` 显示给自己的直接邀请；`GET /group-applications/mine` 显示本人的申请历史。都必须从通知区域有可見入口，不能依赖聊天记录才找到邀请。
+- `GET /group-invites/mine` 显示给自己的直接邀请，每项的 `application` 为该邀请本人的最新申请或null；`GET /group-applications/mine` 显示本人的申请历史。都必须从通知区域有可見入口，不能依赖聊天记录才找到邀请。
 - `GET /groups/:cid/applications` 管理者待审核/历史列表；`POST /group-applications/:rid/approve|reject|cancel {}`。取消仅申请者；批准/拒绝检查当前群角色。返回当前 `GroupApplication`，明确已过期或已处理；处理后刷新通知和群详情。
 
 转让：`POST /groups/:cid/transfers` `{clientRequestId,expectedVersion,targetUserId,targetPeriodId,reauthToken}`，action=`group_transfer:CID` → `GroupTransfer`；`POST /groups/:cid/transfers/:tid/accept|reject|cancel {}` → `GroupTransfer`。只有受让者可接受/拒绝，原群主可取消。当前群详情含尚有效的transfer，通知可打开群详情；接受完成前不在UI抢先改变群主。
@@ -39,3 +39,5 @@
 退出/禁言/撤权保留草稿，失权后不展示旧历史。禁言或角色变化先使旧权限窗口失效，再自动加载仍获准的历史；迟到的旧成员期响应不能覆盖新窗口。已打开会话被移出或解散时，关闭详情、完成当前草稿保存后返回列表；保存失败保持编辑内容并提供明确重试入口。滚动位置的延迟保存绑定会话、正文、编辑版本和选择代际，不能在退出后用空正文覆盖旧草稿，也不能在发送后恢复旧草稿。
 
 已经打开站点后收到同文档 `hashchange` 邀请也立即捕获、清除URL片段并打开预览，仍不自动申请。预览刷新采用当前成员状态更新提示；手动刷新群详情清除已经过时的操作提示。服务端 `VERSION_CONFLICT` 提示刷新，不自动用新版本重新提交管理动作。页面断网时不排队管理操作。所有新页面/弹层有键盘焦点、Escape和窄屏可达性；不能绕开此前的会话草稿、已读可见性和账号生命周期保护。
+
+链接及直接邀请共享申请生命周期规则：权威刷新替换已确认的旧结果（包括null和当前成员失效）；只有确认旧申请结束、邀请仍可用且本人点击“再次申请加入”才生成新UUID。网络结果未知时，刷新或切换邀请/申请页保留原UUID，使用“重试同一次申请”确认结果，不从旧终态推断新请求失败。

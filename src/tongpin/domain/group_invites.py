@@ -133,6 +133,13 @@ class GroupInvitationService:
             "createdAt": row["created_at"],
         }
 
+    def latest_application(self, conn, iid, uid):
+        row = conn.execute(
+            "SELECT * FROM group_applications WHERE invite_id=? AND user_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+            (iid, uid),
+        ).fetchone()
+        return self.application_view(conn, row) if row else None
+
     def _managers(self, conn, cid):
         return [
             row[0]
@@ -243,7 +250,11 @@ class GroupInvitationService:
                 (actor.id, boundary, boundary, boundary, last_id, limit + 1),
             ).fetchall()
             return {
-                "items": [self.invite_view(conn, actor.id, row) for row in rows[:limit]],
+                "items": [
+                    self.invite_view(conn, actor.id, row)
+                    | {"application": self.latest_application(conn, row["id"], actor.id)}
+                    for row in rows[:limit]
+                ],
                 "nextCursor": next_activity(rows, limit),
             }
 
@@ -256,17 +267,19 @@ class GroupInvitationService:
                 "SELECT * FROM conversations WHERE id=?", (row["conversation_id"],)
             ).fetchone()
             state, application = self.state(conn, row), None
-            if actor and self.member(conn, group["id"], actor.id):
-                state = "already_member"
-            elif actor:
+            if actor:
+                application = self.latest_application(conn, row["id"], actor.id)
                 pending = conn.execute(
                     "SELECT * FROM group_applications WHERE conversation_id=? AND user_id=? AND status='pending'",
                     (group["id"], actor.id),
                 ).fetchone()
                 if pending:
-                    application = self.application_view(conn, pending)
-                    if application["status"] == "pending":
+                    current = self.application_view(conn, pending)
+                    if current["status"] == "pending":
+                        application = current
                         state = "pending"
+                if self.member(conn, group["id"], actor.id):
+                    state = "already_member"
             return {
                 "inviteId": row["id"],
                 "conversationId": group["id"],

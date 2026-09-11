@@ -119,9 +119,9 @@ describe('M5-UI browserfix authoritative membership notice', () => {
 });
 
 describe('M5-UI followup contract corrections', () => {
-  it.each(['rejected', 'cancelled', 'approved'] as const)('preserves confirmed %s across refresh and creates a new request only on explicit reapply', async (status) => {
+  it.each(['rejected', 'cancelled', 'approved'] as const)('uses authoritative %s on refresh and creates a new request only on explicit reapply', async (status) => {
     const payloads: Record<string, unknown>[] = [];
-    fetched.mockImplementation((_url: string, options: RequestInit = {}) => { if (options.method === 'POST') { payloads.push(body(options)); return reply({ ...application(), status: payloads.length === 1 ? status : 'pending', currentMember: false }); } return reply(preview()); });
+    fetched.mockImplementation((_url: string, options: RequestInit = {}) => { if (options.method === 'POST') { payloads.push(body(options)); return reply({ ...application(), status: payloads.length === 1 ? status : 'pending', currentMember: false }); } return reply({ ...preview(), application: payloads.length ? { ...application(), status, currentMember: false } : null }); });
     render(<GroupInviteEntry token={token} userId="owner" onClose={vi.fn()} onOpenGroup={async () => {}} />);
     fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await screen.findByRole('button', { name: '再次申请加入' }); expect(payloads).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: '刷新邀请状态' })); await screen.findByRole('button', { name: '再次申请加入' }); expect(payloads).toHaveLength(1);
@@ -154,5 +154,64 @@ describe('M5-UI followup contract corrections', () => {
     const requests: Record<string, unknown>[] = []; const baseFetch = fetched.getMockImplementation()!;
     fetched.mockImplementation((url: string, options: RequestInit = {}) => { if (url.endsWith('/invites') && options.method === 'POST') { requests.push(body(options)); return requests.length === 1 ? Promise.reject(new TypeError('unknown invite write')) : reply({ invite: invite(), token: null }); } return baseFetch(url, options); });
     manage(); fireEvent.click(await screen.findByRole('button', { name: '邀请' })); fireEvent.click(screen.getByRole('button', { name: '创建邀请' })); await screen.findByText('连接暂时中断，操作结果尚未确认。请重新连接并确认结果。'); expect(screen.getByLabelText('邀请名额')).toBeDisabled(); fireEvent.click(screen.getByRole('button', { name: '重试同一次邀请' })); await screen.findByText('邀请已存在，但重试不能再次获取完整链接。可撤销旧邀请后新建。'); expect(requests).toHaveLength(2); expect(requests[0]).toEqual(requests[1]);
+  });
+});
+
+describe('M5-UI-FIX authoritative invitation lifecycle', () => {
+  it.each(['rejected', 'cancelled'] as const)('replaces a link pending result with authoritative %s and explicitly reapplies with a new UUID', async (status) => {
+    let latest: GroupApplication | null = null; const payloads: Record<string, unknown>[] = [];
+    fetched.mockImplementation((_url: string, options: RequestInit = {}) => { if (options.method === 'POST') { payloads.push(body(options)); latest = { ...application(), id: `application-${payloads.length}` }; return reply(latest); } return reply({ ...preview(), application: latest }); });
+    render(<GroupInviteEntry token={token} userId="owner" onClose={vi.fn()} onOpenGroup={async () => {}} />);
+    fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await screen.findByText('等待管理员审核。'); latest = { ...application(), status };
+    fireEvent.click(screen.getByRole('button', { name: '刷新邀请状态' })); const again = await screen.findByRole('button', { name: '再次申请加入' }); expect(screen.queryByText('等待管理员审核。')).not.toBeInTheDocument(); expect(payloads).toHaveLength(1);
+    fireEvent.click(again); await screen.findByText('等待管理员审核。'); expect(payloads).toHaveLength(2); expect(payloads[1].clientRequestId).not.toBe(payloads[0].clientRequestId);
+  });
+  it.each(['terminal', 'null'] as const)('clears link member access after leaving when authoritative application becomes %s', async (shape) => {
+    let latest: GroupApplication | null = null; let memberNow = false; const payloads: Record<string, unknown>[] = [];
+    fetched.mockImplementation((_url: string, options: RequestInit = {}) => { if (options.method === 'POST') { payloads.push(body(options)); latest = { ...application(), status: 'approved', currentMember: true }; memberNow = true; return reply(latest); } return reply({ ...preview(), state: memberNow ? 'already_member' : 'available', application: latest }); });
+    render(<GroupInviteEntry token={token} userId="owner" onClose={vi.fn()} onOpenGroup={async () => {}} />); fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await screen.findByRole('button', { name: '打开群聊' });
+    memberNow = false; latest = shape === 'terminal' ? { ...application(), status: 'approved', currentMember: false } : null; fireEvent.click(screen.getByRole('button', { name: '刷新邀请状态' }));
+    const again = await screen.findByRole('button', { name: shape === 'terminal' ? '再次申请加入' : '确认申请加入' }); expect(screen.queryByRole('button', { name: '打开群聊' })).not.toBeInTheDocument(); expect(screen.queryByText('你已是群成员，可以打开群聊。')).not.toBeInTheDocument(); expect(payloads).toHaveLength(1);
+    fireEvent.click(again); await screen.findByRole('button', { name: '打开群聊' }); expect(payloads).toHaveLength(2); expect(payloads[1].clientRequestId).not.toBe(payloads[0].clientRequestId);
+  });
+  it('clears a known pending link result on authoritative null without resubmitting until another explicit confirmation', async () => {
+    const payloads: Record<string, unknown>[] = [];
+    fetched.mockImplementation((_url: string, options: RequestInit = {}) => { if (options.method === 'POST') { payloads.push(body(options)); return reply(application()); } return reply(preview()); });
+    render(<GroupInviteEntry token={token} userId="owner" onClose={vi.fn()} onOpenGroup={async () => {}} />); fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await screen.findByText('等待管理员审核。'); fireEvent.click(screen.getByRole('button', { name: '刷新邀请状态' }));
+    const confirm = await screen.findByRole('button', { name: '确认申请加入' }); expect(screen.queryByText('等待管理员审核。')).not.toBeInTheDocument(); expect(payloads).toHaveLength(1); fireEvent.click(confirm); await screen.findByText('等待管理员审核。'); expect(payloads[1].clientRequestId).not.toBe(payloads[0].clientRequestId);
+  });
+  it.each(['cancelled', 'rejected'] as const)('reapplies a direct invitation with a new UUID after %s in the same inbox instance', async (status) => {
+    let latest: GroupApplication | null = null; const payloads: Record<string, unknown>[] = [];
+    fetched.mockImplementation((url: string, options: RequestInit = {}) => {
+      if (url.endsWith('/apply')) { expect(new Headers(options.headers).has('X-Group-Invite')).toBe(false); payloads.push(body(options)); latest = { ...application(), id: `direct-application-${payloads.length}` }; return reply(latest); }
+      if (url.endsWith('/cancel')) { latest = { ...latest!, status: 'cancelled' }; return reply(latest); }
+      if (url.endsWith('/group-applications/mine')) return reply({ items: latest ? [latest] : [], nextCursor: null });
+      return reply({ items: [{ ...invite(), application: latest }], nextCursor: null });
+    });
+    render(<GroupInbox onRefresh={async () => {}} onOpenGroup={async () => {}} />); fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await screen.findByText('等待管理员审核'); expect(payloads).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '我的入群申请' })); const cancel = await screen.findByRole('button', { name: '取消申请' });
+    if (status === 'cancelled') { fireEvent.click(cancel); await waitFor(() => expect(screen.queryByRole('button', { name: '取消申请' })).not.toBeInTheDocument()); }
+    else { latest = { ...latest!, status: 'rejected' }; fireEvent.click(screen.getByRole('button', { name: '刷新群邀请与申请' })); await screen.findByText('申请已拒绝'); }
+    fireEvent.click(screen.getByRole('button', { name: '收到的群邀请' })); const again = await screen.findByRole('button', { name: '再次申请加入' }); expect(payloads).toHaveLength(1); fireEvent.click(again); await screen.findByText('等待管理员审核'); expect(payloads).toHaveLength(2); expect(payloads[1].clientRequestId).not.toBe(payloads[0].clientRequestId);
+  });
+  it.each(['null', 'older_terminal'] as const)('keeps an unknown direct application UUID across refresh and both tabs with %s authority', async (shape) => {
+    const prior = shape === 'older_terminal' ? { ...application(), status: 'cancelled' as const } : null; let latest: GroupApplication | null = prior; const payloads: Record<string, unknown>[] = [];
+    fetched.mockImplementation((url: string, options: RequestInit = {}) => {
+      if (url.endsWith('/apply')) { payloads.push(body(options)); if (payloads.length === 1) return Promise.reject(new TypeError('unknown direct write')); latest = { ...application(), id: 'new-direct-application' }; return reply(latest); }
+      if (url.endsWith('/group-applications/mine')) return reply({ items: latest ? [latest] : [], nextCursor: null });
+      return reply({ items: [{ ...invite(), application: latest }], nextCursor: null });
+    });
+    render(<GroupInbox onRefresh={async () => {}} onOpenGroup={async () => {}} />); fireEvent.click(await screen.findByRole('button', { name: prior ? '再次申请加入' : '确认申请加入' })); await screen.findByRole('button', { name: '重试同一次申请' });
+    fireEvent.click(screen.getByRole('button', { name: '刷新群邀请与申请' })); await screen.findByRole('button', { name: '重试同一次申请' }); fireEvent.click(screen.getByRole('button', { name: '我的入群申请' })); await waitFor(() => expect(screen.queryByText('正在加载…')).not.toBeInTheDocument()); fireEvent.click(screen.getByRole('button', { name: '收到的群邀请' }));
+    const retry = await screen.findByRole('button', { name: '重试同一次申请' }); expect(screen.queryByRole('button', { name: '再次申请加入' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: '确认申请加入' })).not.toBeInTheDocument(); expect(payloads).toHaveLength(1); fireEvent.click(retry); await screen.findByText('等待管理员审核'); expect(payloads).toHaveLength(2); expect(payloads[0]).toEqual(payloads[1]);
+  });
+  it('clears an authoritative direct-member state when a later refresh says the member left', async () => {
+    let latest: GroupApplication | null = { ...application(), status: 'approved', currentMember: true }; const openGroup = vi.fn(async () => {});
+    fetched.mockImplementation(() => reply({ items: [{ ...invite(), state: 'exhausted', application: latest }], nextCursor: null })); render(<GroupInbox onRefresh={async () => {}} onOpenGroup={openGroup} />);
+    fireEvent.click(await screen.findByRole('button', { name: '打开群聊' })); await waitFor(() => expect(openGroup).toHaveBeenCalledWith('group-1')); latest = { ...application(), status: 'approved', currentMember: false }; fireEvent.click(screen.getByRole('button', { name: '刷新群邀请与申请' })); await screen.findByText('此前已加入群聊，当前已不在群中'); expect(screen.queryByRole('button', { name: '打开群聊' })).not.toBeInTheDocument();
+  });
+  it('keeps a confirmed direct POST result newer than its old list if follow-up refresh fails', async () => {
+    fetched.mockImplementation((url: string) => url.endsWith('/apply') ? reply(application()) : reply({ items: [{ ...invite(), application: null }], nextCursor: null }));
+    render(<GroupInbox onRefresh={async () => { throw new Error('同步失败，申请已确认'); }} onOpenGroup={async () => {}} />); fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await screen.findByText('同步失败，申请已确认'); expect(screen.getByText('等待管理员审核')).toBeInTheDocument(); expect(screen.queryByRole('button', { name: '确认申请加入' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: '重试同一次申请' })).not.toBeInTheDocument();
   });
 });
