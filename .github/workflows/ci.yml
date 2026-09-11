@@ -28,7 +28,9 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.12.13'
+          # The Actions catalog has 3.12.13 builds only for Linux. Other hosts
+          # bootstrap with 3.12.10; the installer downloads pinned 3.12.13 locally.
+          python-version: ${{ runner.os == 'Linux' && '3.12.13' || '3.12.10' }}
       - uses: actions/setup-node@v7
         with:
           node-version: '24.15.0'
@@ -38,7 +40,7 @@ jobs:
           version: '0.11.27'
           enable-cache: false
       - name: Install the locked project and build
-        run: python scripts/deploy.py install --dev --build
+        run: python scripts/deploy.py install --dev --build --download-python
       - name: Static checks
         run: |
           uv run --no-sync ruff check src scripts tests
