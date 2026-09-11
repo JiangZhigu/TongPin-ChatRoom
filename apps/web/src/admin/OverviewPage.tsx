@@ -1,0 +1,8 @@
+import type { AdminOverview } from '../lib/admin-types';
+import { AdminLink, DataTable, dateText, EmptyRow, FilterForm, numberText, PageHeading, ResourceState, SelectFilter, useResource } from './AdminShared';
+
+export function OverviewPage({ params }: { params: URLSearchParams }) {
+  const window = ['1h', '24h', '7d'].includes(params.get('window') || '') ? params.get('window')! : '24h';
+  const resource = useResource<AdminOverview>(`/api/v1/admin/overview?window=${window}`); const data = resource.data;
+  return <><PageHeading title="运营概览" description="按真实业务事件统计，点击指标查看对应管理记录。" /><FilterForm path="/admin"><SelectFilter label="统计窗口" name="window" value={window} options={ [['1h', '最近 1 小时'], ['24h', '最近 24 小时'], ['7d', '最近 7 天']] } /></FilterForm><ResourceState {...resource} />{data && <><p className="admin-meta">统计区间 {dateText(data.from)} — {dateText(data.to)} · 更新 {dateText(data.generatedAt)}</p><div className="admin-metrics">{data.metrics.map((metric) => <article key={metric.key}><h2>{metric.href.startsWith('/admin') ? <AdminLink href={metric.href}>{metric.label}</AdminLink> : metric.label}</h2><strong>{numberText(metric.value)} <small>{metric.unit}</small></strong><p>{metric.description}</p></article>)}</div><section className="admin-panel"><h2>业务趋势</h2><DataTable caption="按时间统计的业务趋势" headings={['时间', '注册人数', '消息数', '上传数']}>{data.trends.length ? data.trends.map((point) => <tr key={point.at}><th scope="row">{dateText(point.at)}</th><td>{numberText(point.registrations)}</td><td>{numberText(point.messages)}</td><td>{numberText(point.uploads)}</td></tr>) : <EmptyRow count={4} />}</DataTable></section><p className="admin-meta">进程启动：{dateText(data.processStartedAt)}。业务统计窗口与进程采样历史分别计量。</p></>}</>;
+}
