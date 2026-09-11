@@ -24,10 +24,10 @@ async def test_health_real_flask_adapter_and_admin_disabled(settings):
         ) as client:
             ready = await client.get("/health/ready")
             assert ready.status_code == 200
-            assert ready.json()["data"]["features"]["accounts"] is False
+            assert ready.json()["data"]["features"]["accounts"] is True
             assert (await client.get("/api/v1/auth/bootstrap")).json()["data"][
                 "accountsEnabled"
-            ] is False
+            ] is True
             assert (await client.get("/api/v1/admin/users")).status_code == 503
             assert (await client.post("/api/v1/admin/users", json={})).status_code == 403
     finally:

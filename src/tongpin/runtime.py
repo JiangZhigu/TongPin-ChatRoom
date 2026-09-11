@@ -4,6 +4,9 @@ import asyncio
 import tempfile
 
 from tongpin.config import Settings
+from tongpin.contracts.base import APIError
+from tongpin.domain.auth import AuthService
+from tongpin.domain.policy import PolicyService
 from tongpin.infra.cache import BoundedCache
 from tongpin.infra.db import Database
 from tongpin.infra.executors import BlockingExecutor
@@ -28,11 +31,14 @@ class Runtime:
         self.metrics = Metrics()
         self.ready = False
         self.auth = None
+        self.policy = PolicyService(self)
         self.secret = settings.secret
         self.transport = None
         self._metric_task = None
         self._stopping = asyncio.Event()
         self._previous_tempdir = None
+        self.connections = {}
+        self.loop = None
 
     def initialize(self):
         self.paths.prepare()
@@ -44,6 +50,7 @@ class Runtime:
             self.db.health()
             if not self.secret:
                 self.secret = self.paths.development_secret()
+            self.auth = AuthService(self)
             self.ready = True
         except BaseException:
             tempfile.tempdir = self._previous_tempdir
@@ -51,6 +58,7 @@ class Runtime:
             raise
 
     async def start(self):
+        self.loop = asyncio.get_running_loop()
         await self.executor.run(self.initialize)
         self.runner.start()
         self._metric_task = asyncio.create_task(self._sample_metrics(), name="tongpin-metrics")
@@ -58,6 +66,7 @@ class Runtime:
     async def _sample_metrics(self):
         while not self._stopping.is_set():
             await self.executor.run(self.metrics.sample)
+            await self.validate_connections()
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=10)
             except TimeoutError:
@@ -77,4 +86,16 @@ class Runtime:
 
     @property
     def features(self):
-        return {"accounts": self.auth is not None, "chat": False, "admin": False}
+        return {"accounts": self.auth is not None, "chat": False, "admin": self.auth is not None}
+
+    async def validate_connections(self):
+        for sid, connection in list(self.connections.items()):
+            try:
+                await self.executor.run(self.auth.load_hash, connection["tokenHash"], False)
+            except APIError:
+                if self.transport:
+                    await self.transport.disconnect(sid)
+
+    def revalidate_connections(self):
+        if self.loop and not self.loop.is_closed():
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.validate_connections()))

@@ -66,7 +66,7 @@ def test_real_server_ws_upgrade_lock_and_restart(tmp_path):
             assert connection.response.status_code == 101
             await connection.send("40")
             rejected = await asyncio.wait_for(connection.recv(), 3)
-            assert rejected.startswith("44")  # M1 deliberately does not authenticate clients.
+            assert rejected.startswith("44")  # Unauthenticated transports cannot subscribe.
 
     process, stream = start()
     try:

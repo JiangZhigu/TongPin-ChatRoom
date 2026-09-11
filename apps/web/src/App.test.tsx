@@ -19,7 +19,7 @@ describe('real service entry', () => {
     render(<App />);
     expect(await screen.findByText('基础服务已连接')).toBeInTheDocument();
     expect(screen.getByText('账号功能尚未启用，暂时无法登录或注册。')).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('消息记录')).not.toBeInTheDocument();
   });
@@ -38,14 +38,15 @@ describe('real service entry', () => {
     render(<App />);
     expect(await screen.findByText('暂时无法连接服务')).toBeInTheDocument();
   });
-  it('keeps the admin route separate and contains no made-up metrics', () => {
+  it('keeps the admin route separate and requires a real authenticated session', async () => {
     window.history.replaceState({}, '', '/admin');
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => ({ data: url.endsWith('/bootstrap') ? { accountsEnabled: true, user: null, csrfToken: 'test', registrationMode: 'closed', terms: { version: 'test', text: 'test' } } : { captchaId: 'test', image: 'data:image/png;base64,', expiresAt: Date.now() + 120000 } }) }));
     vi.stubGlobal('fetch', fetchMock);
     render(<App />);
-    expect(screen.getByRole('heading', { name: '管理服务尚未启用' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '登录管理后台' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '返回同频' })).toHaveAttribute('href', '/');
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('动态码或第二因素恢复码')).toBeInTheDocument();
+    expect(screen.queryByText('管理身份已确认')).not.toBeInTheDocument();
   });
 });
 

@@ -29,8 +29,38 @@ class Application:
 
         @self.sio.event
         async def connect(sid, environ, auth):
-            # M2 adds authenticated tickets. A running transport does not imply login exists.
-            return False
+            if (
+                not self.runtime.auth
+                or not isinstance(auth, dict)
+                or set(auth) - {"ticket"}
+                or not isinstance(auth.get("ticket"), str)
+                or len(auth["ticket"]) > 128
+            ):
+                return False
+            if (
+                environ.get("HTTP_ORIGIN") not in settings.origins
+                or len(self.runtime.connections) >= settings.max_connections
+            ):
+                return False
+            try:
+                credential = self.runtime.auth.cookie_from(environ.get("HTTP_COOKIE", ""))
+                actor = await self.runtime.executor.run(
+                    self.runtime.auth.authorize_ticket, auth["ticket"], credential
+                )
+                if len(self.runtime.connections) >= settings.max_connections:
+                    return False
+            except APIError:
+                return False
+            self.runtime.connections[sid] = {
+                "userId": actor.id,
+                "sessionId": actor.session["id"],
+                "tokenHash": actor.session["token_hash"],
+            }
+            await self.sio.enter_room(sid, "user:" + actor.id)
+
+        @self.sio.event
+        async def disconnect(sid, reason=None):
+            self.runtime.connections.pop(sid, None)
 
     async def upload_guard(self, scope):
         if self.runtime.auth is None:

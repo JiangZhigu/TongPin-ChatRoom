@@ -11,6 +11,7 @@ from werkzeug.exceptions import HTTPException
 
 from tongpin import __version__
 from tongpin.contracts.base import APIError
+from tongpin.transports.http.auth import auth_blueprint, require_csrf
 
 
 def create_http_app(runtime):
@@ -33,6 +34,8 @@ def create_http_app(runtime):
                 raise APIError("ORIGIN_REJECTED", "请求来源不受信任。", 403)
         if not runtime.ready and not request.path.startswith("/health/"):
             raise APIError("TEMPORARY_UNAVAILABLE", "服务正在准备，请稍后重试。", 503)
+        if request.path.startswith("/api/") and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            require_csrf()
 
     @app.after_request
     def after_request(response):
@@ -111,9 +114,7 @@ def create_http_app(runtime):
         runtime.db.health()
         return success({"status": "ready", "version": __version__, "features": runtime.features})
 
-    @app.get("/api/v1/auth/bootstrap")
-    def bootstrap():
-        return success({"accountsEnabled": False, "registrationMode": "closed"})
+    app.register_blueprint(auth_blueprint)
 
     @app.route(
         "/api/v1/admin", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]

@@ -1,6 +1,6 @@
 # M1 基础工程交付
 
-状态：基础工程已实现，完成本机定向检查与实际浏览器检查；等待本批本地提交记录，之后自动进入 M2。不是完整聊天产品验收。
+状态：基础工程已实现，完成本机定向检查与实际浏览器检查；本地提交为78f23b44d0ce0f2c369d2d38396e7d622b1d80fc，已自动进入M2。不是完整聊天产品验收。
 
 - Python 3.12.13 项目 .venv、SQLite 3.53.1、uv.lock 与前端 package-lock.json 已实际安装并校验；所有缓存和交付证据存放当前项目 .codex。
 - Flask + python-socketio + Uvicorn 常驻单实例；真实 live/ready；每请求 ThreadSensitiveContext 与有界并发，SQLite 每操作连接与短写事务；WAL/FULL/FK/busy_timeout。

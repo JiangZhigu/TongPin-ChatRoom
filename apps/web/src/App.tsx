@@ -2,6 +2,12 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { ArrowRight, Check, CircleDashed, RefreshCw, ShieldCheck, WifiOff } from 'lucide-react';
 import { Brand } from './components/Brand';
 import { Modal } from './components/Modal';
+import { api, fetchBootstrap } from './lib/api';
+import type { AuthResult, BootstrapView, UserView } from './auth-types';
+import { AuthPage } from './AuthPage';
+import { AccountSettings } from './AccountSettings';
+import { AppShell } from './components/AppShell';
+import { EmptyState } from './components/EmptyState';
 
 const DevelopmentPreview = import.meta.env.DEV ? lazy(() => import('./DevelopmentPreview')) : null;
 type ServiceState = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; version: string; accountsEnabled: boolean };
@@ -37,13 +43,29 @@ function WelcomePage() {
   return <main className="welcome-page"><section className="welcome-story" aria-label="认识同频"><Brand /><div className="story-content"><p className="eyebrow">STAY CLOSE. STAY IN SYNC.</p><h1>好的对话，<br />从<span>同频</span>开始。</h1><p className="story-description">和朋友聊聊近况，和同伴分享灵感。<br />让每一条消息，都有它的去处。</p><div className="conversation-art" aria-hidden="true"><div className="art-row"><span className="art-avatar" /><span className="art-bubble"><i /><i /></span></div><div className="art-row own"><span className="art-avatar" /><span className="art-bubble"><i /><i /></span></div><div className="art-row"><span className="art-avatar mint" /><span className="art-bubble"><i /></span></div></div></div><p className="story-footer">好友私聊<span>群聊协作</span><span>文件分享</span></p></section><section className="welcome-panel" aria-labelledby="welcome-title"><div className="welcome-top"><button className="text-button" onClick={() => setAboutOpen(true)}>关于同频</button></div><div className="welcome-content"><span className="small-label">欢迎来到同频</span><h2 id="welcome-title">留一点空间，<br />给下一段对话。</h2><p className="intro-copy">一个简单、好用的聊天空间。<br />连接朋友，也连接新的想法。</p><div className={`service-card ${state.kind}`} role="status" aria-live="polite" aria-busy={state.kind === 'loading'}><span className="service-icon" aria-hidden="true">{state.kind === 'loading' ? <CircleDashed className="spin" size={21} /> : state.kind === 'error' ? <WifiOff size={21} /> : <Check size={21} />}</span><div><h3>{state.kind === 'loading' ? '正在连接服务' : state.kind === 'error' ? '暂时无法连接服务' : '基础服务已连接'}</h3><p>{state.kind === 'loading' ? '正在确认服务与账号功能的可用状态。' : state.kind === 'error' ? '请确认服务已启动或网络可用，然后重试。' : state.accountsEnabled ? '账号服务已开放，登录界面正在准备中。' : '账号功能尚未启用，暂时无法登录或注册。'}</p>{state.kind === 'ready' && <span className="service-version">服务版本 {state.version}</span>}</div></div><button className="primary-button connect-button" onClick={retry} disabled={state.kind === 'loading'}><RefreshCw size={17} />{state.kind === 'loading' ? '连接中…' : state.kind === 'error' ? '重新连接' : '刷新服务状态'}</button><p className="availability-note">登录与注册开放后，即可开始使用。</p></div><footer className="welcome-footer"><ShieldCheck size={15} aria-hidden="true" /><span>账号功能未就绪时，不收集登录凭据。</span><a href="/admin">管理入口<ArrowRight size={14} /></a></footer></section><Modal open={aboutOpen} title="关于同频" onClose={() => setAboutOpen(false)}><Brand /><p>同频是一个为日常对话准备的聊天空间，支持的功能将随服务逐步开放。</p><p>此页面展示当前服务的真实连接状态。账号功能尚未就绪时，无法登录、注册或发送消息。</p><button className="primary-button" onClick={() => setAboutOpen(false)}>知道了</button></Modal></main>;
 }
 
-function AdminUnavailablePage() {
-  return <div className="admin-page"><header><a href="/" aria-label="同频首页"><Brand /></a><span className="admin-tag">管理后台</span></header><main><span className="empty-symbol"><ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" /></span><p className="eyebrow">同频管理</p><h1>管理服务尚未启用</h1><p>后台入口已预留。管理功能开放后，需使用具备管理权限的账号登录。</p><a className="primary-button" href="/">返回同频<ArrowRight size={16} /></a></main></div>;
+function AdminEntry({ onSignedOut }: { onSignedOut: () => void }) {
+  const [verifiedUser, setVerifiedUser] = useState<UserView | null>(null);
+  const [error, setError] = useState(''); const [attempt, setAttempt] = useState(0); const [busy, setBusy] = useState(false);
+  useEffect(() => { const controller = new AbortController(); setError(''); setVerifiedUser(null); void api<{ user: UserView }>('/api/v1/admin/auth', { signal: controller.signal }).then((data) => setVerifiedUser(data.user)).catch((cause) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : '管理身份验证失败'); }); return () => controller.abort(); }, [attempt]);
+  async function signOut() { setBusy(true); try { await api('/api/v1/auth/logout', { method: 'POST', body: {} }); onSignedOut(); } catch (cause) { setError(cause instanceof Error ? cause.message : '退出失败'); } finally { setBusy(false); } }
+  return <div className="admin-page"><header><a href="/" aria-label="同频首页"><Brand /></a><span className="admin-tag">管理后台</span></header><main><span className="empty-symbol"><ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" /></span><p className="eyebrow">同频管理</p><h1>{verifiedUser ? '管理身份已确认' : error ? '无法进入管理后台' : '正在验证管理身份'}</h1>{error && <p role="alert" className="form-error">{error}</p>}{verifiedUser && <><p>你好，{verifiedUser.nickname}。当前会话已通过服务端管理身份验证。</p><div className="service-card"><div><h3>管理功能尚未启用</h3><p>完整管理功能将陆续接入，当前没有可展示的运营数据。</p></div></div></>}<div className="admin-actions"><a className="primary-button" href="/">返回同频<ArrowRight size={16} /></a>{error && <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}>重新验证</button>}<button className="text-button" disabled={busy} onClick={() => void signOut()}>{busy ? '正在退出…' : '退出当前账号'}</button></div></main></div>;
 }
 
 export function App() {
   const pathname = window.location.pathname;
   if (DevelopmentPreview && pathname === '/__dev/preview') return <Suspense fallback={<p className="preview-loading">正在加载开发预览…</p>}><DevelopmentPreview /></Suspense>;
-  if (pathname === '/admin' || pathname.startsWith('/admin/')) return <AdminUnavailablePage />;
-  return <WelcomePage />;
+  return <AccountApplication admin={pathname === '/admin' || pathname.startsWith('/admin/')} />;
+}
+
+function AccountApplication({ admin }: { admin: boolean }) {
+  const [bootstrap, setBootstrap] = useState<BootstrapView | null>(null); const [error, setError] = useState(''); const [attempt, setAttempt] = useState(0);
+  useEffect(() => { let active = true; setError(''); setBootstrap(null); void fetchBootstrap().then((data) => { if (active) setBootstrap(data as BootstrapView); }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : '暂时无法连接服务'); }); return () => { active = false; }; }, [attempt]);
+  function signedOut() { setBootstrap(null); setAttempt((value) => value + 1); }
+  function authenticated(result: AuthResult) { setBootstrap((current) => current ? { ...current, user: result.user, csrfToken: result.csrfToken } : current); }
+  if (!bootstrap) return <main className="boot-screen"><Brand /><EmptyState title={error ? '暂时无法连接服务' : '正在连接同频'} description={error || '正在确认服务与账号状态。'} action={error ? <button className="primary-button" onClick={() => setAttempt((value) => value + 1)}><RefreshCw size={16} />重新连接</button> : undefined} /></main>;
+  if (!bootstrap.accountsEnabled) return <WelcomePage />;
+  if (!bootstrap.user) return <AuthPage bootstrap={bootstrap} admin={admin} onAuthenticated={authenticated} />;
+  if (admin) return <AdminEntry onSignedOut={signedOut} />;
+  const user = bootstrap.user;
+  return <div className="authenticated-app"><AppShell conversations={[]} onSelectConversation={() => undefined} accountFooter={<div className="account-footer"><span className="avatar">{user.nickname.slice(0, 1)}</span><div><strong>{user.nickname}</strong><small>@{user.username}</small></div><a href="/admin" aria-label="管理入口"><ShieldCheck size={19} /></a></div>} settingsContent={<AccountSettings user={user} onUserChange={(updated) => setBootstrap((current) => current ? { ...current, user: updated } : current)} onSignedOut={signedOut} />}><EmptyState title="欢迎来到同频" description="账号已就绪。聊天功能尚未启用，你可以先在设置中完善个人资料和管理账号安全。" /></AppShell></div>;
 }
