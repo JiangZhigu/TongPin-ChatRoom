@@ -25,6 +25,7 @@ export function validateMessageText(text: string, allowEmpty = false) {
 }
 
 type WindowCache = { accessKey: string; messages: Message[]; before: string | null; after?: string | null };
+export type MessageUpdateToken = Readonly<{ generation: number; contentRevision: number }>;
 export class ChatClient {
   private user: User;
   private state = initialState();
@@ -33,6 +34,7 @@ export class ChatClient {
   private generation = 0;
   private selectionGeneration = 0;
   private contentRevision = 0;
+  private messageUpdateTokens = new WeakSet<MessageUpdateToken>();
   private controller = new AbortController();
   private socket: Socket | null = null;
   private channel: BroadcastChannel | null = null;
@@ -213,6 +215,7 @@ export class ChatClient {
     const snapshot = await this.request<ChatSnapshot>('/sync/snapshot');
     if (!this.current(epoch)) return;
     const selected = this.state.selectedId;
+    this.contentRevision++;
     // Fresh server state replaces stale permission-bearing lists.
     this.windows.clear();
     this.set({ messages: [], historyBefore: null, historyAfter: null, locatedMessageId: null, typingUsers: [] });
@@ -286,6 +289,7 @@ export class ChatClient {
     const cached = this.windows.get(conversation.id);
     const previous = this.state.conversations.find((item) => item.id === conversation.id);
     if ((cached && cached.accessKey !== conversation.accessKey) || (previous && previous.accessKey !== conversation.accessKey)) {
+      this.contentRevision++;
       this.windows.delete(conversation.id);
       if (this.state.selectedId === conversation.id) this.set({ messages: [], historyBefore: null });
     }
@@ -360,9 +364,12 @@ export class ChatClient {
     const startedMessages = this.state.messages;
     const startedById = new Map(startedMessages.map((item) => [item.id, item]));
     const startedBefore = this.state.historyBefore;
+    const startedAfter = this.state.historyAfter;
+    const contentRevision = this.contentRevision;
     try {
       const [conversation, history] = await Promise.all([this.request<Conversation>('/conversations/' + encodeURIComponent(id)), this.request<HistoryPage>('/conversations/' + encodeURIComponent(id) + '/messages?limit=50')]);
       if (!this.current(epoch) || this.selectionGeneration !== selection) return;
+      if (startedAfter && contentRevision !== this.contentRevision) throw new APIError(409, { code: 'STALE_HISTORY', message: '消息内容刚刚改变，请重新返回最新消息。' });
       const currentConversation = this.state.conversations.find((item) => item.id === id);
       const newerConversation = currentConversation !== startedConversation ? currentConversation : null;
       if (history.accessKey !== conversation.accessKey || (newerConversation && newerConversation.accessKey !== history.accessKey)) throw new APIError(409, { code: 'STALE_HISTORY', message: '会话权限已改变，请重新加载当前可访问的历史。' });
@@ -429,9 +436,24 @@ export class ChatClient {
     } catch (error) { if (this.current(epoch) && selection === this.selectionGeneration) this.set({ historyLoading: false, error: errorMessage(error) }); throw error; }
   }
 
-  async applyMessage(message: Message): Promise<void> {
-    if (!this.running) return;
+  beginMessageUpdate(): MessageUpdateToken {
+    const token = Object.freeze({ generation: this.generation, contentRevision: this.contentRevision });
+    this.messageUpdateTokens.add(token);
+    return token;
+  }
+
+  async applyMessage(message: Message, token: MessageUpdateToken): Promise<void> {
+    if (!this.messageUpdateTokens.has(token) || !this.current(token.generation)) return;
+    if (token.contentRevision !== this.contentRevision) { this.syncAgain = true; void this.synchronize(); return; }
     await this.applyEvent({ v: 1, eventId: '0', cursor: '0', type: 'message.updated', entityRef: message.id, occurredAt: Date.now(), conversationId: message.conversationId, message }, this.generation);
+  }
+
+  applyBookmark(messageId: string, bookmarked: boolean, token: MessageUpdateToken): void {
+    if (!this.messageUpdateTokens.has(token) || !this.current(token.generation)) return;
+    // A bookmark response carries no message body and may safely update a tombstone.
+    const patch = (message: Message) => message.id === messageId ? { ...message, bookmarked } : message;
+    for (const cache of this.windows.values()) cache.messages = cache.messages.map(patch);
+    this.set({ messages: this.state.messages.map(patch), conversations: this.state.conversations.map((item) => item.lastMessage?.id === messageId ? { ...item, lastMessage: patch(item.lastMessage) } : item) });
   }
 
   typing(active: boolean): void {
@@ -458,11 +480,13 @@ export class ChatClient {
     const cid = this.state.selectedId; const before = this.state.historyBefore;
     if (!cid || !before || this.state.historyLoading) return;
     const epoch = this.generation; const selection = this.selectionGeneration;
+    const contentRevision = this.contentRevision;
     const accessKey = this.state.conversations.find((item) => item.id === cid)?.accessKey;
     this.set({ historyLoading: true });
     try {
       const history = await this.request<HistoryPage>('/conversations/' + encodeURIComponent(cid) + '/messages?limit=50&beforeSeq=' + encodeURIComponent(before));
       if (!this.current(epoch) || selection !== this.selectionGeneration) return;
+      if (contentRevision !== this.contentRevision) throw new APIError(409, { code: 'STALE_HISTORY', message: '消息内容刚刚改变，请重新加载历史。' });
       if (accessKey !== history.accessKey || this.state.conversations.find((item) => item.id === cid)?.accessKey !== accessKey) throw new APIError(409, { code: 'STALE_HISTORY', message: '会话权限已改变，请重新加载历史。' });
       this.set({ messages: mergeMessages(history.items, this.state.messages), historyBefore: history.nextCursor, historyLoading: false });
       this.cacheWindow(cid);
@@ -614,11 +638,14 @@ export class ChatClient {
       retained = await change((item) => ({ ...item, retryFiles: false, payload: { ...item.payload, attachmentIds } }));
       if (!retained) return;
       ensure();
+      const contentRevision = this.contentRevision;
       const result = await this.send(retained, signal);
       ensure();
       await change(() => null);
       if (this.current(epoch)) {
-        if (this.state.selectedId === result.message.conversationId) this.set({ messages: mergeMessages(this.state.messages, [result.message]) });
+        const last = this.state.messages.at(-1);
+        const contiguous = !this.state.historyAfter || this.state.messages.some((item) => item.id === result.message.id) || !!last && BigInt(result.message.seq) === BigInt(last.seq) + 1n;
+        if (contentRevision === this.contentRevision && this.state.selectedId === result.message.conversationId && contiguous) this.set({ messages: mergeMessages(this.state.messages, [result.message]) });
         await this.loadLocal(epoch); this.announce(); this.syncAgain = true; void this.synchronize();
       }
     } catch (error) {

@@ -103,7 +103,7 @@ describe('rich message persistence, located windows and live hints', () => {
     expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/read'))).toHaveLength(0);
     await live(current, event('1', { message: message('far-away', '20') }));
     expect(current.getSnapshot().messages.map((row) => row.seq)).toEqual(['11', '12']);
-    await current.applyMessage({ ...message('old', '11', ''), status: 'recalled' });
+    await current.applyMessage({ ...message('old', '11', ''), status: 'recalled' }, current.beginMessageUpdate());
     expect(current.getSnapshot().messages[1].reply).toMatchObject({ status: 'unavailable', text: '', author: '' });
     await current.loadNewer(); expect(current.getSnapshot().historyAfter).toBeNull();
     expect(current.getSnapshot().messages.map((row) => row.seq)).toEqual(['11', '12', '13', '14']);
@@ -123,7 +123,7 @@ describe('rich message persistence, located windows and live hints', () => {
     messages = [message('current', '50')]; const current = await client(); await current.selectConversation(conversation.id);
     const pending = locations([message('removed', '11', 'must not return')], { delayed: true });
     const jump = current.jumpToMessage('removed'); const rejection = expect(jump).rejects.toMatchObject({ code: 'STALE_HISTORY' }); await until(pending.ready);
-    await current.applyMessage({ ...message('removed', '11', ''), status: 'recalled' });
+    await current.applyMessage({ ...message('removed', '11', ''), status: 'recalled' }, current.beginMessageUpdate());
     pending.finish(); await rejection;
     expect(current.getSnapshot().messages.map((row) => row.id)).toEqual(['current']);
     expect(current.getSnapshot().locatedMessageId).toBeNull();
@@ -170,6 +170,98 @@ describe('rich message persistence, located windows and live hints', () => {
     expect((await current.getDraft(conversation.id))?.text).toBe('选择保留的本机内容');
     expect(await readOfflineIdentity()).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith('/auth/logout'))).toBe(false);
+  });
+  it('does not let a delayed complete action response restore a recalled body or quoted text', async () => {
+    const source = message('original', '10', '已撤回的正文');
+    messages = [source, { ...message('quote', '11'), reply: { id: source.id, status: 'available', text: source.text, author: '甲' } }];
+    const current = await client(); await current.selectConversation(conversation.id);
+    const token = current.beginMessageUpdate();
+    await live(current, event('1', { type: 'message.updated', message: { ...source, status: 'recalled', text: '' } }));
+    await current.applyMessage({ ...source, reactions: [{ key: '1F44D', count: 1, mine: true }] }, token);
+    expect(current.getSnapshot().messages[0]).toMatchObject({ id: source.id, status: 'recalled', text: '' });
+    expect(current.getSnapshot().messages[1].reply).toMatchObject({ status: 'unavailable', text: '', author: '' });
+  });
+  it('patches only bookmark state after a recall and ignores results from an earlier client identity generation', async () => {
+    const source = message('original', '10', '不可恢复的旧正文');
+    conversation.lastMessage = source; messages = [source];
+    const current = await client(); await current.selectConversation(conversation.id);
+    const token = current.beginMessageUpdate();
+    const removed = { ...source, status: 'recalled' as const, text: '' };
+    await live(current, event('1', { type: 'message.updated', message: removed }));
+    current.applyBookmark(source.id, true, token);
+    expect(current.getSnapshot().messages[0]).toMatchObject({ status: 'recalled', text: '', bookmarked: true });
+    expect(current.getSnapshot().conversations[0].lastMessage).toMatchObject({ status: 'recalled', text: '', bookmarked: true });
+    current.stop(); messages = [removed]; conversation.lastMessage = removed;
+    await current.start(); await current.selectConversation(conversation.id);
+    current.applyBookmark(source.id, true, token);
+    await current.applyMessage(source, token);
+    expect(current.getSnapshot().messages[0]).toMatchObject({ status: 'recalled', text: '' });
+    expect(current.getSnapshot().messages[0].bookmarked).not.toBe(true);
+  });
+  it('rejects a delayed older page when a recall happened outside the located window', async () => {
+    const current = await client(); locations([message('visible', '75'), message('end', '125')]);
+    await current.jumpToMessage('visible');
+    const pending = delayHistory(); const older = current.loadOlder();
+    const rejection = expect(older).rejects.toMatchObject({ code: 'STALE_HISTORY' });
+    await until(pending.ready);
+    await live(current, event('1', { type: 'message.updated', message: { ...message('removed', '60', ''), status: 'recalled' } }));
+    pending.finish([message('removed', '60', '旧分页中的已撤回正文')]);
+    await rejection;
+    expect(current.getSnapshot().messages.map((row) => row.id)).toEqual(['visible', 'end']);
+    expect(current.getSnapshot().historyLoading).toBe(false);
+  });
+  it('rejects a late latest-page response after an off-window recall while leaving search context', async () => {
+    conversation.lastSeq = '200';
+    const current = await client(); locations([message('visible', '75'), message('end', '125')]);
+    await current.jumpToMessage('visible');
+    const pending = delayHistory(); const selection = current.selectConversation(conversation.id);
+    const rejection = expect(selection).rejects.toMatchObject({ code: 'STALE_HISTORY' });
+    await until(pending.ready);
+    await live(current, event('1', { type: 'message.updated', message: { ...message('removed', '140', ''), status: 'recalled' } }));
+    pending.finish([message('removed', '140', '已撤回的最新分页正文')]);
+    await rejection;
+    expect(current.getSnapshot().messages.map((row) => row.id)).toEqual(['visible', 'end']);
+    expect(current.getSnapshot().historyAfter).toBe('125');
+  });
+  it('does not append a send acknowledgement across a gap in the located history', async () => {
+    const current = await client(); locations([message('visible', '11'), message('end', '12')]);
+    await current.jumpToMessage('visible');
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/conversations/dm_client/messages') && init?.method === 'POST') {
+        const payload = JSON.parse(init.body as string);
+        return result({ message: { ...message('newest', '100', payload.text), clientMessageId: payload.clientMessageId }, duplicate: false }, 201) as Response;
+      }
+      return original(url, init);
+    });
+    await current.queue(conversation.id, '查看旧记录时发送新消息');
+    await until(async () => (await readQueue(user.id)).length === 0);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(current.getSnapshot().messages.map((row) => row.seq)).toEqual(['11', '12']);
+    expect(current.getSnapshot().historyAfter).toBe('12');
+  });
+  it('removes a successfully acknowledged outbox entry without restoring a body recalled before the ACK arrived', async () => {
+    const current = await client(); await current.selectConversation(conversation.id);
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    let accepted: Message | undefined; let finish!: () => void; let settled = false;
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/conversations/dm_client/messages') && init?.method === 'POST') {
+        const payload = JSON.parse(init.body as string);
+        accepted = { ...message('ack_late', '1', payload.text), clientMessageId: payload.clientMessageId };
+        await new Promise<void>((resolve) => { finish = resolve; });
+        settled = true; return result({ message: accepted, duplicate: false }, 201) as Response;
+      }
+      return original(url, init);
+    });
+    await current.queue(conversation.id, '发送已成功随后在另一设备撤回');
+    await until(() => Boolean(accepted));
+    await live(current, event('1', { message: accepted! }));
+    await live(current, event('2', { type: 'message.updated', message: { ...accepted!, status: 'recalled', text: '' } }));
+    finish(); await until(() => settled);
+    await until(async () => (await readQueue(user.id)).length === 0);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(current.getSnapshot().messages).toMatchObject([{ id: 'ack_late', status: 'recalled', text: '' }]);
+    expect(current.getSnapshot().outbox).toEqual([]);
   });
 });
 afterEach(async () => { for (const client of clients.splice(0)) client.stop(); await new Promise((resolve) => setTimeout(resolve, 5)); vi.restoreAllMocks(); vi.unstubAllGlobals(); setCsrfToken(''); });

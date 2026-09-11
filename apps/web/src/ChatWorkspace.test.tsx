@@ -31,7 +31,7 @@ const chat = vi.hoisted(() => ({
   getDraft: vi.fn<(id: string) => Promise<Draft | null>>(), saveDraft: vi.fn<(id: string, text: string, position?: unknown) => Promise<void>>(),
   refresh: vi.fn<() => Promise<void>>(), read: vi.fn<(id: string, seq: string) => Promise<void>>(),
   summary: vi.fn<() => Promise<{ pending: number; drafts: number }>>(), logout: vi.fn<(choice: 'keep' | 'delete') => Promise<void>>(),
-  jump: vi.fn<(id: string) => Promise<void>>(), newer: vi.fn<() => Promise<void>>(), typing: vi.fn(), apply: vi.fn(), finishDeletion: vi.fn(),
+  jump: vi.fn<(id: string) => Promise<void>>(), newer: vi.fn<() => Promise<void>>(), typing: vi.fn(), beginUpdate: vi.fn(), bookmark: vi.fn(), apply: vi.fn(), finishDeletion: vi.fn(),
   more: vi.fn<() => Promise<void>>(), histories: {} as Record<string, Message[]>,
 }));
 vi.mock('./lib/chat-client', () => ({ ChatClient: class {
@@ -40,7 +40,7 @@ vi.mock('./lib/chat-client', () => ({ ChatClient: class {
   start = chat.start; stop = chat.stop; updateUser = chat.updateUser; selectConversation = chat.select; loadOlder = chat.older;
   queue = chat.queue; retry = chat.retry; cancel = chat.cancel; getDraft = chat.getDraft; saveDraft = chat.saveDraft;
   refresh = chat.refresh; read = chat.read; getLocalSummary = chat.summary; logout = chat.logout;
-  jumpToMessage = chat.jump; loadNewer = chat.newer; typing = chat.typing; applyMessage = chat.apply; finishAccountDeletion = chat.finishDeletion;
+  jumpToMessage = chat.jump; loadNewer = chat.newer; typing = chat.typing; applyMessage = chat.apply; beginMessageUpdate = chat.beginUpdate; applyBookmark = chat.bookmark; finishAccountDeletion = chat.finishDeletion;
   loadMoreConversations = chat.more; loadMoreContacts = chat.more; loadMoreRequests = chat.more; loadMoreNotifications = chat.more;
 } }));
 
@@ -601,5 +601,14 @@ describe('M7-UI explicit latest position', () => {
   it('does not carry a pending latest jump into a later ordinary conversation selection', async () => {
     const { viewport, geometry } = await located(); const old = deferred<void>(); chat.select.mockImplementation(async (id) => { if (id === 'dm-a') await old.promise; else publish({ selectedId: id, messages: [message('b-1', '1', '另一会话')], historyAfter: null }); });
     fireEvent.click(screen.getByRole('button', { name: '返回最新消息' })); await waitFor(() => expect(chat.select).toHaveBeenCalledWith('dm-a')); chat.getDraft.mockResolvedValue({ key: 'b-draft', userId: user.id, conversationId: 'dm-b', text: '另一份草稿', scrollTop: 240, updatedAt: 1 }); fireEvent.click(within(screen.getByLabelText('会话列表')).getByRole('button', { name: /另一位好友/ })); await waitFor(() => expect(screen.getByLabelText('消息内容')).toHaveValue('另一份草稿')); expect(geometry.top()).toBe(240); await act(async () => old.resolve()); expect(geometry.top()).toBe(240); expect(screen.getByLabelText('消息内容')).toHaveValue('另一份草稿'); expect(chat.read).not.toHaveBeenCalled(); expect(viewport).toBe(screen.getByLabelText('消息记录'));
+  });
+});
+
+
+describe('M7-FIX-UI workspace mutation wiring', () => {
+  it('passes captured core tokens through message and bookmark callbacks without assembling stale bookmark bodies', async () => {
+    const token = Object.freeze({ generation: 2, contentRevision: 8 }); chat.beginUpdate.mockReturnValue(token); const original = { ...message(), capabilities: { canInteract: true, canRecall: false, canModerate: false } }; chat.histories['dm-a'] = [original]; const pending = deferred<{ ok: boolean; status: number; json: () => Promise<unknown> }>();
+    const fetchMock = vi.mocked(fetch); fetchMock.mockImplementationOnce(() => pending.promise as Promise<Response>); showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '收藏' })); const tombstone = { ...original, status: 'recalled' as const, text: '', reactions: [] }; act(() => publish({ messages: [tombstone] })); await act(async () => pending.resolve({ ok: true, status: 200, json: async () => ({ data: { bookmarked: true } }) })); expect(chat.beginUpdate).toHaveBeenCalledOnce(); expect(chat.beginUpdate.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]); expect(chat.bookmark).toHaveBeenCalledExactlyOnceWith(original.id, true, token); expect(chat.apply).not.toHaveBeenCalled(); expect(screen.getByText('这条消息已撤回')).toBeInTheDocument();
+    act(() => publish({ messages: [original] })); fetchMock.mockImplementationOnce(() => response({ message: original }) as Promise<Response>); fireEvent.click(screen.getByRole('button', { name: '👍' })); await waitFor(() => expect(chat.apply).toHaveBeenCalledExactlyOnceWith(original, token)); expect(chat.beginUpdate).toHaveBeenCalledTimes(2);
   });
 });
