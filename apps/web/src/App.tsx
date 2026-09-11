@@ -1,0 +1,49 @@
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { ArrowRight, Check, CircleDashed, RefreshCw, ShieldCheck, WifiOff } from 'lucide-react';
+import { Brand } from './components/Brand';
+import { Modal } from './components/Modal';
+
+const DevelopmentPreview = import.meta.env.DEV ? lazy(() => import('./DevelopmentPreview')) : null;
+type ServiceState = { kind: 'loading' } | { kind: 'error' } | { kind: 'ready'; version: string; accountsEnabled: boolean };
+
+function useServiceReadiness() {
+  const [state, setState] = useState<ServiceState>({ kind: 'loading' });
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    setState({ kind: 'loading' });
+    async function check() {
+      try {
+        const responses = await Promise.all(['/health/ready', '/api/v1/auth/bootstrap'].map((url) => fetch(url, { signal: controller.signal, credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } })));
+        if (responses.some((response) => !response.ok)) throw new Error('Service unavailable');
+        const [health, bootstrap] = await Promise.all(responses.map((response) => response.json()));
+        if (health?.data?.status !== 'ready' || typeof health.data.version !== 'string' || typeof health.data.features?.accounts !== 'boolean' || typeof bootstrap?.data?.accountsEnabled !== 'boolean' || typeof bootstrap.data.registrationMode !== 'string') throw new Error('Invalid service response');
+        if (active) setState({ kind: 'ready', version: health.data.version, accountsEnabled: health.data.features.accounts && bootstrap.data.accountsEnabled });
+      } catch {
+        if (active) setState({ kind: 'error' });
+      } finally { window.clearTimeout(timeout); }
+    }
+    void check();
+    return () => { active = false; controller.abort(); window.clearTimeout(timeout); };
+  }, [attempt]);
+  return { state, retry: () => setAttempt((value) => value + 1) };
+}
+
+function WelcomePage() {
+  const { state, retry } = useServiceReadiness();
+  const [aboutOpen, setAboutOpen] = useState(false);
+  return <main className="welcome-page"><section className="welcome-story" aria-label="认识同频"><Brand /><div className="story-content"><p className="eyebrow">STAY CLOSE. STAY IN SYNC.</p><h1>好的对话，<br />从<span>同频</span>开始。</h1><p className="story-description">和朋友聊聊近况，和同伴分享灵感。<br />让每一条消息，都有它的去处。</p><div className="conversation-art" aria-hidden="true"><div className="art-row"><span className="art-avatar" /><span className="art-bubble"><i /><i /></span></div><div className="art-row own"><span className="art-avatar" /><span className="art-bubble"><i /><i /></span></div><div className="art-row"><span className="art-avatar mint" /><span className="art-bubble"><i /></span></div></div></div><p className="story-footer">好友私聊<span>群聊协作</span><span>文件分享</span></p></section><section className="welcome-panel" aria-labelledby="welcome-title"><div className="welcome-top"><button className="text-button" onClick={() => setAboutOpen(true)}>关于同频</button></div><div className="welcome-content"><span className="small-label">欢迎来到同频</span><h2 id="welcome-title">留一点空间，<br />给下一段对话。</h2><p className="intro-copy">一个简单、好用的聊天空间。<br />连接朋友，也连接新的想法。</p><div className={`service-card ${state.kind}`} role="status" aria-live="polite" aria-busy={state.kind === 'loading'}><span className="service-icon" aria-hidden="true">{state.kind === 'loading' ? <CircleDashed className="spin" size={21} /> : state.kind === 'error' ? <WifiOff size={21} /> : <Check size={21} />}</span><div><h3>{state.kind === 'loading' ? '正在连接服务' : state.kind === 'error' ? '暂时无法连接服务' : '基础服务已连接'}</h3><p>{state.kind === 'loading' ? '正在确认服务与账号功能的可用状态。' : state.kind === 'error' ? '请确认服务已启动或网络可用，然后重试。' : state.accountsEnabled ? '账号服务已开放，登录界面正在准备中。' : '账号功能尚未启用，暂时无法登录或注册。'}</p>{state.kind === 'ready' && <span className="service-version">服务版本 {state.version}</span>}</div></div><button className="primary-button connect-button" onClick={retry} disabled={state.kind === 'loading'}><RefreshCw size={17} />{state.kind === 'loading' ? '连接中…' : state.kind === 'error' ? '重新连接' : '刷新服务状态'}</button><p className="availability-note">登录与注册开放后，即可开始使用。</p></div><footer className="welcome-footer"><ShieldCheck size={15} aria-hidden="true" /><span>账号功能未就绪时，不收集登录凭据。</span><a href="/admin">管理入口<ArrowRight size={14} /></a></footer></section><Modal open={aboutOpen} title="关于同频" onClose={() => setAboutOpen(false)}><Brand /><p>同频是一个为日常对话准备的聊天空间，支持的功能将随服务逐步开放。</p><p>此页面展示当前服务的真实连接状态。账号功能尚未就绪时，无法登录、注册或发送消息。</p><button className="primary-button" onClick={() => setAboutOpen(false)}>知道了</button></Modal></main>;
+}
+
+function AdminUnavailablePage() {
+  return <div className="admin-page"><header><a href="/" aria-label="同频首页"><Brand /></a><span className="admin-tag">管理后台</span></header><main><span className="empty-symbol"><ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" /></span><p className="eyebrow">同频管理</p><h1>管理服务尚未启用</h1><p>后台入口已预留。管理功能开放后，需使用具备管理权限的账号登录。</p><a className="primary-button" href="/">返回同频<ArrowRight size={16} /></a></main></div>;
+}
+
+export function App() {
+  const pathname = window.location.pathname;
+  if (DevelopmentPreview && pathname === '/__dev/preview') return <Suspense fallback={<p className="preview-loading">正在加载开发预览…</p>}><DevelopmentPreview /></Suspense>;
+  if (pathname === '/admin' || pathname.startsWith('/admin/')) return <AdminUnavailablePage />;
+  return <WelcomePage />;
+}

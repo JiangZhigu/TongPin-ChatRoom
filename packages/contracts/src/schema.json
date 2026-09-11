@@ -1,0 +1,28 @@
+{
+  "HealthResponse": {
+    "properties": {
+      "status": {
+        "title": "Status",
+        "type": "string"
+      },
+      "version": {
+        "title": "Version",
+        "type": "string"
+      },
+      "features": {
+        "additionalProperties": {
+          "type": "boolean"
+        },
+        "title": "Features",
+        "type": "object"
+      }
+    },
+    "required": [
+      "status",
+      "version",
+      "features"
+    ],
+    "title": "HealthResponse",
+    "type": "object"
+  }
+}

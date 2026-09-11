@@ -1,4 +1,14 @@
 # Byte-compiled / optimized / DLL files
+# Tongpin project-local environments, evidence and original design handoff
+/.codex/
+/node_modules/
+**/node_modules/
+/tongpin-chat-product-v2/
+/tongpin-chat-product-v2.zip
+/.env
+/.venv/
+/var/
+
 __pycache__/
 *.py[codz]
 *$py.class
