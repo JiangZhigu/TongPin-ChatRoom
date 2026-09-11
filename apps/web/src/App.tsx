@@ -1,8 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Check, CircleDashed, RefreshCw, ShieldCheck, WifiOff } from 'lucide-react';
 import { Brand } from './components/Brand';
 import { Modal } from './components/Modal';
-import { api, fetchBootstrap } from './lib/api';
+import { api, fetchBootstrap, onAuthExpired } from './lib/api';
 import type { AuthResult, BootstrapView, UserView } from './auth-types';
 import { AuthPage } from './AuthPage';
 import { AccountSettings } from './AccountSettings';
@@ -46,7 +46,7 @@ function WelcomePage() {
 function AdminEntry({ onSignedOut }: { onSignedOut: () => void }) {
   const [verifiedUser, setVerifiedUser] = useState<UserView | null>(null);
   const [error, setError] = useState(''); const [attempt, setAttempt] = useState(0); const [busy, setBusy] = useState(false);
-  useEffect(() => { const controller = new AbortController(); setError(''); setVerifiedUser(null); void api<{ user: UserView }>('/api/v1/admin/auth', { signal: controller.signal }).then((data) => setVerifiedUser(data.user)).catch((cause) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : '管理身份验证失败'); }); return () => controller.abort(); }, [attempt]);
+  useEffect(() => { const controller = new AbortController(); setError(''); setVerifiedUser(null); void api<{ user: UserView }>('/api/v1/admin/auth', { signal: controller.signal }).then((data) => { if (!controller.signal.aborted) setVerifiedUser(data.user); }).catch((cause) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : '管理身份验证失败'); }); return () => controller.abort(); }, [attempt]);
   async function signOut() { setBusy(true); try { await api('/api/v1/auth/logout', { method: 'POST', body: {} }); onSignedOut(); } catch (cause) { setError(cause instanceof Error ? cause.message : '退出失败'); } finally { setBusy(false); } }
   return <div className="admin-page"><header><a href="/" aria-label="同频首页"><Brand /></a><span className="admin-tag">管理后台</span></header><main><span className="empty-symbol"><ShieldCheck size={32} strokeWidth={1.5} aria-hidden="true" /></span><p className="eyebrow">同频管理</p><h1>{verifiedUser ? '管理身份已确认' : error ? '无法进入管理后台' : '正在验证管理身份'}</h1>{error && <p role="alert" className="form-error">{error}</p>}{verifiedUser && <><p>你好，{verifiedUser.nickname}。当前会话已通过服务端管理身份验证。</p><div className="service-card"><div><h3>管理功能尚未启用</h3><p>完整管理功能将陆续接入，当前没有可展示的运营数据。</p></div></div></>}<div className="admin-actions"><a className="primary-button" href="/">返回同频<ArrowRight size={16} /></a>{error && <button className="secondary-button" onClick={() => setAttempt((value) => value + 1)}>重新验证</button>}<button className="text-button" disabled={busy} onClick={() => void signOut()}>{busy ? '正在退出…' : '退出当前账号'}</button></div></main></div>;
 }
@@ -58,14 +58,43 @@ export function App() {
 }
 
 function AccountApplication({ admin }: { admin: boolean }) {
-  const [bootstrap, setBootstrap] = useState<BootstrapView | null>(null); const [error, setError] = useState(''); const [attempt, setAttempt] = useState(0);
-  useEffect(() => { let active = true; setError(''); setBootstrap(null); void fetchBootstrap().then((data) => { if (active) setBootstrap(data as BootstrapView); }).catch((cause) => { if (active) setError(cause instanceof Error ? cause.message : '暂时无法连接服务'); }); return () => { active = false; }; }, [attempt]);
-  function signedOut() { setBootstrap(null); setAttempt((value) => value + 1); }
-  function authenticated(result: AuthResult) { setBootstrap((current) => current ? { ...current, user: result.user, csrfToken: result.csrfToken } : current); }
-  if (!bootstrap) return <main className="boot-screen"><Brand /><EmptyState title={error ? '暂时无法连接服务' : '正在连接同频'} description={error || '正在确认服务与账号状态。'} action={error ? <button className="primary-button" onClick={() => setAttempt((value) => value + 1)}><RefreshCw size={16} />重新连接</button> : undefined} /></main>;
+  const [bootstrap, setBootstrap] = useState<BootstrapView | null>(null); const [error, setError] = useState('');
+  const generation = useRef(0); const mounted = useRef(false); const expiryRefreshPending = useRef(false);
+  const reloadBootstrap = useCallback(() => {
+    const requestGeneration = ++generation.current;
+    // Removing bootstrap unmounts all identity-bearing and sensitive forms immediately.
+    setBootstrap(null); setError('');
+    void fetchBootstrap().then((data) => {
+      if (mounted.current && generation.current === requestGeneration) setBootstrap(data as BootstrapView);
+    }).catch((cause) => {
+      if (mounted.current && generation.current === requestGeneration) setError(cause instanceof Error ? cause.message : '暂时无法连接服务');
+    }).finally(() => {
+      if (generation.current === requestGeneration) expiryRefreshPending.current = false;
+    });
+  }, []);
+  useEffect(() => {
+    mounted.current = true;
+    const unsubscribe = onAuthExpired(() => {
+      if (!mounted.current || expiryRefreshPending.current) return;
+      expiryRefreshPending.current = true;
+      reloadBootstrap();
+    });
+    reloadBootstrap();
+    return () => { mounted.current = false; generation.current++; expiryRefreshPending.current = false; unsubscribe(); };
+  }, [reloadBootstrap]);
+  // A callback retained by a form unmounted on expiry cannot restore the old user.
+  const viewGeneration = generation.current;
+  function signedOut() { if (mounted.current && generation.current === viewGeneration) reloadBootstrap(); }
+  function authenticated(result: AuthResult) {
+    if (mounted.current && generation.current === viewGeneration) setBootstrap((current) => current ? { ...current, user: result.user, csrfToken: result.csrfToken } : current);
+  }
+  function userChanged(updated: UserView) {
+    if (mounted.current && generation.current === viewGeneration) setBootstrap((current) => current ? { ...current, user: updated } : current);
+  }
+  if (!bootstrap) return <main className="boot-screen"><Brand /><EmptyState title={error ? '暂时无法连接服务' : '正在连接同频'} description={error || '正在确认服务与账号状态。'} action={error ? <button className="primary-button" onClick={reloadBootstrap}><RefreshCw size={16} />重新连接</button> : undefined} /></main>;
   if (!bootstrap.accountsEnabled) return <WelcomePage />;
   if (!bootstrap.user) return <AuthPage bootstrap={bootstrap} admin={admin} onAuthenticated={authenticated} />;
   if (admin) return <AdminEntry onSignedOut={signedOut} />;
   const user = bootstrap.user;
-  return <div className="authenticated-app"><AppShell conversations={[]} onSelectConversation={() => undefined} accountFooter={<div className="account-footer"><span className="avatar">{user.nickname.slice(0, 1)}</span><div><strong>{user.nickname}</strong><small>@{user.username}</small></div><a href="/admin" aria-label="管理入口"><ShieldCheck size={19} /></a></div>} settingsContent={<AccountSettings user={user} onUserChange={(updated) => setBootstrap((current) => current ? { ...current, user: updated } : current)} onSignedOut={signedOut} />}><EmptyState title="欢迎来到同频" description="账号已就绪。聊天功能尚未启用，你可以先在设置中完善个人资料和管理账号安全。" /></AppShell></div>;
+  return <div className="authenticated-app"><AppShell conversations={[]} onSelectConversation={() => undefined} accountFooter={<div className="account-footer"><span className="avatar">{user.nickname.slice(0, 1)}</span><div><strong>{user.nickname}</strong><small>@{user.username}</small></div><a href="/admin" aria-label="管理入口"><ShieldCheck size={19} /></a></div>} settingsContent={<AccountSettings user={user} onUserChange={userChanged} onSignedOut={signedOut} />}><EmptyState title="欢迎来到同频" description="账号已就绪。聊天功能尚未启用，你可以先在设置中完善个人资料和管理账号安全。" /></AppShell></div>;
 }
