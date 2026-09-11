@@ -35,7 +35,7 @@ def message_text(value, *, max_chars=4000, max_bytes=16384, allow_empty=False):
     except UnicodeEncodeError as exc:
         raise APIError("VALIDATION_ERROR", "消息含无效字符。", 422) from exc
     if len(value) > max_chars or size > max_bytes:
-        raise APIError("PAYLOAD_TOO_LARGE", "消息最多4000字且不超过16 KiB。", 413)
+        raise APIError("PAYLOAD_TOO_LARGE", f"消息最多{max_chars}字且不超过{max_bytes}个UTF-8字节。", 413)
     if any(unicodedata.category(char) == "Cc" and char not in "\n\t" for char in value):
         raise APIError("VALIDATION_ERROR", "消息不能包含控制字符。", 422)
     if not allow_empty and not value.strip():

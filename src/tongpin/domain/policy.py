@@ -28,7 +28,7 @@ class PolicyService:
             "operatorName": policy["operator_name"],
             "operatorContact": policy["operator_contact"],
             "development": not self.runtime.settings.production,
-            "text": "同频服务由站点运营者管理。全站超级管理员可以审阅私聊、群聊和附件，敏感访问会记录审计；本服务不提供端到端加密。未删除消息默认持续保存；撤回或管理删除的内容立即对普通用户隐藏，管理保留期默认为30天；审计保留180天。注销有30天冷静期，注销后共享消息按保留规则保存并显示已注销身份。请妥善离线保存恢复码；密码和恢复码均丢失时没有自动找回后门，只能联系运营者进行人工核验。文件白名单不能保证文件安全，请谨慎下载和打开。"
+            "text": f"同频服务由站点运营者管理。全站超级管理员可以审阅私聊、群聊和附件，敏感访问会记录审计；本服务不提供端到端加密。未删除消息默认持续保存；撤回或管理删除的内容立即对普通用户隐藏，当前管理保留期为{policy['deleted_content_days']}天；审计保留{policy['audit_days']}天。注销有{policy['deletion_cooling_days']}天冷静期，注销后共享消息按保留规则保存并显示已注销身份。请妥善离线保存恢复码；密码和恢复码均丢失时没有自动找回后门，只能联系运营者进行人工核验。文件白名单不能保证文件安全，请谨慎下载和打开。"
             + (
                 " 当前为本地开发/测试环境，不能将此说明视为正式运营者已审定的法律文本。"
                 if not self.runtime.settings.production

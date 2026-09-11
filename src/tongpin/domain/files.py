@@ -105,7 +105,8 @@ class FileService:
             return {"imageLimit": policy["image_limit_bytes"], "fileLimit": policy["file_limit_bytes"], "attachmentCount": policy["attachment_count"], "messageBytes": policy["message_attachment_bytes"], "userQuota": actor.user['quota_bytes'] if actor.user['quota_bytes'] is not None else policy["user_quota_bytes"], "usedBytes": total - reserved, "reservedBytes": reserved, "uploadAllowed": not bool(actor.user['upload_disabled']), "uploadReason": actor.user['restriction_reason'] if actor.user['upload_disabled'] else '', "supportedExtensions": sorted(MIMES), "scanPolicy": "closed-test-unscanned" if self.runtime.settings.allow_unscanned_files else "strict", "scanner": "configured" if self.scanner.port else "disabled"}
 
     def metadata(self, row):
-        ready = row["state"] == "ready"
+        restricted = row["governance"] != "available"
+        ready = row["state"] == "ready" and not restricted
         image = ready and row["kind"] == "image"
         root = "/api/v1/attachments/" + row["id"]
         view = {
@@ -117,6 +118,8 @@ class FileService:
         }
         if image:
             view.update(previewUrl=root + "/preview", thumbnailUrl=root + "/thumbnail", width=row["width"], height=row["height"], frameCount=row["frame_count"])
+        if restricted:
+            view.update(state="quarantined", errorCode="FILE_RESTRICTED", error="此文件已限制访问：" + row["governance_reason"])
         return view
 
     def reserve(self, actor, data):
@@ -158,6 +161,8 @@ class FileService:
         if row["owner_id"] != actor.id:
             raise APIError("RESOURCE_UNAVAILABLE", "这份上传不属于当前账号。", 404)
         self.scope(conn, actor, row["purpose"], row["conversation_id"], row["access_key"])
+        if row["governance"] != "available":
+            raise APIError("FILE_RESTRICTED", "此上传已由管理员限制。", 403)
         if row["state"] not in {"reserved", "uploading", "processing", "ready", "quarantined"} or row["expires_at"] <= now_ms() and not (row["message_id"] or row["avatar_bound"]):
             raise APIError("UPLOAD_EXPIRED", "上传已结束或过期，请重新选择。", 409)
         if row["state"] == "uploading" and (row["lease_until"] or 0) > now_ms():
@@ -240,6 +245,8 @@ class FileService:
         with self.runtime.db.read() as conn:
             row = self.row(conn, fid)
             self.authorize(conn, actor, row)
+            if row["governance"] != "available":
+                raise APIError("FILE_RESTRICTED", "此文件已限制访问：" + row["governance_reason"], 403)
             if row["state"] != "ready" or not (row["message_id"] or row["avatar_bound"]) and row["expires_at"] <= now_ms():
                 raise APIError("RESOURCE_UNAVAILABLE", "附件还未就绪或已无法访问。", 404)
             key = row["storage_key"] if variant == "content" else row[variant + "_key"]
@@ -270,6 +277,8 @@ class FileService:
                 raise APIError("RESOURCE_UNAVAILABLE", "此附件无法重新校验。", 404)
             self.scope(conn, actor, row["purpose"], row["conversation_id"], row["access_key"])
             if row["state"] == "quarantined" and row["expires_at"] > now_ms():
+                if row["governance"] != "available":
+                    raise APIError("FILE_RESTRICTED", "此文件的管理限制尚未解除。", 403)
                 conn.execute("UPDATE attachments SET state='processing',error_code=NULL,updated_at=? WHERE id=?", (now_ms(), fid))
                 self.runtime.jobs.enqueue_in_transaction(conn, "files.process", {"attachmentId": fid}, entity_id=fid)
             return self.metadata(self.row(conn, fid))
@@ -354,7 +363,7 @@ class FileService:
             if row["owner_id"] != actor.id or row["conversation_id"] != cid or row["purpose"] != "message" or row["message_id"] or row["avatar_bound"]:
                 raise APIError("RESOURCE_UNAVAILABLE", "附件不属于当前消息或已被使用。", 404)
             self.scope(conn, actor, row["purpose"], cid, row["access_key"])
-            if row["state"] != "ready" or row["expires_at"] <= now_ms():
+            if row["state"] != "ready" or row["expires_at"] <= now_ms() or row["governance"] != "available":
                 raise APIError("FILE_NOT_READY", "附件尚未就绪或已过期，未发送此消息。", 409)
             total += row["size"]
         if total > policy["message_attachment_bytes"]:
@@ -399,7 +408,7 @@ class FileService:
                 return self.runtime.groups.detail_in(conn, actor, cid) if cid else {"user": public_user(actor.user)}
             if fid:
                 row = self.row(conn, fid)
-                if row["owner_id"] != actor.id or row["purpose"] != ("group_avatar" if cid else "user_avatar") or row["conversation_id"] != cid or row["state"] != "ready" or row["expires_at"] <= now_ms() or row["avatar_bound"]:
+                if row["owner_id"] != actor.id or row["purpose"] != ("group_avatar" if cid else "user_avatar") or row["conversation_id"] != cid or row["state"] != "ready" or row["expires_at"] <= now_ms() or row["avatar_bound"] or row["governance"] != "available":
                     raise APIError("FILE_NOT_READY", "请先上传并校验属于当前用途的头像。", 409)
                 self.scope(conn, actor, row["purpose"], cid, row["access_key"])
                 conn.execute("UPDATE attachments SET avatar_bound=1 WHERE id=?", (fid,))
@@ -407,10 +416,10 @@ class FileService:
                 conn.execute("UPDATE attachments SET avatar_bound=0,state='cancelled',expires_at=? WHERE id=?", (now_ms(), old_id))
                 self.schedule_cleanup(conn, 0)
             if cid:
-                conn.execute("UPDATE conversations SET avatar_id=?,role_version=role_version+1,updated_at=? WHERE id=?", (fid, now_ms(), cid))
+                conn.execute("UPDATE conversations SET avatar_id=?,avatar_hidden=0,role_version=role_version+1,updated_at=? WHERE id=?", (fid, now_ms(), cid))
                 self.runtime.groups.changed(conn, cid)
             else:
-                conn.execute("UPDATE users SET avatar_id=?,updated_at=? WHERE id=?", (fid, now_ms(), actor.id))
+                conn.execute("UPDATE users SET avatar_id=?,avatar_hidden=0,updated_at=? WHERE id=?", (fid, now_ms(), actor.id))
                 self.runtime.events.user_changed(conn, actor.id)
             audit(conn, actor.id, "group.avatar" if cid else "account.avatar", cid or actor.id)
             return self.runtime.groups.detail_in(conn, actor, cid) if cid else {"user": public_user(conn.execute("SELECT * FROM users WHERE id=?", (actor.id,)).fetchone())}

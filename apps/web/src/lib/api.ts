@@ -38,7 +38,7 @@ export function onAuthExpired(listener: () => void): () => void {
   return () => { expiredListeners.delete(listener); };
 }
 
-export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; inviteToken?: string; upload?: { id: string; blob: Blob } } = {}): Promise<T> {
+export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; inviteToken?: string; responseType?: 'blob'; upload?: { id: string; blob: Blob } } = {}): Promise<T> {
   const method = options.method || 'GET';
   const generation = identityGeneration;
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -66,6 +66,12 @@ export async function api<T>(path: string, options: { method?: string; body?: un
       const localState = path.startsWith('/api/v1/') && !['/api/v1/auth/bootstrap', '/api/v1/auth/captcha', '/api/v1/auth/register', '/api/v1/auth/login', '/api/v1/auth/recover'].includes(path) ? await captureOfflineState() : null;
       if (controller.signal.aborted) throw controller.signal.reason;
       const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store', headers, body: options.upload?.blob ?? (options.body === undefined ? undefined : JSON.stringify(options.body)), signal: controller.signal });
+      if (response.ok && options.responseType === 'blob') {
+        const blob = await response.blob();
+        if (controller.signal.aborted) throw controller.signal.reason;
+        if (generation !== identityGeneration) throw new APIError(409, { code: 'IDENTITY_CHANGED', message: '账号已改变，已丢弃本次文件读取结果。' });
+        return blob as T;
+      }
       const payload = await response.json().catch(() => null);
       if (controller.signal.aborted) throw controller.signal.reason;
       if (!response.ok) {
@@ -95,6 +101,10 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     clearTimeout(timeout);
     if (cancel) options.signal?.removeEventListener('abort', cancel);
   }
+}
+
+export function apiBlob(path: string, options: { body: unknown; signal?: AbortSignal }): Promise<Blob> {
+  return api<Blob>(path, { ...options, method: 'POST', responseType: 'blob' });
 }
 
 export type User = { id: string; username: string; nickname: string; bio: string; avatarUrl?: string | null; siteRole: 'user' | 'super_admin'; status: string; createdAt: number; preferences: { invisible: boolean; readReceipts: boolean; doNotDisturb: boolean; [key: string]: unknown }; restrictions?: { uploadDisabled: boolean; groupCreationDisabled: boolean; reason: string; mutedUntil: number | null; muteReason: string } };

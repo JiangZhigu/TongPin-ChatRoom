@@ -32,6 +32,12 @@ DEFAULT_POLICY = {
     "operator_contact": "",
     "terms_version": "development-1",
     "site_name": "同频",
+    "registration_per_hour": 20,
+    "login_ip_per_15m": 100,
+    "login_user_per_15m": 15,
+    "message_per_minute": 120,
+    "group_create_per_hour": 30,
+    "online_notifications": True,
 }
 
 

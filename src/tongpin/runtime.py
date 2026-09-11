@@ -220,6 +220,7 @@ class Runtime:
                 ).fetchone()
                 notify = (
                     online
+                    and self.policy.get(conn)["online_notifications"]
                     and preference
                     and preference[0]
                     and not json.loads(friend["preferences"]).get("doNotDisturb")

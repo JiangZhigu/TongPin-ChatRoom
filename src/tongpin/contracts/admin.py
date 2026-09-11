@@ -29,6 +29,10 @@ AdminAction = Literal[
     "group.dissolve",
     "group.invite.revoke",
     "monitoring.thresholds",
+    "message.review", "message.hide", "message.delete", "message.restore",
+    "file.quarantine", "file.release", "file.revoke", "user.quota",
+    "report.claim", "report.reopen", "report.reject", "report.resolve",
+    "settings.update", "settings.rollback", "site_invite.create", "site_invite.revoke",
 ]
 
 

@@ -190,6 +190,21 @@ describe('rich message persistence, located windows and live hints', () => {
     expect(current.getSnapshot().messages[0]).toMatchObject({ id: source.id, status: 'recalled', text: '' });
     expect(current.getSnapshot().messages[1].reply).toMatchObject({ status: 'unavailable', text: '', author: '' });
   });
+  it.each([true, false])('refreshes quoted projection after management restore with source in window=%s', async (includeSource) => {
+    const source = message('original', '10', '😀'.repeat(245));
+    const quote = { ...message('quote', '11'), reply: { id: source.id, status: 'available' as const, text: '😀'.repeat(240), author: '甲' } };
+    messages = includeSource ? [source, quote] : [quote];
+    const current = await client(); await current.selectConversation(conversation.id);
+    syncEvents.push(event('1', { type: 'message.updated', message: { ...source, status: 'moderated', text: '' } }));
+    socketEvents.get('sync.available')?.();
+    await until(() => current.getSnapshot().messages.at(-1)?.reply?.status === 'unavailable');
+    expect(current.getSnapshot().messages.at(-1)?.reply).toMatchObject({ status: 'unavailable', text: '', author: '' });
+    syncEvents.push(event('2', { type: 'message.updated', message: source }));
+    socketEvents.get('sync.available')?.();
+    await until(() => current.getSnapshot().messages.at(-1)?.reply?.status === 'available');
+    expect(current.getSnapshot().messages.at(-1)?.reply).toMatchObject({ status: 'available', text: '😀'.repeat(240), author: '甲' });
+    expect(current.getSnapshot().messages.map((item) => item.id)).toEqual(includeSource ? ['original', 'quote'] : ['quote']);
+  });
   it('patches only bookmark state after a recall and ignores results from an earlier client identity generation', async () => {
     const source = message('original', '10', '不可恢复的旧正文');
     conversation.lastMessage = source; messages = [source];

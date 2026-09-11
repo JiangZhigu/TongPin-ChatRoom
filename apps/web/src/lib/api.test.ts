@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, fetchBootstrap, onAuthExpired, setCsrfToken } from './api';
+import { api, apiBlob, fetchBootstrap, onAuthExpired, setCsrfToken } from './api';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); setCsrfToken(''); });
 const failure = (code: string) => ({ ok: false, status: 401, json: async () => ({ error: { code } }) });
@@ -87,6 +87,34 @@ describe('API session recovery and bounded requests', () => {
       controller.abort();
       await expect(request).rejects.toMatchObject({ name: 'AbortError' });
       expect(expired).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+});
+
+describe('audited binary reads', () => {
+  it('uses the current session and CSRF with a POST reason and returns the actual bytes', async () => {
+    setCsrfToken('binary-session');
+    const blob = new Blob(['bounded-test-file']);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => blob });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(apiBlob('/binary-read', { body: { reason: '核验附件' } })).resolves.toBe(blob);
+    expect(fetchMock).toHaveBeenCalledWith('/binary-read', expect.objectContaining({ method: 'POST', credentials: 'same-origin', cache: 'no-store', body: JSON.stringify({ reason: '核验附件' }), headers: expect.objectContaining({ 'X-CSRF-Token': 'binary-session' }) }));
+  });
+  it('discards an old identity response even if its binary body completes later', async () => {
+    setCsrfToken('old-binary');
+    let finish!: (blob: Blob) => void;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, blob: () => new Promise<Blob>((resolve) => { finish = resolve; }) }));
+    const pending = apiBlob('/binary-old', { body: { reason: '核验附件' } });
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    setCsrfToken('new-binary'); finish(new Blob(['old data']));
+    await expect(pending).rejects.toMatchObject({ code: 'IDENTITY_CHANGED' });
+  });
+  it('handles authentication errors through the same identity invalidation path', async () => {
+    const expired = vi.fn(); const unsubscribe = onAuthExpired(expired);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(failure('AUTH_REQUIRED')));
+    try {
+      await expect(apiBlob('/binary-denied', { body: { reason: '核验附件' } })).rejects.toMatchObject({ code: 'AUTH_REQUIRED' });
+      expect(expired).toHaveBeenCalledTimes(1);
     } finally { unsubscribe(); }
   });
 });

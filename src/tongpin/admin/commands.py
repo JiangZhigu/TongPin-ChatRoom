@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from tongpin.admin.authz import compact, conflict, fingerprint, mute_until, unavailable
 from tongpin.admin.monitoring import validate_thresholds
+from tongpin.admin.validation import validate_s2_parameters
 from tongpin.contracts.base import APIError
 from tongpin.domain.auth import Principal
 from tongpin.domain.security import audit
@@ -31,6 +32,21 @@ class CommandsAdmin:
             "group.member.remove": "移出所列非群主成员，终止当前加入期和相关访问。",
             "group.dissolve": "解散所列群，关闭全部成员加入期并撤销邀请、待审名额及在途转让。",
             "group.invite.revoke": "撤销所列邀请，使关联待审申请到期并释放预留名额。",
+            "message.review": "记录对所列消息的管理审阅，不改变前台可见状态。",
+            "message.hide": "立即屏蔽所列消息正文及附件，前台保留处置提示。",
+            "message.delete": "删除所列消息的普通访问；原内容按管理保留期留存后清理。",
+            "message.restore": "恢复保留期内被管理处置的消息；当前群成员期和文件限制仍适用。",
+            "file.quarantine": "隔离附件的普通访问、头像和新消息绑定，扫描结果保持原样。",
+            "file.release": "解除管理隔离或撤销；病毒扫描、就绪状态及内容保留限制继续执行。",
+            "file.revoke": "撤销附件的普通访问；不在本次操作中物理删除文件。",
+            "report.claim": "将所列待处理工单认领到当前管理员。",
+            "report.reopen": "重新打开已关闭的工单，并通知举报者。",
+            "report.reject": "驳回所列工单，保存并发送所填反馈。",
+            "report.resolve": "保存工单反馈；如选择了关联处置，与工单在同一事务中完成。",
+            "settings.update": "按目标详情中的前后差异写入新的站点策略版本；后续请求立即使用。",
+            "settings.rollback": "重新校验历史可编辑策略并创建新版本；不删除版本历史。",
+            "site_invite.create": "生成站点邀请码；原管理会话5分钟内可领取一次，使用次数及到期日以预览为准。",
+            "site_invite.revoke": "撤销所列站点邀请码；已注册的账号保留。",
         }
         if action in ("user.mute", "group.member.mute"):
             until = datetime.fromtimestamp(parameters["until"] / 1000, UTC).isoformat()
@@ -39,6 +55,9 @@ class CommandsAdmin:
             return [
                 f"上传：{'禁止' if parameters['uploadDisabled'] else '允许'}；创建群聊：{'禁止' if parameters['groupCreationDisabled'] else '允许'}。既有内容保留。"
             ]
+        if action == "user.quota":
+            value = parameters["quotaBytes"]
+            return ["新配额：" + ("使用当前站点默认" if value is None else str(value) + "字节") + "；只限制后续上传，不删除已有内容。"]
         if action == "group.member.role":
             return [
                 f"将所列成员设为{'群管理员' if parameters['role'] == 'admin' else '普通成员'}。"
@@ -60,6 +79,8 @@ class CommandsAdmin:
 
     @staticmethod
     def validate_parameters(action, targets, parameters):
+        if validate_s2_parameters(action, targets, parameters):
+            return
         expected = (
             {"until"}
             if action in ("user.mute", "group.member.mute")
@@ -95,6 +116,16 @@ class CommandsAdmin:
             validate_thresholds(parameters["values"])
 
     def inspect_target(self, conn, action, target, parameters):
+        if action.startswith("message."):
+            return self.inspect_content(conn, action, target, parameters)
+        if action.startswith("file."):
+            return self.inspect_file(conn, action, target, parameters)
+        if action.startswith("report."):
+            return self.inspect_report(conn, action, target, parameters)
+        if action.startswith("settings."):
+            return self.inspect_settings(conn, action, target, parameters)
+        if action.startswith("site_invite."):
+            return self.inspect_site_invite(conn, action, target, parameters)
         if action.startswith("user."):
             return self.inspect_user(conn, action, target, parameters)
         if action == "session.revoke":
@@ -350,6 +381,16 @@ class CommandsAdmin:
                 message = self.apply_relation(conn, command["action"], item["target_id"])
             elif command["action"] == "monitoring.thresholds":
                 message = self.apply_monitoring(conn, command, parameters)
+            elif command["action"].startswith("message."):
+                message = self.apply_content(conn, command, item["target_id"], parameters)
+            elif command["action"].startswith("file."):
+                message = self.apply_file(conn, command, item["target_id"], parameters)
+            elif command["action"].startswith("report."):
+                message = self.apply_report(conn, command, item["target_id"], parameters)
+            elif command["action"].startswith("settings."):
+                message = self.apply_settings(conn, command, parameters)
+            elif command["action"].startswith("site_invite."):
+                message = self.apply_site_invite(conn, command, item["target_id"], parameters)
             else:
                 message = self.apply_group(conn, command, item["target_id"], parameters)
             conn.execute("RELEASE admin_target")
@@ -494,7 +535,7 @@ class CommandsAdmin:
         with self.runtime.db.write() as conn:
             self.runtime.auth.current_in_transaction(conn, actor, admin=True)
             command = conn.execute(
-                "SELECT * FROM admin_commands WHERE id=? AND actor_id=? AND session_id=? AND status='completed' AND action='user.password_reset'",
+                "SELECT * FROM admin_commands WHERE id=? AND actor_id=? AND session_id=? AND status='completed' AND action IN('user.password_reset','site_invite.create')",
                 (operation_id, actor.id, actor.session["id"]),
             ).fetchone()
             if not command:
@@ -505,18 +546,19 @@ class CommandsAdmin:
                 if value["actorId"] != actor.id or value["sessionId"] != actor.session["id"]:
                     return False
                 output.append({key: value[key] for key in ("credential", "expiresAt", "username")})
+                output[-1]["kind"] = value.get("kind", "manual_password_reset")
                 return True
 
             if not self.secrets.consume(operation_id, take):
                 raise APIError(
                     "SECRET_UNAVAILABLE",
-                    "凭据已显示或已过展示期限；如未妥善保存，请重新核验并生成新的重置凭据。",
+                    "凭据已显示或已过展示期限；如未妥善保存，请重新核验并生成新的凭据。",
                     409,
                 )
             audit(
                 conn,
                 actor.id,
-                "admin.reset_credential.reveal",
+                "admin.site_invite.reveal" if command["action"] == "site_invite.create" else "admin.reset_credential.reveal",
                 operation_id,
                 reason=command["reason"],
             )

@@ -4,7 +4,9 @@ from flask import Blueprint, g, request
 
 from tongpin.admin.authz import bounded_limit
 from tongpin.contracts.admin import AdminExecuteInput, AdminPreviewInput
+from tongpin.contracts.admin_s2 import ContentSearch, FileRead, FileSearch, SensitiveRead
 from tongpin.transports.http.auth import parse, principal, runtime, success
+from tongpin.transports.http.files import send_content
 
 admin_blueprint = Blueprint("admin", __name__, url_prefix="/api/v1/admin")
 
@@ -137,3 +139,54 @@ def command(operation_id):
 def secret(operation_id):
     parse()
     return success(runtime().admin.reveal_secret(principal(admin=True), operation_id))
+
+
+@admin_blueprint.post("/content/search")
+def content_search():
+    return success(runtime().admin.content_search(principal(admin=True), parse(ContentSearch), g.request_id))
+
+
+@admin_blueprint.post("/content/<mid>/read")
+def content_read(mid):
+    return success(runtime().admin.content_read(principal(admin=True), mid, parse(SensitiveRead), g.request_id))
+
+
+@admin_blueprint.post("/files/search")
+def files_search():
+    return success(runtime().admin.files_search(principal(admin=True), parse(FileSearch), g.request_id))
+
+
+@admin_blueprint.post("/files/<fid>/read")
+def file_read(fid):
+    return success(runtime().admin.file_read(principal(admin=True), fid, parse(SensitiveRead), g.request_id))
+
+
+@admin_blueprint.post("/files/<fid>/content")
+def file_content(fid):
+    data = parse(FileRead)
+    return send_content(runtime().admin.file_content(principal(admin=True), fid, data, g.request_id), download=data.variant == "content")
+
+
+@admin_blueprint.get("/reports")
+def reports():
+    return success(runtime().admin.reports_list(principal(admin=True), status=request.args.get("status", ""), category=request.args.get("category", ""), assigned=request.args.get("assigned", "all"), **pagination()))
+
+
+@admin_blueprint.post("/reports/<rid>/read")
+def report_read(rid):
+    return success(runtime().admin.report_read(principal(admin=True), rid, parse(SensitiveRead), g.request_id))
+
+
+@admin_blueprint.get("/settings")
+def settings():
+    return success(runtime().admin.settings_view(principal(admin=True)))
+
+
+@admin_blueprint.get("/settings/versions")
+def settings_versions():
+    return success(runtime().admin.settings_versions(principal(admin=True), **pagination()))
+
+
+@admin_blueprint.get("/site-invites")
+def site_invites():
+    return success(runtime().admin.site_invites(principal(admin=True), **pagination()))

@@ -305,7 +305,7 @@ class InteractionService:
                 now_ms()
                 > row["created_at"] + self.runtime.policy.get(conn)["recall_seconds"] * 1000
             ):
-                raise APIError("RECALL_EXPIRED", "这条消息已超过两分钟撤回期限。", 409)
+                raise APIError("RECALL_EXPIRED", f"这条消息已超过当前{self.runtime.policy.get(conn)['recall_seconds']}秒撤回期限。", 409)
             conn.execute(
                 "UPDATE messages SET status=?,removed_at=?,removed_by=?,removed_reason=? WHERE id=?",
                 (desired, now_ms(), actor.id, reason if moderation else "sender_recall", mid),

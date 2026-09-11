@@ -138,6 +138,7 @@ class UsersAdmin:
                 "upload_disabled",
                 "group_creation_disabled",
                 "must_change_password",
+                "quota_bytes",
             )
         }
         return snapshot, f"{row['nickname']}（{row['username']}）", row["status"]
@@ -170,6 +171,8 @@ class UsersAdmin:
                 "group_creation_disabled": int(parameters["groupCreationDisabled"]),
                 "restriction_reason": command["reason"],
             }
+        elif action == "user.quota":
+            changes = {"quota_bytes": parameters["quotaBytes"]}
         elif action == "user.restore":
             changes = {"status": "active", "deletion_at": None, "status_reason": ""}
         elif action == "user.password_reset":

@@ -47,9 +47,20 @@ export function LocalAttachmentList({ files, onRemove, beforeDownload, allowDown
 function ServerFile({ file }: { file: Attachment }) {
   const [preview, setPreview] = useState(false); const [imageError, setImageError] = useState(false); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   const controller = useRef<AbortController | null>(null); const download = useDownload();
+  const available = (file.state === undefined || file.state === 'ready') && file.errorCode !== 'FILE_RESTRICTED' && typeof file.contentUrl === 'string' && file.contentUrl.trim().length > 0;
+  const accessKey = JSON.stringify([file.id, file.state, file.errorCode, file.contentUrl]);
+  const access = useRef({ key: accessKey, revision: 0, available });
+  if (access.current.key !== accessKey) access.current = { key: accessKey, revision: access.current.revision + 1, available };
+  else access.current.available = available;
+  const previewAvailable = available && !!file.thumbnailUrl && !!file.previewUrl;
+  useEffect(() => {
+    controller.current?.abort(); controller.current = null; setBusy(false); setPreview(false); setError(''); setImageError(false);
+  }, [accessKey, file.thumbnailUrl, file.previewUrl]);
   useEffect(() => () => { controller.current?.abort(); controller.current = null; }, []);
   const animated = file.mime === 'image/gif' || (file.frameCount || 0) > 1;
   async function save() {
+    if (!access.current.available || controller.current) return;
+    const requestRevision = access.current.revision; const contentUrl = file.contentUrl;
     setBusy(true); setError(''); const request = new AbortController(); controller.current = request;
     let timedOut = false;
     let abort!: () => void;
@@ -57,20 +68,20 @@ function ServerFile({ file }: { file: Attachment }) {
     const timeout = setTimeout(() => { timedOut = true; request.abort(); }, DOWNLOAD_TIMEOUT_MS);
     try {
       const body = (async () => {
-        const response = await fetch(file.contentUrl, { credentials: 'same-origin', signal: request.signal });
+        const response = await fetch(contentUrl, { credentials: 'same-origin', signal: request.signal });
         if (!response.ok) throw new Error(response.status === 401 ? '登录已失效，请重新登录后下载。' : [403, 404, 410].includes(response.status) ? '文件已不可访问，可能已撤回、删除或失去会话权限。' : '下载失败，请稍后重试。');
         return response.blob();
       })();
-      const blob = await Promise.race([body, cancelled]); if (!request.signal.aborted) download(blob, file.name);
+      const blob = await Promise.race([body, cancelled]); if (!request.signal.aborted && controller.current === request && access.current.available && access.current.revision === requestRevision) download(blob, file.name);
     } catch (cause) { if (controller.current === request && (timedOut || !request.signal.aborted)) setError(timedOut ? '下载超过 120 秒，已停止等待，请重试。' : attachmentError(cause)); }
     finally { clearTimeout(timeout); request.signal.removeEventListener('abort', abort); if (controller.current === request) { controller.current = null; setBusy(false); } }
   }
   return <div className={`server-file ${file.kind === 'image' ? 'image-attachment' : ''}`}>
-    {file.kind === 'image' && file.thumbnailUrl && !imageError && <button type="button" className="image-preview-button" aria-label={`预览图片 ${file.name}`} onClick={() => setPreview(true)}><img src={file.thumbnailUrl} alt={file.name} loading="lazy" onError={() => setImageError(true)} /></button>}
+    {file.kind === 'image' && previewAvailable && !imageError && <button type="button" className="image-preview-button" aria-label={`预览图片 ${file.name}`} onClick={() => setPreview(true)}><img src={file.thumbnailUrl} alt={file.name} loading="lazy" onError={() => setImageError(true)} /></button>}
     {imageError && <p className="field-error" role="alert">图片预览已不可访问，请刷新会话确认权限。</p>}
-    <div className="file-card"><span className="file-type-icon">{file.kind === 'image' ? <ImageIcon size={23} /> : <FileText size={23} />}</span><div className="file-copy"><strong>{file.name}</strong><small>{fileSize(file.size)}{animated ? ' · 静态预览，原件保留动画' : ''}</small></div><button type="button" className="icon-button" aria-label={`${animated ? '下载原始动画' : '下载文件'} ${file.name}`} disabled={busy} onClick={() => void save()}><Download size={18} /></button></div>
+    <div className="file-card"><span className="file-type-icon">{file.kind === 'image' ? <ImageIcon size={23} /> : <FileText size={23} />}</span><div className="file-copy"><strong>{file.name}</strong><small>{fileSize(file.size)}{animated ? ' · 静态预览，原件保留动画' : ''}</small>{file.error && <p className="field-error" role="alert">{file.error}</p>}{!available && !file.error && <p className="field-error" role="status">文件当前不可下载，请刷新会话确认状态。</p>}</div><button type="button" className="icon-button" aria-label={`${animated ? '下载原始动画' : '下载文件'} ${file.name}`} disabled={busy || !available} onClick={() => void save()}><Download size={18} /></button></div>
     {error && <p className="field-error" role="alert">{error}</p>}
-    {preview && <Modal open title={file.name} onClose={() => setPreview(false)}><div className="attachment-lightbox">{file.previewUrl && !imageError ? <img src={file.previewUrl} alt={file.name} onError={() => setImageError(true)} /> : <p role="alert">图片预览已不可访问。</p>}</div>{animated && <p className="field-hint">这是安全处理后的静态预览。下载原始文件可查看动画。</p>}<button type="button" className="secondary-button" disabled={busy} onClick={() => void save()}>{busy ? '正在下载…' : '下载原件'}</button>{error && <p className="field-error" role="alert">{error}</p>}</Modal>}
+    {preview && previewAvailable && <Modal open title={file.name} onClose={() => setPreview(false)}><div className="attachment-lightbox">{file.previewUrl && !imageError ? <img src={file.previewUrl} alt={file.name} onError={() => setImageError(true)} /> : <p role="alert">图片预览已不可访问。</p>}</div>{animated && <p className="field-hint">这是安全处理后的静态预览。下载原始文件可查看动画。</p>}<button type="button" className="secondary-button" disabled={busy || !available} onClick={() => void save()}>{busy ? '正在下载…' : '下载原件'}</button>{error && <p className="field-error" role="alert">{error}</p>}</Modal>}
   </div>;
 }
 

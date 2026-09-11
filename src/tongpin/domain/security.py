@@ -129,6 +129,15 @@ class Security:
         digest = self.digest(category + ":" + str(key), "rate")
         denied = False
         with self.runtime.db.write() as conn:
+            policy_key = {
+                "register": "registration_per_hour",
+                "login-ip": "login_ip_per_15m",
+                "login-user": "login_user_per_15m",
+                "message-send": "message_per_minute",
+                "group-create": "group_create_per_hour",
+            }.get(category)
+            if policy_key:
+                maximum = self.runtime.policy.get(conn)[policy_key]
             conn.execute("DELETE FROM rate_buckets WHERE expires_at<?", (now,))
             count = conn.execute("SELECT COUNT(*) FROM rate_buckets").fetchone()[0]
             row = conn.execute("SELECT * FROM rate_buckets WHERE key=?", (digest,)).fetchone()

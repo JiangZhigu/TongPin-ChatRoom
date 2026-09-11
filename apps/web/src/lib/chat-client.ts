@@ -319,11 +319,19 @@ export class ChatClient {
     if (event.message) {
       const message = event.message;
       const cache = this.windows.get(message.conversationId);
+      // This event carries the server's current authorized source projection.
+      // Refresh visible references without inserting a source across a history gap.
+      const updateReference = (item: Message): Message => {
+        if (item.status !== 'sent' || item.conversationId !== message.conversationId || item.reply?.id !== message.id) return item;
+        return { ...item, reply: message.status === 'sent'
+          ? { id: message.id, status: 'available', text: [...message.text].slice(0, 240).join(''), author: message.sender?.nickname ?? '系统' }
+          : { id: message.id, status: 'unavailable', text: '', author: '' } };
+      };
       const update = (messages: Message[], hasAfter = false) => {
         const known = messages.some((item) => item.id === message.id);
         const last = messages.at(-1);
         const append = event.type === 'message.created' && (!hasAfter || !!last && BigInt(message.seq) === BigInt(last.seq) + 1n) || event.type === 'message.updated' && !hasAfter && this.state.historyLoading && this.state.selectedId === message.conversationId;
-        return mergeMessages(messages, known || append ? [message] : []).map((item) => message.status !== 'sent' && item.reply?.id === message.id ? { ...item, reply: { ...item.reply, status: 'unavailable' as const, text: '', author: '' } } : item);
+        return mergeMessages(messages, known || append ? [message] : []).map(updateReference);
       };
       if (cache) {
         const updated = update(cache.messages, !!cache.after);
@@ -336,7 +344,7 @@ export class ChatClient {
         const latest = this.state.conversations.find((item) => item.id === message.conversationId)?.lastSeq;
         this.set({ messages, ...(this.state.historyAfter && last ? { historyAfter: latest && BigInt(last.seq) >= BigInt(latest) ? null : last.seq } : {}) });
       }
-      this.set({ conversations: this.state.conversations.map((item) => item.lastMessage?.id === message.id ? { ...item, lastMessage: message } : item) });
+      this.set({ conversations: this.state.conversations.map((item) => item.lastMessage ? { ...item, lastMessage: item.lastMessage.id === message.id ? message : updateReference(item.lastMessage) } : item) });
       if (event.type === 'message.created' && this.alertsEnabled && this.initialized && message.senderId !== this.user.id && message.kind === 'user' && message.status === 'sent' && !this.user.preferences.doNotDisturb && (document.visibilityState !== 'visible' || !document.hasFocus())) {
         const conversation = this.state.conversations.find((item) => item.id === message.conversationId);
         const mentioned = message.mentionAll || message.mentionedUserIds.includes(this.user.id);

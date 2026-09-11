@@ -37,7 +37,7 @@ def public_user(user):
         "username": user["username"],
         "nickname": user["nickname"],
         "bio": user["bio"],
-        "avatarUrl": "/api/v1/users/" + user["id"] + "/avatar?v=" + user["avatar_id"] if user["avatar_id"] and user["status"] == "active" else None,
+        "avatarUrl": "/api/v1/users/" + user["id"] + "/avatar?v=" + user["avatar_id"] if user["avatar_id"] and not user["avatar_hidden"] and user["status"] == "active" else None,
         "siteRole": user["site_role"],
         "status": user["status"],
         "createdAt": user["created_at"],
@@ -194,6 +194,8 @@ class AuthService:
         password_hash = self.security.passwords.hash(data.password)
         with self.runtime.db.write() as conn:
             policy = self.runtime.policy.get(conn)
+            if policy["maintenance"]:
+                raise APIError("MAINTENANCE", "站点维护中，暂时无法注册新账号。", 503)
             if not data.acceptTerms or data.termsVersion != policy["terms_version"]:
                 raise APIError("TERMS_REQUIRED", "请阅读并同意当前版本的用户说明。", 422)
             mode = policy["registration_mode"]

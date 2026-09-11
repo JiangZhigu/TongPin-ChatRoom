@@ -135,7 +135,7 @@ class ChatService:
             "kind": row["kind"],
             "title": title,
             "description": row["description"],
-            "avatarUrl": peer["avatarUrl"] if peer else "/api/v1/groups/" + cid + "/avatar?v=" + row["avatar_id"] if row["avatar_id"] else None,
+            "avatarUrl": peer["avatarUrl"] if peer else "/api/v1/groups/" + cid + "/avatar?v=" + row["avatar_id"] if row["avatar_id"] and not row["avatar_hidden"] else None,
             "peer": peer,
             "role": meta["role"],
             "periodId": meta["periodId"],
