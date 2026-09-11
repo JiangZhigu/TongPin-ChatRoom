@@ -84,7 +84,7 @@ describe('M6-UI attachment draft lifecycle', () => {
     expect(screen.getByText('正在保存附件草稿…')).toBeInTheDocument(); expect(screen.queryByText('草稿已保存到本机')).not.toBeInTheDocument();
     await act(async () => saving.resolve()); await screen.findByText('草稿已保存到本机');
     const queue = deferred<void>(); chat.queue.mockImplementation(() => queue.promise); fireEvent.click(screen.getByRole('button', { name: '发送' }));
-    expect(chat.queue).toHaveBeenCalledWith('dm-a', '', { files: [expect.objectContaining({ blob: file })] }); expect(screen.getByText('说明.txt')).toBeInTheDocument();
+    await waitFor(() => expect(chat.queue).toHaveBeenCalledWith('dm-a', '', { files: [expect.objectContaining({ blob: file })] })); expect(screen.getByText('说明.txt')).toBeInTheDocument();
     await act(async () => queue.resolve()); await waitFor(() => expect(screen.queryByText('说明.txt')).not.toBeInTheDocument()); expect(chat.saveDraft).toHaveBeenLastCalledWith('dm-a', '', expect.objectContaining({ files: [] }));
   });
   it('retains attachment bytes when local quota prevents draft or queue commit', async () => {
@@ -98,7 +98,7 @@ describe('M6-UI attachment draft lifecycle', () => {
     fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [first] } }); await screen.findByText('草稿已保存到本机');
     const queue = deferred<void>(); chat.queue.mockImplementation(() => queue.promise); fireEvent.click(screen.getByRole('button', { name: '发送' }));
     fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [second] } }); await act(async () => queue.resolve());
-    expect(screen.getByText('第二件.txt')).toBeInTheDocument(); expect(chat.queue.mock.calls[0][2]?.files).toHaveLength(1); expect(chat.saveDraft.mock.calls.at(-1)?.[2]).toMatchObject({ files: [expect.objectContaining({ name: '第一件.txt' }), expect.objectContaining({ name: '第二件.txt' })] });
+    expect(screen.getByText('第二件.txt')).toBeInTheDocument(); expect(screen.queryByText('第一件.txt')).not.toBeInTheDocument(); expect(chat.queue.mock.calls[0][2]?.files).toHaveLength(1); expect(chat.saveDraft.mock.calls.at(-1)?.[2]).toMatchObject({ files: [expect.objectContaining({ name: '第二件.txt' })] });
   });
   it('restores conversation attachments, removes only the selected item and saves before navigating', async () => {
     chat.state!.conversations.push(conversation('dm-b', '另一好友')); const files = [local('A.txt'), local('B.txt')];
@@ -118,6 +118,59 @@ describe('M6-UI attachment draft lifecycle', () => {
     const commit = deferred<void>(); chat.saveDraft.mockImplementation(() => commit.promise); await act(async () => publish({ selectedId: null, conversations: [], messages: [] }));
     await waitFor(() => expect(chat.saveDraft).toHaveBeenCalled()); fireEvent.scroll(screen.getByLabelText('消息记录')); await act(async () => commit.resolve()); await screen.findByRole('heading', { name: '欢迎来到同频' });
     await act(async () => new Promise((resolve) => setTimeout(resolve, 420))); expect(chat.saveDraft.mock.calls.every((call) => (call[2] as { files: LocalAttachment[] }).files === files)).toBe(true);
+  });
+});
+
+describe('M6-FIX-UI committed attachment drafts', () => {
+  const file = (id: string): LocalAttachment => ({ id, name: `${id}.txt`, mime: 'text/plain', blob: new File([id], `${id}.txt`, { type: 'text/plain' }) });
+  function persistence() {
+    const drafts = new Map<string, { text: string; files: LocalAttachment[] }>([['dm-a', { text: '原正文', files: [file('A')] }], ['dm-b', { text: '另一个会话', files: [file('C')] }]]);
+    chat.getDraft.mockImplementation(async (id) => ({ key: id, userId: user.id, conversationId: id, updatedAt: 1, ...drafts.get(id)! }));
+    const write = (id: string, text: string, position?: unknown) => { drafts.set(id, { text, files: [...((position as { files?: LocalAttachment[] })?.files || [])] }); };
+    chat.saveDraft.mockImplementation(async (id, text, position) => write(id, text, position));
+    const commit = (id: string, submitted: LocalAttachment[]) => { const draft = drafts.get(id)!; drafts.set(id, { ...draft, files: draft.files.filter((value) => !submitted.some((item) => item.id === value.id)) }); };
+    return { drafts, write, commit };
+  }
+  it('persists only newly added B after A commits and the next queue contains only B', async () => {
+    const { drafts, commit } = persistence(); const queue = deferred<void>(); chat.queue.mockImplementation(async (id, _text, options) => { await queue.promise; commit(id, options!.files); });
+    showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [new File(['B'], 'B.txt', { type: 'text/plain' })] } });
+    await act(async () => queue.resolve()); await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeEnabled());
+    expect(drafts.get('dm-a')?.files.map((value) => value.name)).toEqual(['B.txt']); expect(drafts.get('dm-a')?.text).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1][2]?.files.map((value) => value.name)).toEqual(['B.txt']);
+  });
+  it('keeps new text but clears A even when its text autosave was captured before queue completion', async () => {
+    const { drafts, commit } = persistence(); const queue = deferred<void>(); chat.queue.mockImplementation(async (id, _text, options) => { await queue.promise; commit(id, options!.files); });
+    showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '发送期间的新文本' } }); await act(async () => new Promise((resolve) => setTimeout(resolve, 400))); await act(async () => queue.resolve());
+    await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeEnabled()); expect(drafts.get('dm-a')).toMatchObject({ text: '发送期间的新文本', files: [] });
+    fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1]).toEqual(['dm-a', '发送期间的新文本', { files: [] }]);
+  });
+  it('serializes a delayed earlier save, queue commit and during-queue saves without restoring transferred A', async () => {
+    const { drafts, write, commit } = persistence(); const earlier = deferred<void>(); const queue = deferred<void>(); const later = deferred<void>(); let writes = 0;
+    chat.saveDraft.mockImplementation(async (id, text, position) => { writes++; await (writes === 1 ? earlier.promise : later.promise); write(id, text, position); });
+    chat.queue.mockImplementation(async (id, _text, options) => { await queue.promise; commit(id, options!.files); });
+    showWorkspace(); await openConversation(); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '此次提交正文' } }); await waitFor(() => expect(writes).toBe(1));
+    fireEvent.click(screen.getByRole('button', { name: '发送' })); await act(async () => Promise.resolve()); expect(chat.queue).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [new File(['B'], 'B.txt', { type: 'text/plain' })] } }); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '后续正文' } });
+    await act(async () => earlier.resolve()); await waitFor(() => expect(chat.queue).toHaveBeenCalled()); await act(async () => new Promise((resolve) => setTimeout(resolve, 400)));
+    await act(async () => queue.resolve()); await act(async () => later.resolve()); await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeEnabled());
+    expect(drafts.get('dm-a')?.text).toBe('后续正文'); expect(drafts.get('dm-a')?.files.map((value) => value.name)).toEqual(['B.txt']);
+    fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1][2]?.files.map((value) => value.name)).toEqual(['B.txt']);
+  });
+  it('keeps A and new edits after a failed queue and allows deferred draft saves to complete', async () => {
+    const { drafts } = persistence(); const queue = deferred<void>(); chat.queue.mockImplementation(() => queue.promise);
+    showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [new File(['B'], 'B.txt', { type: 'text/plain' })] } }); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '失败时的新文本' } }); await act(async () => new Promise((resolve) => setTimeout(resolve, 400)));
+    await act(async () => queue.reject(new Error('本机入队失败'))); await screen.findByText('本机入队失败'); await waitFor(() => expect(drafts.get('dm-a')?.text).toBe('失败时的新文本'));
+    expect(drafts.get('dm-a')?.files.map((value) => value.name)).toEqual(['A.txt', 'B.txt']); expect(screen.getByText('A.txt')).toBeInTheDocument();
+  });
+  it('finishes the source draft transfer before switching and never changes the destination draft', async () => {
+    const { drafts, commit } = persistence(); chat.state!.conversations.push(conversation('dm-b', '另一好友')); const queue = deferred<void>(); chat.queue.mockImplementation(async (id, _text, options) => { await queue.promise; commit(id, options!.files); });
+    showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalled()); fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '离开前新文本' } });
+    fireEvent.click(within(screen.getByLabelText('会话列表')).getByRole('button', { name: /另一好友/ })); await act(async () => queue.resolve()); await waitFor(() => expect(screen.getByLabelText('消息内容')).toHaveValue('另一个会话'));
+    expect(drafts.get('dm-a')).toMatchObject({ text: '离开前新文本', files: [] }); expect(drafts.get('dm-b')).toMatchObject({ text: '另一个会话', files: [expect.objectContaining({ id: 'C' })] }); expect(screen.getByText('C.txt')).toBeInTheDocument();
+    await openConversation(); expect(screen.getByLabelText('消息内容')).toHaveValue('离开前新文本'); expect(screen.queryByText('A.txt')).not.toBeInTheDocument();
   });
 });
 

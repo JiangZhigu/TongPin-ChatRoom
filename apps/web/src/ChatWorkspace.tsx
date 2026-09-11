@@ -43,6 +43,8 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
   const [draft, setDraft] = useState(''); const draftRef = useRef(''); const draftReady = useRef(false);
   const [draftFiles, setDraftFiles] = useState<LocalAttachment[]>([]); const draftFilesRef = useRef<LocalAttachment[]>([]); const [fileError, setFileError] = useState('');
   const draftRevision = useRef(new Map<string, number>()); const draftChain = useRef(Promise.resolve());
+  const textRevision = useRef(new Map<string, number>());
+  const committedDrafts = useRef(new Map<string, { files: Set<string>; textRevision: number }>());
   const draftTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [draftLoading, setDraftLoading] = useState(false); const [draftNotice, setDraftNotice] = useState('');
   const [sending, setSending] = useState(false); const queueBusy = useRef(false);
@@ -84,7 +86,13 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
     positions.current.set(id, position); return position;
   }
   function persistDraft(id: string, text: string, position?: SavedPosition, files: LocalAttachment[] = draftFilesRef.current) {
-    const next = draftChain.current.catch(() => undefined).then(() => client.saveDraft(id, text, { ...(position ? { scrollTop: position.scrollTop, anchorId: position.anchorId } : {}), files }));
+    const revision = textRevision.current.get(id) || 0;
+    const next = draftChain.current.catch(() => undefined).then(() => {
+      // A save captured before a queue commit may run after it. Normalize at
+      // execution time, not only in the editor, so transferred blobs stay out.
+      const committed = committedDrafts.current.get(id);
+      return client.saveDraft(id, committed && revision <= committed.textRevision ? '' : text, { ...(position ? { scrollTop: position.scrollTop, anchorId: position.anchorId } : {}), files: committed ? files.filter((file) => !committed.files.has(file.id)) : files });
+    });
     draftChain.current = next;
     return next;
   }
@@ -98,6 +106,7 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
     const id = selectedRef.current;
     setDraft(text); draftRef.current = text; setDraftNotice('');
     if (!id || !draftReady.current) return;
+    textRevision.current.set(id, (textRevision.current.get(id) || 0) + 1);
     const revision = (draftRevision.current.get(id) || 0) + 1; draftRevision.current.set(id, revision); const files = draftFilesRef.current;
     clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
@@ -151,6 +160,7 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
           }
         }
         restorePosition.current = { id, position };
+        textRevision.current.set(id, (textRevision.current.get(id) || 0) + 1);
         draftRef.current = saved?.text || ''; setDraft(draftRef.current); draftFilesRef.current = saved?.files || []; setDraftFiles(draftFilesRef.current); draftReady.current = true;
       }
       setDraftLoading(false); return true;
@@ -208,18 +218,41 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
   async function send() {
     const id = selectedRef.current; const text = draftRef.current; const files = draftFilesRef.current;
     if (!id || !selected?.canSend || !draftReady.current || queueBusy.current || (!text.trim() && !files.length) || Array.from(text).length > 4000 || new TextEncoder().encode(text).byteLength > 16384) return;
-    const revision = draftRevision.current.get(id) || 0;
+    const revision = textRevision.current.get(id) || 0;
     queueBusy.current = true; setSending(true); setError(''); clearTimeout(draftTimer.current);
     try {
-      await client.queue(id, text, { files });
+      // Earlier draft writes finish before the atomic transfer; later writes
+      // wait for it and discard only the files/text revision actually sent.
+      const submission = draftChain.current.catch(() => undefined).then(async () => {
+        await client.queue(id, text, { files });
+        const previous = committedDrafts.current.get(id);
+        const committed = { files: new Set([...(previous?.files || []), ...files.map((file) => file.id)]), textRevision: Math.max(previous?.textRevision ?? -1, revision) };
+        committedDrafts.current.set(id, committed);
+        if (!mounted.current) return;
+        const current = selectedRef.current === id && draftReady.current;
+        const saved = current ? { text: draftRef.current, files: draftFilesRef.current } : await client.getDraft(id);
+        if (!saved) return;
+        const remainingFiles = (saved.files || []).filter((file) => !committed.files.has(file.id));
+        const remainingText = (textRevision.current.get(id) || 0) > committed.textRevision ? saved.text : '';
+        if (current) {
+          clearTimeout(draftTimer.current); draftRevision.current.set(id, (draftRevision.current.get(id) || 0) + 1);
+          draftRef.current = remainingText; setDraft(remainingText); draftFilesRef.current = remainingFiles; setDraftFiles(remainingFiles); setFileError(''); setDraftNotice('');
+        }
+        const position = positions.current.get(id);
+        await client.saveDraft(id, remainingText, { ...(position ? { scrollTop: position.scrollTop, anchorId: position.anchorId } : {}), files: remainingFiles });
+      });
+      draftChain.current = submission;
+      await submission;
       if (!mounted.current) return;
-      if ((draftRevision.current.get(id) || 0) === revision) {
-        if (selectedRef.current === id) { draftRef.current = ''; setDraft(''); draftFilesRef.current = []; setDraftFiles([]); setFileError(''); setDraftNotice(''); }
-        await persistDraft(id, '', positions.current.get(id), []);
-      }
       if (selectedRef.current === id) { forceJump.current = true; setJumpVersion((value) => value + 1); input.current?.focus(); }
     } catch (cause) { if (mounted.current) setError(describeError(cause)); }
-    finally { queueBusy.current = false; if (mounted.current) setSending(false); }
+    finally {
+      // Only already captured writes need this filter. Drop its file IDs once
+      // that tail drains, without removing a newer submission's filter.
+      const committed = committedDrafts.current.get(id);
+      if (committed) void draftChain.current.catch(() => undefined).then(() => { if (committedDrafts.current.get(id) === committed) committedDrafts.current.delete(id); });
+      queueBusy.current = false; if (mounted.current) setSending(false);
+    }
   }
   async function copyToDraft(item: QueuedMessage) {
     if (!await selectConversation(item.conversationId)) throw new Error('未能打开原会话，待发消息已保留。');
