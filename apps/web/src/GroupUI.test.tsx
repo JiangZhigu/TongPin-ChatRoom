@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { CreateGroupDialog } from './CreateGroupDialog';
 import { GroupManagementPanel } from './GroupManagementPanel';
 import { GroupInviteEntry } from './GroupInviteEntry';
 import { GroupInbox } from './GroupInbox';
+import { NotificationsPage } from './NotificationsPage';
 import { setCsrfToken } from './lib/api';
 import type { GroupApplication, GroupDetail, GroupInvite, GroupMember, InvitePreview } from './lib/group-types';
 import type { Contact } from './lib/chat-types';
@@ -213,5 +214,35 @@ describe('M5-UI-FIX authoritative invitation lifecycle', () => {
   it('keeps a confirmed direct POST result newer than its old list if follow-up refresh fails', async () => {
     fetched.mockImplementation((url: string) => url.endsWith('/apply') ? reply(application()) : reply({ items: [{ ...invite(), application: null }], nextCursor: null }));
     render(<GroupInbox onRefresh={async () => { throw new Error('同步失败，申请已确认'); }} onOpenGroup={async () => {}} />); fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await screen.findByText('同步失败，申请已确认'); expect(screen.getByText('等待管理员审核')).toBeInTheDocument(); expect(screen.queryByRole('button', { name: '确认申请加入' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: '重试同一次申请' })).not.toBeInTheDocument();
+  });
+});
+
+describe('M8 group inbox event freshness', () => {
+  function events() { const listeners = new Set<(event: { type: string; entityRef: string; conversationId: string | null }) => void>(); return { subscribe: (listener: (event: { type: string; entityRef: string; conversationId: string | null }) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, emit: (type: string) => act(() => listeners.forEach((listener) => listener({ type, entityRef: 'group-1', conversationId: 'group-1' }))) }; }
+  function pending<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
+  it('refreshes the open notification inbox on revocation and hides old joined membership before GET resolves', async () => {
+    const stream = events(); let joined = true; const next = pending<Awaited<ReturnType<typeof reply>>>(); fetched.mockImplementation(() => joined ? reply({ items: [{ ...invite(), application: { ...application(), status: 'approved', currentMember: true } }], nextCursor: null }) : next.promise);
+    render(<NotificationsPage actorContext="owner" items={[]} hasMore={false} onLoadMore={async () => {}} onRefresh={async () => {}} onOpenRequests={vi.fn()} onOpenGroup={async () => {}} subscribeGroupEvents={stream.subscribe} />); await screen.findByText('当前已加入群聊'); joined = false; stream.emit('access.revoked'); expect(screen.queryByText('当前已加入群聊')).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: '打开群聊' })).not.toBeInTheDocument();
+    await act(async () => next.resolve(await reply({ items: [{ ...invite(), application: { ...application(), status: 'approved', currentMember: false } }], nextCursor: null }))); await screen.findByText('此前已加入群聊，当前已不在群中'); expect(updates).toHaveLength(0);
+  });
+  it('keeps loaded page depth on authority refresh and ignores unrelated notification rerenders or task events', async () => {
+    const stream = events(); let generation = 1; fetched.mockImplementation((url: string) => reply({ items: [{ ...invite(), id: url.includes('?') ? 'second' : 'first', groupName: url.includes('?') ? `第二页${generation}` : `首页${generation}` }], nextCursor: url.includes('?') ? null : `cursor-${generation}` })); const props = { actorContext: 'owner', items: [], hasMore: false, onLoadMore: async () => {}, onRefresh: async () => {}, onOpenRequests: vi.fn(), onOpenGroup: async () => {}, subscribeGroupEvents: stream.subscribe }; const view = render(<NotificationsPage {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: '加载更多' })); await screen.findByText('第二页1'); const before = fetched.mock.calls.length; view.rerender(<NotificationsPage {...props} items={[{ id: 'ordinary', type: 'friend.accepted', entityRef: 'u2', text: '普通通知', createdAt: 1, readAt: 1 }]} />); stream.emit('task.updated'); await act(async () => {}); expect(fetched).toHaveBeenCalledTimes(before); expect(screen.getByText('第二页1')).toBeInTheDocument();
+    generation = 2; stream.emit('conversation.updated'); await screen.findByText('第二页2'); expect(screen.getByText('首页2')).toBeInTheDocument(); expect(fetched.mock.calls.some(([url]) => url.endsWith('?after=cursor-2'))).toBe(true);
+  });
+  it('preserves an uncertain application UUID through event refresh without replaying the application', async () => {
+    const stream = events(); const requests: Record<string, unknown>[] = []; fetched.mockImplementation((url: string, options: RequestInit = {}) => { if (url.endsWith('/apply')) { requests.push(body(options)); if (requests.length === 1) return Promise.reject(new TypeError('unknown application')); return reply(application()); } return reply({ items: [{ ...invite(), application: null }], nextCursor: null }); });
+    render(<GroupInbox onRefresh={async () => {}} onOpenGroup={async () => {}} subscribeGroupEvents={stream.subscribe} />); fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await screen.findByRole('button', { name: '重试同一次申请' }); stream.emit('access.revoked'); fireEvent.click(await screen.findByRole('button', { name: '重试同一次申请' })); await waitFor(() => expect(requests).toHaveLength(2)); expect(requests[0]).toEqual(requests[1]);
+  });
+  it.each(['before_event', 'after_event'] as const)('does not restore an old confirmed membership result received %s', async (timing) => {
+    const stream = events(); const result = pending<Awaited<ReturnType<typeof reply>>>(); let changed = false; let writes = 0;
+    fetched.mockImplementation((url: string) => { if (url.endsWith('/apply')) { writes++; return timing === 'after_event' ? result.promise : reply({ ...application(), status: 'approved', currentMember: true }); } return reply({ items: [{ ...invite(), ...(changed ? {} : { application: null }) }], nextCursor: null }); });
+    render(<GroupInbox onRefresh={async () => { throw new Error('refresh unavailable'); }} onOpenGroup={async () => {}} subscribeGroupEvents={stream.subscribe} />); fireEvent.click(await screen.findByRole('button', { name: '确认申请加入' })); await waitFor(() => expect(writes).toBe(1)); if (timing === 'before_event') await screen.findByText('当前已加入群聊'); changed = true; stream.emit('access.revoked'); await waitFor(() => expect(screen.queryByText('正在加载…')).not.toBeInTheDocument());
+    if (timing === 'after_event') { await act(async () => result.resolve(await reply({ ...application(), status: 'approved', currentMember: true }))); await screen.findByText('refresh unavailable'); }
+    expect(screen.queryByText('当前已加入群聊')).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: '打开群聊' })).not.toBeInTheDocument(); expect(writes).toBe(1);
+  });
+  it('keeps the applications tab and rejects a late pre-revocation page', async () => {
+    const stream = events(); const old = pending<Awaited<ReturnType<typeof reply>>>(); let revision = 0; fetched.mockImplementation((url: string) => { if (url.endsWith('/group-invites/mine')) return reply({ items: [], nextCursor: null }); if (url.includes('?')) return old.promise; return reply({ items: [{ ...application(), currentMember: revision === 0, groupName: revision === 0 ? '申请首页旧状态' : '申请首页新状态' }], nextCursor: revision === 0 ? 'old-page' : null }); });
+    render(<GroupInbox onRefresh={async () => {}} onOpenGroup={async () => {}} subscribeGroupEvents={stream.subscribe} />); fireEvent.click(screen.getByRole('button', { name: '我的入群申请' })); fireEvent.click(await screen.findByRole('button', { name: '加载更多' })); await waitFor(() => expect(fetched.mock.calls.some(([url]) => url.includes('?after=old-page'))).toBe(true)); revision = 1; stream.emit('access.revoked'); await screen.findByText('申请首页新状态'); await act(async () => old.resolve(await reply({ items: [{ ...application(), id: 'late', groupName: 'LATE-OLD-MEMBER', currentMember: true }], nextCursor: null }))); expect(screen.queryByText('LATE-OLD-MEMBER')).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: '我的入群申请' })).toHaveAttribute('aria-pressed', 'true');
   });
 });
