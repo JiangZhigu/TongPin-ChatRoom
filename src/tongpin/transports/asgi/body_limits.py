@@ -27,6 +27,7 @@ class GuardedWSGI:
         self.settings = settings
         self.upload_guard = upload_guard
         self.slots = asyncio.Semaphore(settings.http_concurrency)
+        self.upload_slots = asyncio.Semaphore(settings.upload_concurrency)
 
     async def reject(self, send, error):
         request_id = secrets.token_hex(12)
@@ -72,6 +73,7 @@ class GuardedWSGI:
 
         accepted = 0
         response_started = False
+        upload_acquired = False
 
         async def counted_receive():
             nonlocal accepted
@@ -85,6 +87,8 @@ class GuardedWSGI:
                 accepted += len(message.get("body", b""))
                 if accepted > maximum:
                     raise BodyTooLarge()
+                if not message.get("more_body") and lengths and accepted != int(lengths[0]):
+                    raise APIError("INVALID_LENGTH", "实际请求字节与声明长度不符。", 400)
             return message
 
         async def tracked_send(message):
@@ -97,7 +101,16 @@ class GuardedWSGI:
             if is_upload:
                 if self.upload_guard is None:
                     raise APIError("AUTH_REQUIRED", "请先登录。", 401)
-                await self.upload_guard(scope)
+                declared_maximum = await self.upload_guard(scope)
+                if declared_maximum is not None:
+                    maximum = min(maximum, declared_maximum)
+                    if lengths and int(lengths[0]) > maximum:
+                        raise BodyTooLarge()
+                try:
+                    await asyncio.wait_for(self.upload_slots.acquire(), timeout=0.25)
+                    upload_acquired = True
+                except TimeoutError as error:
+                    raise APIError("UPLOAD_BUSY", "附件接收繁忙，请稍后重试。", 503, retry_after_ms=1000) from error
             async with ThreadSensitiveContext():
                 await self.application(scope, counted_receive, tracked_send)
         except BodyTooLarge:
@@ -119,4 +132,6 @@ class GuardedWSGI:
         except ClientDisconnected:
             return
         finally:
+            if upload_acquired:
+                self.upload_slots.release()
             self.slots.release()

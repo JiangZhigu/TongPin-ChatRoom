@@ -1,5 +1,5 @@
 export interface UserView {
-  id: string; username: string; nickname: string; bio: string; siteRole: 'user' | 'super_admin'; status: string; createdAt: number;
+  id: string; avatarUrl?: string | null; username: string; nickname: string; bio: string; siteRole: 'user' | 'super_admin'; status: string; createdAt: number;
   preferences: { invisible: boolean; readReceipts: boolean; doNotDisturb: boolean };
 }
 export interface BootstrapView {

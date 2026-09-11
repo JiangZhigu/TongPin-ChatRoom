@@ -55,6 +55,11 @@ class Settings:
     upload_timeout: float = 120
     json_limit: int = 65536
     upload_limit: int = 26 * 1024**2
+    upload_concurrency: int = 2
+    scanner_host: str = "127.0.0.1"
+    scanner_port: int = 0
+    scanner_timeout: float = 8.0
+    allow_unscanned_files: bool = False
     max_connections: int = 200
     web_dist: Path = field(default_factory=lambda: PROJECT_ROOT / "apps/web/dist")
 
@@ -87,6 +92,9 @@ class Settings:
             port=port,
             origins=origins,
             secret=env.get("TONGPIN_SECRET", ""),
+            scanner_host=env.get("TONGPIN_CLAMD_HOST", "127.0.0.1"),
+            scanner_port=int(env.get("TONGPIN_CLAMD_PORT", "0")),
+            allow_unscanned_files=env.get("TONGPIN_ALLOW_UNSCANNED_FILES", "0") == "1",
         )
         result.validate()
         return result
@@ -126,5 +134,11 @@ class Settings:
             raise ValueError(
                 "Production requires an externally provided secret of at least 32 bytes"
             )
+        if self.production and self.allow_unscanned_files:
+            raise ValueError("Unscanned closed-test files cannot be enabled in production")
+        if self.scanner_host not in {"127.0.0.1", "::1"} or not 0 <= self.scanner_port <= 65535:
+            raise ValueError("Clamd must use a loopback address and valid port")
+        if not 0.1 <= self.scanner_timeout <= 15 or not 1 <= self.upload_concurrency <= 2:
+            raise ValueError("Invalid bounded file processing configuration")
         if not self.production and self.host not in {"127.0.0.1", "localhost", "::1"}:
             raise ValueError("Development and test servers bind to loopback only")

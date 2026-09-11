@@ -1,10 +1,11 @@
 import { io, type Socket } from 'socket.io-client';
 import { api, APIError, onAuthExpired, type User } from './api';
-import type { ChatSnapshot, ChatState, Contact, Conversation, Draft, FriendRequest, HistoryPage, Message, NotificationItem, Page, QueuedMessage, SendPayload, SendResult, SyncEvent, SyncPage, UserSummary } from './chat-types';
+import type { ChatSnapshot, ChatState, Contact, Conversation, Draft, FriendRequest, HistoryPage, LocalAttachment, Message, NotificationItem, Page, QueuedMessage, SendPayload, SendResult, SyncEvent, SyncPage, UserSummary } from './chat-types';
+import { uploadLocalAttachment, validateLocalFiles } from './files';
 import { addQueuedMessage, changeQueuedMessage, clearLocalUser, forgetIdentity, localError, localSummary, OUTBOX_AGE_MS, readDraft, readOfflineIdentity, readQueue, rememberIdentity, saveLocalDraft, withDeliveryLock } from './outbox';
 
 const initialState = (): ChatState => ({ phase: 'connecting', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null });
-const permanentErrors = new Set(['VALIDATION_ERROR', 'PAYLOAD_TOO_LARGE', 'IDEMPOTENCY_CONFLICT', 'STALE_ACCESS', 'FRIENDSHIP_REQUIRED', 'CONTACT_UNAVAILABLE', 'RESOURCE_UNAVAILABLE', 'MUTED', 'CONVERSATION_FROZEN', 'FILE_REJECTED', 'OUTBOX_EXPIRED']);
+const permanentErrors = new Set(['VALIDATION_ERROR', 'PAYLOAD_TOO_LARGE', 'IDEMPOTENCY_CONFLICT', 'STALE_ACCESS', 'FRIENDSHIP_REQUIRED', 'CONTACT_UNAVAILABLE', 'RESOURCE_UNAVAILABLE', 'MUTED', 'CONVERSATION_FROZEN', 'FILE_REJECTED', 'FILE_QUARANTINED', 'FILE_NOT_READY', 'FILE_TYPE_UNSUPPORTED', 'FILE_INVALID', 'FILE_SIZE_MISMATCH', 'FILE_HASH_MISMATCH', 'FILE_INFECTED', 'FILE_IN_USE', 'ATTACHMENT_LIMIT', 'USER_QUOTA_EXCEEDED', 'OUTBOX_EXPIRED']);
 const bySequence = (one: Message, two: Message) => BigInt(one.seq) < BigInt(two.seq) ? -1 : BigInt(one.seq) > BigInt(two.seq) ? 1 : one.id.localeCompare(two.id);
 export function mergeMessages(existing: Message[], additions: Message[]): Message[] {
   const rows = new Map([...existing, ...additions].map((message) => [message.id, message]));
@@ -38,6 +39,8 @@ export class ChatClient {
   private syncFlight: Promise<void> | null = null;
   private syncAgain = false;
   private drainFlight: Promise<void> | null = null;
+  private wakeDelivery: (() => void) | null = null;
+  private deliveryTasks = new Map<string, AbortController>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -71,7 +74,7 @@ export class ChatClient {
       this.channel.onmessage = (event) => {
         if (!this.current(epoch)) return;
         if (event.data?.type === 'identity.changed' && event.data.userId !== this.user.id) { this.expire(); return; }
-        if (event.data?.userId === this.user.id) { void this.loadLocal(epoch); void this.synchronize(); }
+        if (event.data?.userId === this.user.id) { void this.loadLocal(epoch); void this.synchronize(); void this.drain(); }
       };
     }
     this.pollTimer = setInterval(() => {
@@ -90,6 +93,8 @@ export class ChatClient {
   stop(): void {
     this.running = false; this.generation++; this.selectionGeneration++; this.initialized = false;
     this.controller.abort(); this.closeSocket();
+    for (const task of this.deliveryTasks.values()) task.abort();
+    this.wakeDelivery?.();
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
@@ -378,14 +383,15 @@ export class ChatClient {
     } catch (error) { if (this.current(epoch)) this.set({ error: localError(error).message }); }
   }
 
-  async queue(conversationId: string, text: string, options: { replyToMessageId?: string; mentionedUserIds?: string[] } = {}): Promise<void> {
-    validateMessageText(text);
+  async queue(conversationId: string, text: string, options: { replyToMessageId?: string; mentionedUserIds?: string[]; files?: LocalAttachment[] } = {}): Promise<void> {
+    validateLocalFiles(options.files || []);
+    validateMessageText(text, Boolean(options.files?.length));
     const conversation = this.state.conversations.find((item) => item.id === conversationId);
     if (!this.running || !conversation?.canSend) throw new APIError(403, { code: conversation?.sendErrorCode || 'RESOURCE_UNAVAILABLE', message: conversation?.sendDisabledReason || '当前会话无法发送，请保留草稿。' });
     if (!this.localReady) throw localError();
     const epoch = this.generation; const clientMessageId = crypto.randomUUID();
     const payload: SendPayload = { clientMessageId, text, attachmentIds: [], replyToMessageId: options.replyToMessageId || null, mentionedUserIds: options.mentionedUserIds || [], accessKey: conversation.accessKey, actorContext: this.user.id };
-    const entry: QueuedMessage = { key: this.user.id + ':' + clientMessageId, userId: this.user.id, conversationId, conversationTitle: conversation.title, payload, createdAt: Date.now(), expiresAt: Date.now() + OUTBOX_AGE_MS, state: 'queued', attempts: 0, retryAt: 0, error: null, errorCode: null, files: [] };
+    const entry: QueuedMessage = { key: this.user.id + ':' + clientMessageId, userId: this.user.id, conversationId, conversationTitle: conversation.title, payload, createdAt: Date.now(), expiresAt: Date.now() + OUTBOX_AGE_MS, state: 'queued', attempts: 0, retryAt: 0, error: null, errorCode: null, files: options.files || [] };
     const saving = this.enqueueFlight.catch(() => undefined).then(async () => {
       if (!this.current(epoch)) throw new APIError(401, { code: 'AUTH_REQUIRED', message: '账号状态已改变，内容尚未排队。' });
       await addQueuedMessage(entry);
@@ -399,68 +405,138 @@ export class ChatClient {
     const key = this.user.id + ':' + clientMessageId;
     await changeQueuedMessage(this.user.id, key, (item) => {
       if (['STALE_ACCESS', 'IDEMPOTENCY_CONFLICT', 'OUTBOX_EXPIRED'].includes(item.errorCode || '')) throw new APIError(409, { code: item.errorCode!, message: '这条内容不能按原状态重试，请复制回编辑器并检查后重新发送。' });
-      return { ...item, state: 'queued', retryAt: 0, error: null, errorCode: null };
-    });
+      if (this.deliveryTasks.has(key)) throw new APIError(409, { code: 'UPLOAD_BUSY', message: '该条内容仍在处理中，请稍候或先停止。' });
+      return { ...item, state: 'queued', retryAt: 0, error: null, errorCode: null, retryFiles: item.retryFiles || item.errorCode === 'FILE_QUARANTINED' };
+    }, this.localIdentityRevision || undefined);
     await this.refresh(); await this.loadLocal(this.generation); this.announce(); void this.drain();
   }
 
   async cancel(clientMessageId: string): Promise<void> {
-    await changeQueuedMessage(this.user.id, this.user.id + ':' + clientMessageId, () => null);
-    await this.loadLocal(this.generation); this.announce();
+    const epoch = this.generation; const key = this.user.id + ':' + clientMessageId;
+    this.deliveryTasks.get(key)?.abort();
+    let files: LocalAttachment[] = [];
+    await changeQueuedMessage(this.user.id, key, (entry) => { files = entry.files; return null; }, this.localIdentityRevision || undefined);
+    await this.loadLocal(epoch); this.announce(); this.wakeDelivery?.();
+    if (this.current(epoch) && navigator.onLine) {
+      await Promise.allSettled(files.filter((file) => file.attachmentId).map((file) => this.request('/attachments/' + encodeURIComponent(file.attachmentId!) + '/cancel', { method: 'POST', body: {} })));
+    }
   }
 
-  private async send(entry: QueuedMessage): Promise<SendResult> {
+  private async send(entry: QueuedMessage, signal: AbortSignal): Promise<SendResult> {
     if (this.socket?.connected) {
-      const ack = await this.socket.timeout(10000).emitWithAck('message.send', { ...entry.payload, v: 1, conversationId: entry.conversationId, requestId: crypto.randomUUID() }) as { ok: boolean; status?: number; error?: { code: string; message: string; retryAfterMs?: number }; data: SendResult };
+      if (signal.aborted) throw signal.reason;
+      const ack = await new Promise<{ ok: boolean; status?: number; error?: { code: string; message: string; retryAfterMs?: number }; data: SendResult }>((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
+        this.socket!.timeout(10000).emitWithAck('message.send', { ...entry.payload, v: 1, conversationId: entry.conversationId, requestId: crypto.randomUUID() }).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+      });
       if (!ack?.ok) throw new APIError(ack?.status || 503, ack?.error || { code: 'INVALID_RESPONSE', message: '消息结果尚未确认，请稍后重试。' });
       return ack.data;
     }
-    return this.request<SendResult>('/conversations/' + encodeURIComponent(entry.conversationId) + '/messages', { method: 'POST', body: entry.payload });
+    return api<SendResult>('/api/v1/conversations/' + encodeURIComponent(entry.conversationId) + '/messages', { method: 'POST', body: entry.payload, signal });
   }
 
   private async drain(): Promise<void> {
-    if (this.drainFlight || !this.running || !this.initialized || !this.localReady || !navigator.onLine) return;
+    if (this.drainFlight) { this.wakeDelivery?.(); return; }
+    if (!this.running || !this.initialized || !this.localReady || !navigator.onLine) return;
     const epoch = this.generation; const signal = this.controller.signal;
     const flight = withDeliveryLock(this.user.id, this.instanceId, signal, async (stillOwner) => {
       await this.verifyIdentity(epoch);
       if (!this.current(epoch) || !stillOwner()) return;
-      const entries = await readQueue(this.user.id);
-      for (const entry of entries) {
-        if (!this.current(epoch) || !stillOwner() || !navigator.onLine) break;
-        if (entry.state === 'failed' || entry.retryAt > Date.now()) continue;
-        try {
-          const conversation = await this.request<Conversation>('/conversations/' + encodeURIComponent(entry.conversationId));
+      const active = new Map<string, { file: boolean; controller: AbortController; done: Promise<void> }>();
+      try {
+        while (this.current(epoch) && stillOwner() && navigator.onLine) {
+          const entries = await readQueue(this.user.id);
           if (!this.current(epoch) || !stillOwner()) break;
-          if (entry.expiresAt <= Date.now()) throw new APIError(409, { code: 'OUTBOX_EXPIRED', message: '待发内容已超过7天，请复制后重新编辑。' });
-          if (!conversation.canSend) throw new APIError(403, { code: conversation.sendErrorCode || 'RESOURCE_UNAVAILABLE', message: conversation.sendDisabledReason || '当前无法发送。' });
-          if (entry.payload.accessKey !== conversation.accessKey) throw new APIError(409, { code: 'STALE_ACCESS', message: '会话权限期已改变，这条待发内容已停止发送。请复制并检查后重新编辑。' });
-          const retained = await changeQueuedMessage(this.user.id, entry.key, (item) => ({ ...item, state: 'sending', attempts: item.attempts + 1, error: null, errorCode: null }));
-          if (!retained || !this.current(epoch) || !stillOwner()) continue;
-          await this.loadLocal(epoch); this.announce();
-          const result = await this.send(retained);
-          await changeQueuedMessage(this.user.id, entry.key, () => null);
-          if (this.current(epoch)) {
-            if (this.state.selectedId === result.message.conversationId) this.set({ messages: mergeMessages(this.state.messages, [result.message]) });
-            await this.loadLocal(epoch); this.announce(); this.syncAgain = true; void this.synchronize();
+          // The first retained item, including failed/delayed items, owns its conversation order.
+          const heads = new Map<string, QueuedMessage>();
+          for (const entry of entries) if (!heads.has(entry.conversationId)) heads.set(entry.conversationId, entry);
+          for (const entry of heads.values()) {
+            if (active.has(entry.conversationId) || entry.state === 'failed' || entry.retryAt > Date.now()) continue;
+            const file = entry.files.length > 0;
+            const occupied = [...active.values()].filter((task) => task.file === file).length;
+            if (occupied >= (file ? 2 : 1)) continue;
+            const controller = new AbortController(); const abort = () => controller.abort();
+            signal.addEventListener('abort', abort, { once: true });
+            this.deliveryTasks.set(entry.key, controller);
+            const done = this.deliverEntry(entry, epoch, controller.signal, stillOwner).finally(() => {
+              signal.removeEventListener('abort', abort);
+              if (this.deliveryTasks.get(entry.key) === controller) this.deliveryTasks.delete(entry.key);
+              active.delete(entry.conversationId); this.wakeDelivery?.();
+            });
+            active.set(entry.conversationId, { file, controller, done });
           }
-        } catch (error) {
-          if (!this.current(epoch)) break;
-          if (error instanceof APIError && ['AUTH_REQUIRED', 'SESSION_REVOKED', 'LOCAL_IDENTITY_CHANGED'].includes(error.code)) { this.expire(); break; }
-          const code = error instanceof APIError ? error.code : 'NETWORK_ERROR';
-          const terminal = permanentErrors.has(code);
-          const delay = Math.max(error instanceof APIError ? error.retryAfterMs || 0 : 0, Math.min(30000, 1000 * 2 ** Math.min(entry.attempts + 1, 5))) * (0.9 + Math.random() * 0.2);
-          await changeQueuedMessage(this.user.id, entry.key, (item) => ({ ...item, state: terminal ? 'failed' : 'queued', retryAt: Date.now() + delay, errorCode: code, error: error instanceof APIError ? error.message : '发送结果尚未确认，将使用同一消息标识重试。' }));
-          await this.loadLocal(epoch); this.announce();
-          if (!terminal) break;
+          if (!active.size) break;
+          await new Promise<void>((resolve) => {
+            const wake = () => { clearTimeout(timer); signal.removeEventListener('abort', wake); if (this.wakeDelivery === wake) this.wakeDelivery = null; resolve(); };
+            const timer = setTimeout(wake, 1000);
+            this.wakeDelivery = wake; signal.addEventListener('abort', wake, { once: true });
+            if (signal.aborted) wake();
+          });
         }
+      } finally {
+        for (const task of active.values()) task.controller.abort();
+        await Promise.allSettled([...active.values()].map((task) => task.done));
       }
     }).catch((error) => { if (this.current(epoch)) this.connectionFailure(error, epoch); });
     this.drainFlight = flight;
     try { await flight; } finally { if (this.drainFlight === flight) this.drainFlight = null; }
   }
 
+  private async deliverEntry(entry: QueuedMessage, epoch: number, signal: AbortSignal, stillOwner: () => boolean): Promise<void> {
+    const revision = this.localIdentityRevision || undefined;
+    const continuing = () => this.current(epoch) && stillOwner() && !signal.aborted;
+    const ensure = () => { if (!continuing()) throw new DOMException('已停止本次发送', 'AbortError'); };
+    const change = (update: (value: QueuedMessage) => QueuedMessage | null) => changeQueuedMessage(this.user.id, entry.key, (value) => { ensure(); return update(value); }, revision);
+    try {
+      ensure();
+      const conversation = await api<Conversation>('/api/v1/conversations/' + encodeURIComponent(entry.conversationId), { signal });
+      ensure();
+      if (entry.expiresAt <= Date.now()) throw new APIError(409, { code: 'OUTBOX_EXPIRED', message: '待发内容已超过7天，请复制后重新编辑。' });
+      if (!conversation.canSend) throw new APIError(403, { code: conversation.sendErrorCode || 'RESOURCE_UNAVAILABLE', message: conversation.sendDisabledReason || '当前无法发送。' });
+      if (entry.payload.accessKey !== conversation.accessKey) throw new APIError(409, { code: 'STALE_ACCESS', message: '会话权限期已改变，这条待发内容已停止发送。请复制并检查后重新编辑。' });
+      let retained = await change((item) => ({ ...item, state: 'sending', attempts: item.attempts + 1, error: null, errorCode: null }));
+      if (!retained) return;
+      await this.loadLocal(epoch); this.announce();
+      const attachmentIds: string[] = [];
+      for (const file of retained.files) {
+        ensure();
+        const record = await uploadLocalAttachment(file, { actorContext: this.user.id, purpose: 'message', conversationId: entry.conversationId, accessKey: entry.payload.accessKey }, {
+          signal, retry: retained.retryFiles,
+          onChange: async (updated) => {
+            const kept = await change((item) => ({ ...item, files: item.files.map((value) => value.id === updated.id ? updated : value) }));
+            if (!kept) throw new DOMException('待发内容已删除', 'AbortError');
+            await this.loadLocal(epoch); this.announce();
+          },
+        });
+        attachmentIds.push(record.id);
+      }
+      ensure();
+      retained = await change((item) => ({ ...item, retryFiles: false, payload: { ...item.payload, attachmentIds } }));
+      if (!retained) return;
+      ensure();
+      const result = await this.send(retained, signal);
+      ensure();
+      await change(() => null);
+      if (this.current(epoch)) {
+        if (this.state.selectedId === result.message.conversationId) this.set({ messages: mergeMessages(this.state.messages, [result.message]) });
+        await this.loadLocal(epoch); this.announce(); this.syncAgain = true; void this.synchronize();
+      }
+    } catch (error) {
+      if (!continuing()) return;
+      if (error instanceof APIError && ['AUTH_REQUIRED', 'SESSION_REVOKED', 'LOCAL_IDENTITY_CHANGED'].includes(error.code)) { this.expire(); return; }
+      const code = error instanceof APIError ? error.code : 'NETWORK_ERROR';
+      const terminal = permanentErrors.has(code) || (error instanceof APIError && error.status >= 400 && error.status < 500 && ![408, 425, 429].includes(error.status) && code !== 'UPLOAD_BUSY');
+      const delay = Math.max(error instanceof APIError ? error.retryAfterMs || 0 : 0, Math.min(30000, 1000 * 2 ** Math.min(entry.attempts + 1, 5))) * (0.9 + Math.random() * 0.2);
+      try {
+        await change((item) => ({ ...item, state: terminal ? 'failed' : 'queued', retryAt: Date.now() + delay, errorCode: code, error: error instanceof APIError ? error.message : '发送结果尚未确认，将使用同一消息标识重试。' }));
+        await this.loadLocal(epoch); this.announce();
+      } catch (saveError) { if (continuing()) this.connectionFailure(saveError, epoch); }
+    }
+  }
+
   getDraft(conversationId: string): Promise<Draft | null> { return readDraft(this.user.id, conversationId); }
-  saveDraft(conversationId: string, text: string, position: { scrollTop?: number; anchorId?: string } = {}): Promise<void> { return saveLocalDraft(this.user.id, conversationId, text, position); }
+  saveDraft(conversationId: string, text: string, position: { scrollTop?: number; anchorId?: string; files?: LocalAttachment[] } = {}): Promise<void> { return saveLocalDraft(this.user.id, conversationId, text, position); }
   async getLocalSummary(): Promise<{ pending: number; drafts: number }> { await this.enqueueFlight.catch(() => undefined); return localSummary(this.user.id); }
   async logout(choice: 'keep' | 'delete'): Promise<void> {
     const pendingSave = this.enqueueFlight; const pendingSend = this.drainFlight;

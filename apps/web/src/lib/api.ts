@@ -38,13 +38,17 @@ export function onAuthExpired(listener: () => void): () => void {
   return () => { expiredListeners.delete(listener); };
 }
 
-export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; inviteToken?: string } = {}): Promise<T> {
+export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; inviteToken?: string; upload?: { id: string; blob: Blob } } = {}): Promise<T> {
   const method = options.method || 'GET';
   const generation = identityGeneration;
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (options.inviteToken) headers['X-Group-Invite'] = options.inviteToken;
   if (!['GET', 'HEAD'].includes(method)) headers['X-CSRF-Token'] = csrfToken;
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (options.upload) {
+    if (path !== '/api/v1/attachments' || method !== 'POST' || options.body !== undefined) throw new APIError(0, { code: 'INVALID_UPLOAD', message: '上传请求格式无效。' });
+    headers['Content-Type'] = 'application/octet-stream'; headers['X-Upload-Id'] = options.upload.id;
+  }
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let cancel: (() => void) | undefined;
@@ -55,13 +59,13 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     timeout = setTimeout(() => {
       reject(new APIError(0, { code: 'REQUEST_TIMEOUT', message: ['GET', 'HEAD'].includes(method) ? '请求超时，请检查网络后重试。' : '请求超时，结果尚未确认。请先刷新确认结果，避免重复提交。' }));
       controller.abort();
-    }, REQUEST_TIMEOUT_MS);
+    }, options.upload ? 120000 : REQUEST_TIMEOUT_MS);
   });
   try {
     return await Promise.race([interrupted, (async () => {
       const localState = path.startsWith('/api/v1/') && !['/api/v1/auth/bootstrap', '/api/v1/auth/captcha', '/api/v1/auth/register', '/api/v1/auth/login', '/api/v1/auth/recover'].includes(path) ? await captureOfflineState() : null;
       if (controller.signal.aborted) throw controller.signal.reason;
-      const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store', headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), signal: controller.signal });
+      const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store', headers, body: options.upload?.blob ?? (options.body === undefined ? undefined : JSON.stringify(options.body)), signal: controller.signal });
       const payload = await response.json().catch(() => null);
       if (controller.signal.aborted) throw controller.signal.reason;
       if (!response.ok) {
@@ -93,7 +97,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   }
 }
 
-export type User = { id: string; username: string; nickname: string; bio: string; siteRole: 'user' | 'super_admin'; status: string; createdAt: number; preferences: { invisible: boolean; readReceipts: boolean; doNotDisturb: boolean; [key: string]: unknown } };
+export type User = { id: string; username: string; nickname: string; bio: string; avatarUrl?: string | null; siteRole: 'user' | 'super_admin'; status: string; createdAt: number; preferences: { invisible: boolean; readReceipts: boolean; doNotDisturb: boolean; [key: string]: unknown } };
 export type Bootstrap = { accountsEnabled: boolean; registrationMode: 'closed' | 'invite-only' | 'open'; csrfToken: string; user: User | null; terms: { version: string; operatorName: string; operatorContact: string; development: boolean; text: string } };
 let bootstrapFlight: { generation: number; promise: Promise<Bootstrap> } | undefined;
 export function fetchBootstrap(): Promise<Bootstrap> {

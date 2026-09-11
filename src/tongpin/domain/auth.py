@@ -37,6 +37,7 @@ def public_user(user):
         "username": user["username"],
         "nickname": user["nickname"],
         "bio": user["bio"],
+        "avatarUrl": "/api/v1/users/" + user["id"] + "/avatar?v=" + user["avatar_id"] if user["avatar_id"] and user["status"] == "active" else None,
         "siteRole": user["site_role"],
         "status": user["status"],
         "createdAt": user["created_at"],

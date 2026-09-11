@@ -1,10 +1,10 @@
 # 当前实现接口约定
 
-这是前后端实施的接口依据，随批次更新。M2 已完成本批审查；M3/M4 接口见 [集成契约](M3_M4_CONTRACT.zh-CN.md)，M5 群聊、邀请和审批接口见 [M5契约](M5_CONTRACT.zh-CN.md)。接口文档不是运行通过结果。所有 JSON 成功返回 `{data: ..., requestId}`，失败返回 `{error:{code,message,fieldErrors?,retryAfterMs?},requestId}`。请求同源，Cookie 自动携带；POST/PATCH/DELETE/PUT 加 `X-CSRF-Token`，token 来自 bootstrap 或成功登录响应，仅存内存。密码、恢复码、验证码答案、会话凭据不能放 URL/localStorage/sessionStorage。未知字段拒绝。
+这是前后端实施的接口依据，随批次更新。M2 已完成本批审查；M3/M4 接口见 [集成契约](M3_M4_CONTRACT.zh-CN.md)，M5 群聊、邀请和审批接口见 [M5契约](M5_CONTRACT.zh-CN.md)，M6 上传、文件、头像及本机Blob恢复见 [M6契约](M6_CONTRACT.zh-CN.md)。接口文档不是运行通过结果。所有 JSON 成功返回 `{data: ..., requestId}`，失败返回 `{error:{code,message,fieldErrors?,retryAfterMs?},requestId}`。请求同源，Cookie 自动携带；POST/PATCH/DELETE/PUT 加 `X-CSRF-Token`，token 来自 bootstrap 或成功登录响应，仅存内存。密码、恢复码、验证码答案、会话凭据不能放 URL/localStorage/sessionStorage。未知字段拒绝。
 
 ## M2 账户
 
-User: `{id,username,nickname,bio,siteRole:'user'|'super_admin',status,createdAt,preferences:{invisible,readReceipts,doNotDisturb,...}}`。时间均为 Unix 毫秒；ID 为不透明字符串。
+User: `{id,username,nickname,bio,avatarUrl:string|null,siteRole:'user'|'super_admin',status,createdAt,preferences:{invisible,readReceipts,doNotDisturb,...}}`。时间均为 Unix 毫秒；ID 为不透明字符串。
 
 | 方法/路径（前缀 /api/v1） | 输入 | data 输出 |
 |---|---|---|

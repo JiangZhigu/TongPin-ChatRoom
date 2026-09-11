@@ -13,6 +13,7 @@ from tongpin import __version__
 from tongpin.contracts.base import APIError
 from tongpin.transports.http.auth import auth_blueprint, require_csrf
 from tongpin.transports.http.chat import chat_blueprint
+from tongpin.transports.http.files import files_blueprint
 from tongpin.transports.http.groups import groups_blueprint
 
 
@@ -30,6 +31,9 @@ def create_http_app(runtime):
     def before_request():
         g.request_id = secrets.token_hex(12)
         g.started_at = time.perf_counter()
+        # The ASGI adapter has already received a size-bounded complete body.
+        # Tell Werkzeug that an absent Content-Length still has a known EOF.
+        request.environ["wsgi.input_terminated"] = True
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             origin = request.headers.get("Origin")
             if origin not in runtime.settings.origins:
@@ -121,6 +125,7 @@ def create_http_app(runtime):
     app.register_blueprint(auth_blueprint)
     app.register_blueprint(chat_blueprint)
     app.register_blueprint(groups_blueprint)
+    app.register_blueprint(files_blueprint)
 
     @app.route(
         "/api/v1/admin", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]

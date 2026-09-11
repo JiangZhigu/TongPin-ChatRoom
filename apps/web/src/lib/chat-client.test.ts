@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatClient, mergeMessages, validateMessageText } from './chat-client';
 import { setCsrfToken, type User } from './api';
 import { openLocalDatabase, readQueue, readOfflineIdentity, rememberIdentity } from './outbox';
-import type { Conversation, Message, SyncEvent } from './chat-types';
+import type { Conversation, LocalAttachment, Message, SyncEvent } from './chat-types';
+import type { UploadRecord } from './files-types';
 
 const socketEvents = vi.hoisted(() => new Map<string, () => void>());
 vi.mock('socket.io-client', () => ({ io: () => {
@@ -56,7 +57,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { for (const client of clients.splice(0)) client.stop(); await new Promise((resolve) => setTimeout(resolve, 5)); vi.restoreAllMocks(); vi.unstubAllGlobals(); setCsrfToken(''); });
 async function client() { const value = new ChatClient(user); clients.push(value); await value.start(); return value; }
-async function until(condition: () => boolean | Promise<boolean>) { for (let attempt = 0; attempt < 80; attempt++) { if (await condition()) return; await new Promise((resolve) => setTimeout(resolve, 10)); } throw new Error('Expected client state did not settle'); }
+async function until(condition: () => boolean | Promise<boolean>) { for (let attempt = 0; attempt < 200; attempt++) { if (await condition()) return; await new Promise((resolve) => setTimeout(resolve, 10)); } throw new Error('Expected client state did not settle'); }
 function event(cursor: string, changes: Partial<SyncEvent>): SyncEvent { return { v: 1, eventId: cursor, cursor, type: 'message.created', entityRef: 'message', occurredAt: 1, conversationId: conversation.id, ...changes }; }
 function delayHistory() {
   const fetchMock = vi.mocked(fetch); const original = fetchMock.getMockImplementation()!;
@@ -67,6 +68,129 @@ function delayHistory() {
   });
   return { ready: () => entered, finish: (items: Message[], accessKey = 'relation:1', before: string | null = null) => finish(result({ items, nextCursor: before, hasMore: before !== null, lastSeq: items.at(-1)?.seq || '0', accessKey })) };
 }
+
+function fileServer(initialState: UploadRecord['state'] = 'ready') {
+  const conversations = [conversation, { ...conversation, id: 'dm_file_b' }, { ...conversation, id: 'dm_text' }];
+  const records = new Map<string, UploadRecord>();
+  const requests: { url: string; method: string; body: unknown }[] = [];
+  const deliveries: { conversationId: string; payload: Record<string, unknown> }[] = [];
+  const control = { state: initialState, loseUploadResult: false, loseMessageResult: false, holdUpload: false };
+  const original = vi.mocked(fetch).getMockImplementation()!;
+  vi.mocked(fetch).mockImplementation(async (input, options) => {
+    const url = String(input), method = options?.method || 'GET';
+    requests.push({ url, method, body: options?.body });
+    const reply = (data: unknown, status = 200) => result(data, status) as unknown as Response;
+    if (url.endsWith('/sync/snapshot')) return reply({ cursor: '0', contacts: { items: [], nextCursor: null }, conversations: { items: conversations, nextCursor: null }, requests: { items: [], nextCursor: null }, policy: {} });
+    const detail = conversations.find((row) => url.endsWith('/conversations/' + row.id));
+    if (detail) return reply(detail);
+    if (url.endsWith('/attachment-uploads')) {
+      const data = JSON.parse(options!.body as string);
+      const id = 'f_' + data.clientUploadId;
+      const record: UploadRecord = { id, name: data.name, size: data.size, mime: 'text/plain', kind: 'file', purpose: 'message', conversationId: data.conversationId, state: 'reserved', scanStatus: 'unknown', errorCode: null, error: null, bound: false, createdAt: 1, expiresAt: Date.now() + 86400000, contentUrl: '' };
+      records.set(id, record); return reply(record, 201);
+    }
+    if (url.endsWith('/attachments') && method === 'POST') {
+      const id = new Headers(options?.headers).get('X-Upload-Id')!;
+      const record = records.get(id)!; record.state = control.state;
+      expect(options?.body).toBeInstanceOf(Blob);
+      expect(await (options?.body as Blob).text()).toBe('real local bytes');
+      if (control.holdUpload) await new Promise<void>((_resolve, reject) => { options!.signal!.addEventListener('abort', () => reject(options!.signal!.reason), { once: true }); });
+      if (control.loseUploadResult) { control.loseUploadResult = false; throw new TypeError('Synthetic lost response after received bytes'); }
+      return reply(record, 202);
+    }
+    const attachment = url.match(/\/attachments\/([^/]+)(?:\/(retry|cancel))?$/);
+    if (attachment) {
+      const record = records.get(attachment[1])!;
+      if (attachment[2] === 'retry') record.state = 'ready';
+      else if (attachment[2] === 'cancel') record.state = 'cancelled';
+      else if (record.state === 'processing') record.state = control.state;
+      return reply(record);
+    }
+    const send = url.match(/\/conversations\/([^/]+)\/messages$/);
+    if (send && method === 'POST') {
+      const payload = JSON.parse(options!.body as string); deliveries.push({ conversationId: send[1], payload });
+      if (control.loseMessageResult) { control.loseMessageResult = false; return reply({ error: { code: 'TEMPORARY_UNAVAILABLE', message: 'Synthetic lost ACK' } }, 503); }
+      return reply({ message: { ...message('m_' + payload.clientMessageId, String(deliveries.length), payload.text), conversationId: send[1], clientMessageId: payload.clientMessageId, attachments: payload.attachmentIds.map((id: string) => records.get(id)) }, duplicate: false }, 201);
+    }
+    return original(input, options);
+  });
+  return { conversations, records, requests, deliveries, control };
+}
+function localFile(): LocalAttachment { return { id: crypto.randomUUID(), blob: new Blob(['real local bytes']), name: '本机文件.txt', mime: 'text/plain' }; }
+
+describe('real Blob outbox and controlled HTTP upload scheduling', () => {
+  it('keeps two processing file conversations ordered while a newly queued third conversation sends text', async () => {
+    const server = fileServer('processing'); const current = await client();
+    await current.queue(conversation.id, '', { files: [localFile()] });
+    await current.queue('dm_file_b', '', { files: [localFile()] });
+    await until(() => server.records.size === 2 && [...server.records.values()].every((row) => row.state === 'processing'));
+    await current.queue(conversation.id, 'must wait behind file');
+    await current.queue('dm_text', 'text proceeds independently');
+    await until(() => server.deliveries.length === 1);
+    expect(server.deliveries[0]).toMatchObject({ conversationId: 'dm_text', payload: { text: 'text proceeds independently', attachmentIds: [] } });
+    expect((await readQueue(user.id)).filter((row) => row.conversationId === conversation.id)).toHaveLength(2);
+    server.control.state = 'ready';
+    await until(async () => (await readQueue(user.id)).length === 0);
+    const sameConversation = server.deliveries.filter((row) => row.conversationId === conversation.id);
+    expect(sameConversation.map((row) => row.payload.text)).toEqual(['', 'must wait behind file']);
+    expect(sameConversation[0].payload.attachmentIds).toHaveLength(1);
+  });
+
+  it('retains upload identifiers after an unknown raw response and reuses ready bytes without uploading again', async () => {
+    const server = fileServer(); server.control.loseUploadResult = true; const current = await client();
+    await current.queue(conversation.id, '', { files: [localFile()] });
+    await until(async () => (await readQueue(user.id))[0]?.errorCode === 'NETWORK_ERROR');
+    const retained = (await readQueue(user.id))[0]; expect(retained.files[0].attachmentId).toBeTruthy();
+    expect(await retained.files[0].blob.text()).toBe('real local bytes');
+    await current.retry(retained.payload.clientMessageId); await until(async () => (await readQueue(user.id)).length === 0);
+    expect(server.requests.filter((row) => row.url.endsWith('/attachments') && row.method === 'POST')).toHaveLength(1);
+    expect(server.requests.filter((row) => row.url.endsWith('/attachment-uploads'))).toHaveLength(1);
+    expect(server.deliveries[0].payload.attachmentIds).toEqual([retained.files[0].attachmentId]);
+  });
+
+  it('retains the same message and attachment IDs across client restart after an unknown message ACK', async () => {
+    const server = fileServer(); server.control.loseMessageResult = true; const current = await client();
+    await current.queue(conversation.id, 'same bytes after restart', { files: [localFile()] });
+    await until(async () => (await readQueue(user.id))[0]?.errorCode === 'TEMPORARY_UNAVAILABLE');
+    const retained = (await readQueue(user.id))[0]; current.stop();
+    const restarted = await client(); await restarted.retry(retained.payload.clientMessageId);
+    await until(async () => (await readQueue(user.id)).length === 0);
+    expect(server.deliveries).toHaveLength(2); expect(server.deliveries[0]).toEqual(server.deliveries[1]);
+    expect(server.requests.filter((row) => row.url.endsWith('/attachments') && row.method === 'POST')).toHaveLength(1);
+  });
+
+  it('stops the same conversation behind quarantine and requests scanning again only on explicit retry', async () => {
+    const server = fileServer('quarantined'); const current = await client();
+    await current.queue(conversation.id, '', { files: [localFile()] });
+    await until(async () => (await readQueue(user.id))[0]?.state === 'failed');
+    const first = (await readQueue(user.id))[0]; expect(first.errorCode).toBe('FILE_QUARANTINED');
+    await current.queue(conversation.id, 'ordered after quarantine'); await current.queue('dm_text', 'other conversation');
+    await until(() => server.deliveries.length === 1); expect(server.deliveries[0].conversationId).toBe('dm_text');
+    await current.refresh(); expect(server.requests.filter((row) => row.url.endsWith('/retry'))).toHaveLength(0);
+    await current.retry(first.payload.clientMessageId); await until(async () => (await readQueue(user.id)).length === 0);
+    expect(server.requests.filter((row) => row.url.endsWith('/retry'))).toHaveLength(1);
+    expect(server.deliveries.filter((row) => row.conversationId === conversation.id).map((row) => row.payload.text)).toEqual(['', 'ordered after quarantine']);
+  });
+
+  it('aborts a pending raw upload, cancels its persisted record and never sends the removed entry', async () => {
+    const server = fileServer('processing'); server.control.holdUpload = true; const current = await client();
+    await current.queue(conversation.id, '', { files: [localFile()] });
+    await until(() => server.requests.some((row) => row.url.endsWith('/attachments') && row.method === 'POST'));
+    const retained = (await readQueue(user.id))[0]; await current.cancel(retained.payload.clientMessageId);
+    expect(await readQueue(user.id)).toEqual([]); expect(server.deliveries).toEqual([]);
+    expect(server.requests.filter((row) => row.url.endsWith('/cancel'))).toHaveLength(1);
+  });
+
+  it('preserves account A Blob and prevents send when identity changes during processing', async () => {
+    const server = fileServer('processing'); const current = await client();
+    await current.queue(conversation.id, '', { files: [localFile()] });
+    await until(() => [...server.records.values()].some((row) => row.state === 'processing'));
+    await rememberIdentity({ id: 'u_next', username: 'next_user', nickname: '下一个账号' }, await readOfflineIdentity());
+    server.control.state = 'ready'; await until(() => current.getSnapshot().phase === 'expired');
+    expect(server.deliveries).toEqual([]); expect((await readOfflineIdentity())?.user.id).toBe('u_next');
+    expect(await (await readQueue(user.id))[0].files[0].blob.text()).toBe('real local bytes');
+  });
+});
 
 describe('chat synchronization and outbox lifecycle', () => {
   it('merges duplicate updates using full decimal sequence precision and validates Unicode size', () => {

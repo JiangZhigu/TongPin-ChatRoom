@@ -43,16 +43,25 @@ class JobRepository:
             ).fetchone()[0]
         return identifier
 
-    def claim(self, lease_ms=60000):
+    def claim(self, lease_ms=60000, *, kinds=None, excluded_kinds=()):
         now = now_ms()
         with self.db.write() as connection:
             connection.execute(
                 "UPDATE jobs SET status='pending',lease_until=NULL WHERE status='running' AND lease_until<?",
                 (now,),
             )
+            clauses, parameters = ["status='pending'", "run_after<=?"], [now]
+            if kinds is not None:
+                if not kinds:
+                    return None
+                clauses.append("kind IN (" + ",".join("?" for _ in kinds) + ")")
+                parameters.extend(kinds)
+            if excluded_kinds:
+                clauses.append("kind NOT IN (" + ",".join("?" for _ in excluded_kinds) + ")")
+                parameters.extend(excluded_kinds)
             row = connection.execute(
-                "SELECT * FROM jobs WHERE status='pending' AND run_after<=? ORDER BY run_after,created_at LIMIT 1",
-                (now,),
+                "SELECT * FROM jobs WHERE " + " AND ".join(clauses) + " ORDER BY run_after,created_at LIMIT 1",
+                parameters,
             ).fetchone()
             if row is None:
                 return None

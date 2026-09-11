@@ -97,7 +97,11 @@ class Application:
     async def upload_guard(self, scope):
         if self.runtime.auth is None:
             raise APIError("AUTH_REQUIRED", "请先登录。", 401)
-        await self.runtime.executor.run(self.runtime.auth.authorize_upload_scope, scope)
+        actor = await self.runtime.executor.run(self.runtime.auth.authorize_upload_scope, scope)
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        if headers.get(b"content-type", b"").split(b";", 1)[0] != b"application/octet-stream":
+            raise APIError("FILE_TYPE_MISMATCH", "上传必须提供原始文件字节。", 415)
+        return await self.runtime.executor.run(self.runtime.files.guard_upload, actor, headers.get(b"x-upload-id", b"").decode("latin1"))
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "lifespan":

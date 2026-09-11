@@ -12,6 +12,7 @@ from tongpin.domain.auth import AuthService
 from tongpin.domain.chat import ChatService
 from tongpin.domain.contacts import ContactService
 from tongpin.domain.events import EventService
+from tongpin.domain.files import FileService
 from tongpin.domain.groups import GroupService
 from tongpin.domain.policy import PolicyService
 from tongpin.infra.cache import BoundedCache
@@ -34,7 +35,8 @@ class Runtime:
         self.cache = BoundedCache()
         self.executor = BlockingExecutor(settings.blocking_workers, settings.blocking_backlog)
         self.jobs = JobRepository(self.db)
-        self.runner = JobRunner(self.jobs, self.executor)
+        self.runner = JobRunner(self.jobs, self.executor, excluded_kinds=("files.process",))
+        self.file_runner = JobRunner(self.jobs, self.executor, kinds=("files.process",))
         self.metrics = Metrics()
         self.ready = False
         self.auth = None
@@ -54,9 +56,11 @@ class Runtime:
         self.contacts = ContactService(self)
         self.chat = ChatService(self)
         self.groups = GroupService(self)
-        self.files = None
+        self.files = FileService(self)
         self.runner.handlers["events.dispatch"] = self._dispatch_job
         self.runner.handlers["groups.expire"] = self.groups.expire_job
+        self.runner.handlers["files.cleanup"] = self.files.cleanup
+        self.file_runner.handlers["files.process"] = self.files.process
 
     def initialize(self):
         self.paths.prepare()
@@ -69,6 +73,7 @@ class Runtime:
             if not self.secret:
                 self.secret = self.paths.development_secret()
             self.auth = AuthService(self)
+            self.files.initialize()
             self.ready = True
         except BaseException:
             tempfile.tempdir = self._previous_tempdir
@@ -79,6 +84,7 @@ class Runtime:
         self.loop = asyncio.get_running_loop()
         await self.executor.run(self.initialize)
         self.runner.start()
+        self.file_runner.start()
         self._metric_task = asyncio.create_task(self._sample_metrics(), name="tongpin-metrics")
 
     async def _sample_metrics(self):
@@ -101,6 +107,7 @@ class Runtime:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
         await self.runner.stop()
+        await self.file_runner.stop()
         self.cache.clear()
         self.executor.close()
         self.lock.release()
@@ -113,6 +120,7 @@ class Runtime:
             "accounts": self.auth is not None,
             "chat": self.auth is not None,
             "admin": self.auth is not None,
+            "files": self.auth is not None,
         }
 
     def connections_snapshot(self):

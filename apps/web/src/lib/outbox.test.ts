@@ -1,7 +1,7 @@
 // @vitest-environment node
 import 'fake-indexeddb/auto';
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
-import { addQueuedMessage, changeQueuedMessage, claimLease, clearLocalUser, forgetIdentity, openLocalDatabase, OUTBOX_BLOB_LIMIT, readOfflineIdentity, readOfflineSnapshot, readQueue, releaseLease, rememberIdentity, removeOfflineItem, saveLocalDraft, withDeliveryLock } from './outbox';
+import { addQueuedMessage, changeQueuedMessage, claimLease, clearLocalUser, forgetIdentity, localSummary, openLocalDatabase, OUTBOX_BLOB_LIMIT, readDraft, readOfflineIdentity, readOfflineSnapshot, readQueue, releaseLease, rememberIdentity, removeOfflineItem, saveLocalDraft, withDeliveryLock } from './outbox';
 import type { QueuedMessage } from './chat-types';
 
 const one = { id: 'u_one', username: 'actor_one', nickname: '一' };
@@ -25,6 +25,40 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('per-account IndexedDB transaction and delivery boundary (in-memory IDB model)', () => {
+  it('moves a full-budget Blob draft into its queue atomically without counting the same transfer twice', async () => {
+    const files = [0, 1].map((i) => ({ id: 'draft-' + i, blob: new Blob([new Uint8Array(25 * 1024 ** 2)]), name: i + '.txt', mime: 'text/plain' }));
+    await saveLocalDraft(one.id, 'dm_one', '', { files });
+    expect(await localSummary(one.id)).toEqual({ pending: 0, drafts: 1 });
+    expect((await readOfflineSnapshot())?.drafts[0].files).toHaveLength(2);
+    const queued = { ...entry(), files: files.slice(0, 1) };
+    await addQueuedMessage(queued);
+    expect((await readDraft(one.id, 'dm_one'))?.files?.map((file) => file.id)).toEqual(['draft-1']);
+    expect((await readQueue(one.id))[0].files[0].blob.size).toBe(25 * 1024 ** 2);
+    await expect(saveLocalDraft(one.id, 'dm_one', 'copied draft', { files })).rejects.toMatchObject({ code: 'STORAGE_FULL' });
+    expect((await readDraft(one.id, 'dm_one'))?.text).toBe('');
+    await expect(addQueuedMessage({ ...entry(), files: files.slice(0, 1) })).rejects.toMatchObject({ code: 'FILE_ALREADY_QUEUED' });
+  });
+
+  it('rolls back the queue and Blob draft transfer together if the local transaction fails', async () => {
+    const files = [{ id: 'rollback-file', blob: new Blob(['survives failure']), name: 'rollback.txt', mime: 'text/plain' }];
+    await saveLocalDraft(one.id, 'dm_one', 'retained', { files });
+    const original = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, value, key) {
+      const request = original.call(this, value, key);
+      if (this.name === 'drafts') request.addEventListener('success', () => this.transaction.abort());
+      return request;
+    });
+    await expect(addQueuedMessage({ ...entry(), files })).rejects.toMatchObject({ code: 'LOCAL_STORAGE_UNAVAILABLE' });
+    expect(await readQueue(one.id)).toEqual([]);
+    expect(await (await readDraft(one.id, 'dm_one'))?.files?.[0].blob.text()).toBe('survives failure');
+  });
+
+  it('prevents an in-flight upload callback from mutating an earlier identity revision', async () => {
+    const queued = entry(); await addQueuedMessage(queued); const previous = (await readOfflineIdentity())!;
+    await rememberIdentity(two, previous); await rememberIdentity(one, await readOfflineIdentity());
+    await expect(changeQueuedMessage(one.id, queued.key, (row) => ({ ...row, state: 'sending' }), previous.revision)).rejects.toMatchObject({ code: 'LOCAL_IDENTITY_CHANGED' });
+    expect((await readQueue(one.id))[0].state).toBe('queued');
+  });
   it('ignores an old captured revision after account A changes to B and back to A', async () => {
     const previous = (await readOfflineIdentity())!;
     await rememberIdentity(two, previous);

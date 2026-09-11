@@ -1,5 +1,5 @@
 import { APIError } from './api';
-import type { Draft, QueuedMessage, UserSummary } from './chat-types';
+import type { Draft, LocalAttachment, QueuedMessage, UserSummary } from './chat-types';
 
 const DATABASE = 'tongpin-local-v1';
 const VERSION = 1;
@@ -96,7 +96,7 @@ export function readOfflineSnapshot(expectedRevision?: string, afterDraftKey?: s
         const row = cursor.result;
         if (!row || values.length > 100) { resolve(values); return; }
         const draft: Draft = row.value;
-        if ((!afterDraftKey || draft.key > afterDraftKey) && draft.text.trim()) values.push(draft);
+        if ((!afterDraftKey || draft.key > afterDraftKey) && (draft.text.trim() || draft.files?.length)) values.push(draft);
         row.continue();
       };
     });
@@ -163,20 +163,35 @@ export function readQueue(userId: string): Promise<QueuedMessage[]> {
 }
 
 export function addQueuedMessage(entry: QueuedMessage): Promise<void> {
-  return transaction(['outbox', 'meta'], 'readwrite', async (tx) => {
+  return transaction(['outbox', 'drafts', 'meta'], 'readwrite', async (tx) => {
     const identity: OfflineIdentity | undefined = await requested(tx.objectStore('meta').get('active-user'));
     if (identity?.user.id !== entry.userId) throw new APIError(0, { code: 'LOCAL_IDENTITY_CHANGED', message: '本机账号状态已改变，内容尚未保存。请重新连接。' });
     const store = tx.objectStore('outbox');
     const pending: QueuedMessage[] = await requested(store.index('userId').getAll(IDBKeyRange.only(entry.userId), OUTBOX_LIMIT + 1));
     if (pending.length >= OUTBOX_LIMIT) throw new APIError(0, { code: 'STORAGE_FULL', message: '本机待发队列已达到100条，请先处理或删除部分待发内容。' });
-    const bytes = [...pending, entry].reduce((total, item) => total + item.files.reduce((sum, file) => sum + file.blob.size, 0), 0);
+    const drafts = tx.objectStore('drafts');
+    const draftRows: Draft[] = await requested(drafts.index('userId').getAll(IDBKeyRange.only(entry.userId)));
+    const transferring = new Set(entry.files.map((file) => file.id));
+    if (pending.some((row) => row.files.some((file) => transferring.has(file.id)))) throw new APIError(0, { code: 'FILE_ALREADY_QUEUED', message: '这些附件已经排队，请先确认原待发项。' });
+    const adjusted = draftRows.map((draft) => draft.conversationId === entry.conversationId ? { ...draft, files: (draft.files || []).filter((file) => !transferring.has(file.id)) } : draft);
+    const bytes = localBlobBytes([...pending, entry, ...adjusted]);
     if (bytes > OUTBOX_BLOB_LIMIT) throw new APIError(0, { code: 'STORAGE_FULL', message: '离线附件总量不能超过50 MiB，请删除部分附件后再试。' });
     await requested(store.add(entry));
+    const originalDraft = adjusted.find((draft) => draft.conversationId === entry.conversationId);
+    if (originalDraft && entry.files.length) await requested(drafts.put(originalDraft));
   });
 }
 
-export function changeQueuedMessage(userId: string, key: string, change: (value: QueuedMessage) => QueuedMessage | null): Promise<QueuedMessage | null> {
-  return transaction(['outbox'], 'readwrite', async (tx) => {
+function localBlobBytes(rows: { files?: LocalAttachment[] }[]): number {
+  return rows.reduce((total, row) => total + (row.files || []).reduce((sum, file) => sum + file.blob.size, 0), 0);
+}
+
+export function changeQueuedMessage(userId: string, key: string, change: (value: QueuedMessage) => QueuedMessage | null, expectedRevision?: string): Promise<QueuedMessage | null> {
+  return transaction(['outbox', 'meta'], 'readwrite', async (tx) => {
+    if (expectedRevision !== undefined) {
+      const identity: OfflineIdentity | undefined = await requested(tx.objectStore('meta').get('active-user'));
+      if (identity?.user.id !== userId || identity.revision !== expectedRevision) throw identityChanged();
+    }
     const store = tx.objectStore('outbox');
     const original: QueuedMessage | undefined = await requested(store.get(key));
     if (!original || original.userId !== userId) return null;
@@ -196,13 +211,17 @@ export function readDraft(userId: string, conversationId: string): Promise<Draft
   });
 }
 
-export function saveLocalDraft(userId: string, conversationId: string, text: string, position: { scrollTop?: number; anchorId?: string } = {}): Promise<void> {
-  return transaction(['drafts', 'meta'], 'readwrite', async (tx) => {
+export function saveLocalDraft(userId: string, conversationId: string, text: string, position: { scrollTop?: number; anchorId?: string; files?: LocalAttachment[] } = {}): Promise<void> {
+  return transaction(['drafts', 'outbox', 'meta'], 'readwrite', async (tx) => {
     const identity: OfflineIdentity | undefined = await requested(tx.objectStore('meta').get('active-user'));
     if (identity?.user.id !== userId) throw new APIError(0, { code: 'LOCAL_IDENTITY_CHANGED', message: '账号已切换，未将此草稿写入另一个账号。' });
     const store = tx.objectStore('drafts'); const key = userId + ':' + conversationId;
     const current: Draft | undefined = await requested(store.get(key));
-    await requested(store.put({ ...current, ...position, key, userId, conversationId, text, updatedAt: Date.now() } satisfies Draft));
+    const next = { ...current, ...position, key, userId, conversationId, text, updatedAt: Date.now() } satisfies Draft;
+    const drafts: Draft[] = await requested(store.index('userId').getAll(IDBKeyRange.only(userId)));
+    const queued: QueuedMessage[] = await requested(tx.objectStore('outbox').index('userId').getAll(IDBKeyRange.only(userId), OUTBOX_LIMIT + 1));
+    if (localBlobBytes([...drafts.filter((draft) => draft.key !== key), next, ...queued]) > OUTBOX_BLOB_LIMIT) throw new APIError(0, { code: 'STORAGE_FULL', message: '本机草稿与待发附件合计超过50 MiB，请移除部分附件。' });
+    await requested(store.put(next));
   });
 }
 
@@ -210,7 +229,7 @@ export function localSummary(userId: string): Promise<{ pending: number; drafts:
   return transaction(['outbox', 'drafts'], 'readonly', async (tx) => {
     const pending = await requested(tx.objectStore('outbox').index('userId').count(IDBKeyRange.only(userId)));
     const rows: Draft[] = await requested(tx.objectStore('drafts').index('userId').getAll(IDBKeyRange.only(userId)));
-    return { pending, drafts: rows.filter((row) => row.text.trim()).length };
+    return { pending, drafts: rows.filter((row) => row.text.trim() || row.files?.length).length };
   });
 }
 

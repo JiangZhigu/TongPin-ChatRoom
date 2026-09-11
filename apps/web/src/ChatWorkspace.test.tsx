@@ -3,7 +3,7 @@ import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
-import type { ChatState, Contact, Conversation, Draft, FriendRequest, Message, QueuedMessage } from './lib/chat-types';
+import type { ChatState, Contact, Conversation, Draft, FriendRequest, LocalAttachment, Message, QueuedMessage } from './lib/chat-types';
 import type { UserView } from './auth-types';
 import { ChatWorkspace } from './ChatWorkspace';
 import { AccountSettings } from './AccountSettings';
@@ -27,7 +27,7 @@ const chat = vi.hoisted(() => ({
   state: null as ChatState | null, listeners: new Set<() => void>(),
   start: vi.fn<() => Promise<void>>(), stop: vi.fn<() => void>(), updateUser: vi.fn(),
   select: vi.fn<(id: string | null) => Promise<void>>(), older: vi.fn<() => Promise<void>>(),
-  queue: vi.fn<(id: string, text: string) => Promise<void>>(), retry: vi.fn<(id: string) => Promise<void>>(), cancel: vi.fn<(id: string) => Promise<void>>(),
+  queue: vi.fn<(id: string, text: string, options?: { files: LocalAttachment[] }) => Promise<void>>(), retry: vi.fn<(id: string) => Promise<void>>(), cancel: vi.fn<(id: string) => Promise<void>>(),
   getDraft: vi.fn<(id: string) => Promise<Draft | null>>(), saveDraft: vi.fn<(id: string, text: string, position?: unknown) => Promise<void>>(),
   refresh: vi.fn<() => Promise<void>>(), read: vi.fn<(id: string, seq: string) => Promise<void>>(),
   summary: vi.fn<() => Promise<{ pending: number; drafts: number }>>(), logout: vi.fn<(choice: 'keep' | 'delete') => Promise<void>>(),
@@ -73,6 +73,74 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(() => response({ items: [], nextCursor: null })));
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+describe('M6-UI attachment draft lifecycle', () => {
+  const local = (name = '保留.txt'): LocalAttachment => ({ id: name, name, mime: 'text/plain', blob: new File(['真实附件正文'], name, { type: 'text/plain' }) });
+  it('saves selected bytes before reporting persistence and allows an attachment-only queue commit', async () => {
+    const saving = deferred<void>(); chat.saveDraft.mockImplementation(() => saving.promise);
+    showWorkspace(); await openConversation(); const file = new File(['选入的真实字节'], '说明.txt', { type: 'text/plain' });
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [file] } });
+    await waitFor(() => expect(chat.saveDraft).toHaveBeenCalledWith('dm-a', '', expect.objectContaining({ files: [expect.objectContaining({ blob: file, name: '说明.txt' })] })));
+    expect(screen.getByText('正在保存附件草稿…')).toBeInTheDocument(); expect(screen.queryByText('草稿已保存到本机')).not.toBeInTheDocument();
+    await act(async () => saving.resolve()); await screen.findByText('草稿已保存到本机');
+    const queue = deferred<void>(); chat.queue.mockImplementation(() => queue.promise); fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    expect(chat.queue).toHaveBeenCalledWith('dm-a', '', { files: [expect.objectContaining({ blob: file })] }); expect(screen.getByText('说明.txt')).toBeInTheDocument();
+    await act(async () => queue.resolve()); await waitFor(() => expect(screen.queryByText('说明.txt')).not.toBeInTheDocument()); expect(chat.saveDraft).toHaveBeenLastCalledWith('dm-a', '', expect.objectContaining({ files: [] }));
+  });
+  it('retains attachment bytes when local quota prevents draft or queue commit', async () => {
+    chat.saveDraft.mockRejectedValue(new Error('本机附件已达到 50 MiB 上限')); chat.queue.mockRejectedValue(new Error('本机附件已达到 50 MiB 上限'));
+    showWorkspace(); await openConversation(); fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [new File(['保留'], '未保存.txt', { type: 'text/plain' })] } });
+    await screen.findByText('附件尚未保存到本机，请保留此页面并重试'); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalled());
+    expect(screen.getByText('未保存.txt')).toBeInTheDocument(); expect(screen.getByLabelText('消息内容')).toBeEnabled();
+  });
+  it('does not clear newly selected attachments when an older message finishes entering the queue', async () => {
+    showWorkspace(); await openConversation(); const first = new File(['一'], '第一件.txt', { type: 'text/plain' }); const second = new File(['二'], '第二件.txt', { type: 'text/plain' });
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [first] } }); await screen.findByText('草稿已保存到本机');
+    const queue = deferred<void>(); chat.queue.mockImplementation(() => queue.promise); fireEvent.click(screen.getByRole('button', { name: '发送' }));
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [second] } }); await act(async () => queue.resolve());
+    expect(screen.getByText('第二件.txt')).toBeInTheDocument(); expect(chat.queue.mock.calls[0][2]?.files).toHaveLength(1); expect(chat.saveDraft.mock.calls.at(-1)?.[2]).toMatchObject({ files: [expect.objectContaining({ name: '第一件.txt' }), expect.objectContaining({ name: '第二件.txt' })] });
+  });
+  it('restores conversation attachments, removes only the selected item and saves before navigating', async () => {
+    chat.state!.conversations.push(conversation('dm-b', '另一好友')); const files = [local('A.txt'), local('B.txt')];
+    chat.getDraft.mockImplementation(async (id) => id === 'dm-a' ? { key: 'draft-a', userId: user.id, conversationId: id, text: '', files, updatedAt: 1 } : null);
+    showWorkspace(); await openConversation(); expect(screen.getByText('A.txt')).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: '移除附件 A.txt' }));
+    await waitFor(() => expect(chat.saveDraft).toHaveBeenCalledWith('dm-a', '', expect.objectContaining({ files: [files[1]] })));
+    await openConversation('另一好友'); expect(screen.queryByText('B.txt')).not.toBeInTheDocument(); expect(chat.saveDraft).toHaveBeenLastCalledWith('dm-a', '', expect.objectContaining({ files: [files[1]] }));
+  });
+  it('copies failed queue attachments into a separate draft without reusing their upload binding', async () => {
+    const pending = { ...queued('', 'failed'), files: [{ ...local(), attachmentId: 'old-upload', phase: 'failed' as const, error: '失权' }] }; chat.state!.outbox = [pending];
+    showWorkspace(); fireEvent.click(screen.getByRole('button', { name: /本机待发 1/ })); await screen.findByRole('heading', { name: '本机待发' }); fireEvent.click(screen.getByRole('button', { name: '复制到编辑器' }));
+    await waitFor(() => expect(chat.saveDraft).toHaveBeenCalledWith('dm-a', '', expect.objectContaining({ files: [expect.objectContaining({ name: pending.files[0].name, attachmentId: undefined, phase: undefined })] })));
+    const saved = chat.saveDraft.mock.calls.at(-1)?.[2] as { files: LocalAttachment[] }; expect(saved.files[0].id).not.toBe(pending.files[0].id); expect(chat.queue).not.toHaveBeenCalled(); expect(chat.cancel).not.toHaveBeenCalled();
+  });
+  it('preserves attachment drafts against a late scroll timer during revoked conversation cleanup', async () => {
+    const files = [local()]; chat.getDraft.mockResolvedValue({ key: 'draft-a', userId: user.id, conversationId: 'dm-a', text: '', files, updatedAt: 1 }); showWorkspace(); await openConversation();
+    const commit = deferred<void>(); chat.saveDraft.mockImplementation(() => commit.promise); await act(async () => publish({ selectedId: null, conversations: [], messages: [] }));
+    await waitFor(() => expect(chat.saveDraft).toHaveBeenCalled()); fireEvent.scroll(screen.getByLabelText('消息记录')); await act(async () => commit.resolve()); await screen.findByRole('heading', { name: '欢迎来到同频' });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 420))); expect(chat.saveDraft.mock.calls.every((call) => (call[2] as { files: LocalAttachment[] }).files === files)).toBe(true);
+  });
+});
+
+describe('M6-UI offline attachment recovery and limits', () => {
+  it('rejects a seventh file through shared validation while preserving the six selected files', async () => {
+    showWorkspace(); await openConversation(); const files = Array.from({ length: 6 }, (_, index) => new File(['字节'], `${index}.txt`, { type: 'text/plain' }));
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files } }); await screen.findByText('草稿已保存到本机');
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [new File(['七'], '第七.txt', { type: 'text/plain' })] } });
+    await screen.findByText('每条消息最多添加6个附件。'); expect(screen.queryByText('第七.txt')).not.toBeInTheDocument(); expect(screen.getAllByRole('button', { name: /移除附件/ })).toHaveLength(6);
+  });
+  it('shows attachment-only offline drafts and checks the held identity immediately before downloading bytes', async () => {
+    const blob = new File(['离线正文'], '离线.txt', { type: 'text/plain' }); const data = offlineData(); data.drafts = [{ ...data.drafts[0], text: '', files: [{ id: 'offline-file', name: '离线.txt', mime: 'text/plain', blob }] }]; offline.read.mockResolvedValue(data);
+    const create = vi.fn(() => 'blob:offline-copy'); Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() }); vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    render(<OfflineRecoveryPage onBack={vi.fn()} onReconnect={vi.fn()} />); await screen.findByText('离线.txt'); fireEvent.click(screen.getByRole('button', { name: '下载本机副本 离线.txt' }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith(blob)); expect(offline.read).toHaveBeenLastCalledWith('revision-a'); expect(chat.start).not.toHaveBeenCalled(); expect(chat.queue).not.toHaveBeenCalled();
+  });
+  it('closes attachment recovery without downloading when identity changes during the last access check', async () => {
+    const data = offlineData(); data.drafts[0].files = [{ id: 'offline-file', name: '保密.txt', mime: 'text/plain', blob: new File(['本机字节'], '保密.txt', { type: 'text/plain' }) }]; offline.read.mockResolvedValueOnce(data).mockRejectedValue(new APIError(409, { code: 'LOCAL_IDENTITY_CHANGED', message: '身份变化' }));
+    const create = vi.fn(); Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    render(<OfflineRecoveryPage onBack={vi.fn()} onReconnect={vi.fn()} />); await screen.findByText('保密.txt'); fireEvent.click(screen.getByRole('button', { name: '下载本机副本 保密.txt' }));
+    await screen.findByText('本机身份已改变，旧内容已关闭。请重新连接并验证账号后继续。'); expect(screen.queryByText('保密.txt')).not.toBeInTheDocument(); expect(create).not.toHaveBeenCalled();
+  });
+});
 
 describe('M5-UI revoked draft persistence race', () => {
   it('preserves the actual IndexedDB draft when scrolling schedules a save during asynchronous revoked selection cleanup', async () => {
@@ -169,7 +237,7 @@ describe('M3-M4 chat transaction and draft UI', () => {
     fireEvent.change(input, { target: { value: '后来继续编辑的草稿' } });
     await act(async () => commit.resolve());
     expect(input).toHaveValue('后来继续编辑的草稿'); expect(screen.getByText('已存本机 · 等待投递')).toBeInTheDocument();
-    expect(chat.queue).toHaveBeenCalledWith('dm-a', '发送时的正文');
+    expect(chat.queue).toHaveBeenCalledWith('dm-a', '发送时的正文', { files: [] });
     expect(chat.saveDraft.mock.calls.some(([, text]) => text === '')).toBe(false);
   });
   it('clears only an unchanged submitted draft after successful local storage', async () => {

@@ -11,6 +11,7 @@ def user_summary(row):
         "id": row["id"],
         "username": row["username"],
         "nickname": "已注销用户" if row["status"] == "deleted" else row["nickname"],
+        "avatarUrl": "/api/v1/users/" + row["id"] + "/avatar?v=" + row["avatar_id"] if row["avatar_id"] and row["status"] == "active" else None,
     }
 
 

@@ -131,6 +131,7 @@ class ChatService:
             "kind": row["kind"],
             "title": title,
             "description": row["description"],
+            "avatarUrl": peer["avatarUrl"] if peer else "/api/v1/groups/" + cid + "/avatar?v=" + row["avatar_id"] if row["avatar_id"] else None,
             "peer": peer,
             "role": meta["role"],
             "periodId": meta["periodId"],
@@ -217,10 +218,10 @@ class ChatService:
 
     def send(self, actor, cid, data):
         self.runtime.auth.security.rate("message-send", actor.id, 120, 60)
-        attachments = sorted(set(data.attachmentIds))
+        attachments = list(data.attachmentIds)
         mentions = sorted(set(data.mentionedUserIds))
         text = message_text(data.text, allow_empty=bool(attachments))
-        if len(attachments) != len(data.attachmentIds):
+        if len(set(attachments)) != len(attachments):
             raise APIError("VALIDATION_ERROR", "同一附件不能重复添加。", 422)
         payload = {
             "conversationId": cid,
