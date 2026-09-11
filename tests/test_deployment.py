@@ -29,6 +29,106 @@ def args(**kwargs):
     return SimpleNamespace(env_file=None, **kwargs)
 
 
+def install_fixture(path):
+    (path/'apps/web/dist').mkdir(parents=True)
+    (path/'apps/web/dist/index.html').write_text('<main>isolated fixture</main>')
+    (path/'.python-version').write_text(sys.executable)
+    return path
+
+
+def test_install_pins_project_environment_and_writable_paths(tmp_path, monkeypatch):
+    candidate = install_fixture(tmp_path/'candidate')
+    external = tmp_path/'protected'
+    inherited = {'UV_PROJECT': str(external), 'UV_WORKING_DIR': str(external),
+                 'UV_WORKING_DIRECTORY': str(external),
+                 'UV_PROJECT_ENVIRONMENT': str(external/'.venv'),
+                 'UV_CACHE_DIR': str(external/'cache'),
+                 'UV_PYTHON_INSTALL_DIR': str(external/'python')}
+    for key, value in inherited.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:9')
+    monkeypatch.setenv('SSL_CERT_FILE', str(tmp_path/'approved-certificate.pem'))
+    monkeypatch.setenv('TONGPIN_UV', 'isolated-uv-capture')
+    monkeypatch.setattr(deploy, 'ROOT', candidate)
+    captured = []
+    monkeypatch.setattr(deploy, 'call', lambda command, **kwargs: captured.append((command, kwargs)))
+    assert deploy.install(args(dev=False, build=False, download_python=False))['installed']
+    command, kwargs = captured[0]
+    assert command[command.index('--project')+1] == str(candidate)
+    assert command[command.index('--directory')+1] == str(candidate)
+    assert kwargs['release'] == candidate
+    env = kwargs['env']
+    assert not any(key in env for key in ('UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY'))
+    assert env['UV_PROJECT_ENVIRONMENT'] == str(candidate/'.venv')
+    assert env['UV_CACHE_DIR'] == str(candidate/'.codex/cache/uv')
+    assert env['UV_PYTHON_INSTALL_DIR'] == str(candidate/'.codex/python')
+    assert env['npm_config_cache'] == str(candidate/'.codex/cache/npm')
+    assert env['HTTPS_PROXY'] == 'http://127.0.0.1:9'
+    assert env['SSL_CERT_FILE'] == str(tmp_path/'approved-certificate.pem')
+    assert not external.exists()
+
+
+@pytest.mark.parametrize('destination', ['.venv', '.codex', '.codex/cache/uv', '.codex/cache/npm', '.codex/python'])
+def test_install_rejects_linked_destinations_before_uv(tmp_path, monkeypatch, destination):
+    candidate = install_fixture(tmp_path/'candidate')
+    protected = tmp_path/'protected'
+    protected.mkdir()
+    (protected/'keep.bin').write_bytes(b'outside the candidate')
+    link = candidate/destination
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == 'nt':
+        env = os.environ | {'TONGPIN_TEST_LINK': str(link), 'TONGPIN_TEST_TARGET': str(protected)}
+        subprocess.run(['powershell.exe', '-NoProfile', '-Command',
+                        'New-Item -ItemType Junction -Path $env:TONGPIN_TEST_LINK -Target $env:TONGPIN_TEST_TARGET | Out-Null'],
+                       env=env, capture_output=True, check=True)
+    else:
+        link.symlink_to(protected, target_is_directory=True)
+    monkeypatch.setenv('TONGPIN_UV', 'must-not-run')
+    monkeypatch.setattr(deploy, 'ROOT', candidate)
+    monkeypatch.setattr(deploy, 'call', lambda *a, **kw: pytest.fail('uv must not start for a redirected path'))
+    try:
+        with pytest.raises(ValueError, match='symlink or junction'):
+            deploy.install(args(dev=False, build=False, download_python=False))
+        assert [p.name for p in protected.iterdir()] == ['keep.bin']
+        assert (protected/'keep.bin').read_bytes() == b'outside the candidate'
+    finally:
+        # Remove only the fixture link, never recurse through the target.
+        if os.name == 'nt':
+            link.rmdir()
+        else:
+            link.unlink()
+
+
+def test_real_offline_install_ignores_external_uv_redirects(tmp_path, monkeypatch):
+    uv = os.environ.get('TONGPIN_UV') or shutil.which('uv')
+    assert uv, 'Deployment integration checks require the uv used by the installer'
+    candidate = install_fixture(tmp_path/'candidate')
+    (candidate/'pyproject.toml').write_text('[project]\nname = "isolated-install-fixture"\nversion = "0.0.0"\nrequires-python = ">=3.12"\ndependencies = []\n')
+    protected = tmp_path/'protected'
+    (protected/'.venv').mkdir(parents=True)
+    (protected/'pyproject.toml').write_text('[project]\nname = "protected-fixture"\nversion = "0.0.0"\n')
+    (protected/'.venv/keep.bin').write_bytes(b'protected environment bytes')
+    before = {str(p.relative_to(protected)): p.read_bytes() for p in protected.rglob('*') if p.is_file()}
+    clean = {k: v for k, v in os.environ.items() if not k.startswith('UV_')}
+    clean.update(UV_CACHE_DIR=str(candidate/'.codex/cache/uv'), UV_PYTHON_DOWNLOADS='never')
+    locked = subprocess.run([uv, 'lock', '--offline', '--project', str(candidate), '--directory', str(candidate),
+                             '--python', sys.executable, '--no-python-downloads'],
+                            cwd=candidate, env=clean, text=True, capture_output=True, check=False)
+    assert locked.returncode == 0, locked.stderr
+    for key in ('UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY'):
+        monkeypatch.setenv(key, str(protected))
+    monkeypatch.setenv('UV_PROJECT_ENVIRONMENT', str(protected/'.venv'))
+    monkeypatch.setenv('UV_OFFLINE', 'true')
+    monkeypatch.setenv('TONGPIN_UV', uv)
+    monkeypatch.setattr(deploy, 'ROOT', candidate)
+    assert deploy.install(args(dev=False, build=False, download_python=False))['installed']
+    probe = subprocess.run([deploy.local_python(candidate), '-c', 'import sys; print(sys.prefix)'],
+                           text=True, capture_output=True, check=True)
+    assert Path(probe.stdout.strip()).resolve() == candidate/'.venv'
+    assert {str(p.relative_to(protected)): p.read_bytes() for p in protected.rglob('*') if p.is_file()} == before
+    assert not (protected/'uv.lock').exists()
+
+
 def bundle(path, entries):
     rows = [{'path': name, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()} for name, data in entries.items()]
     with zipfile.ZipFile(path, 'w') as archive:

@@ -109,21 +109,32 @@ def install(options):
     uv = os.environ.get('TONGPIN_UV') or shutil.which('uv')
     if not uv:
         raise ValueError('uv is missing; install uv or set TONGPIN_UV to an existing executable')
-    env = config_env(options.env_file)
-    cache = ROOT / '.codex/cache'
+    release = safe_path(ROOT)
+    env = config_env(options.env_file, release)
+    # uv can redirect both the project and the exact-sync environment through
+    # inherited settings. Validate every writable destination before any mkdir.
+    project_env = safe_path(release / '.venv')
+    cache = safe_path(release / '.codex/cache')
+    uv_cache = safe_path(cache / 'uv')
+    npm_cache = safe_path(cache / 'npm')
+    python_install = safe_path(release / '.codex/python')
+    for key in ('UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY'):
+        env.pop(key, None)
     cache.mkdir(parents=True, exist_ok=True)
-    env.update(UV_CACHE_DIR=str(cache / 'uv'), UV_PYTHON_INSTALL_DIR=str(ROOT / '.codex/python'),
-               npm_config_cache=str(cache / 'npm'), UV_LINK_MODE='copy')
-    args = [uv, 'sync', '--locked', '--python', (ROOT / '.python-version').read_text().strip()]
+    env.update(UV_PROJECT_ENVIRONMENT=str(project_env), UV_CACHE_DIR=str(uv_cache),
+               UV_PYTHON_INSTALL_DIR=str(python_install),
+               npm_config_cache=str(npm_cache), UV_LINK_MODE='copy')
+    args = [uv, 'sync', '--project', str(release), '--directory', str(release),
+            '--locked', '--python', (release / '.python-version').read_text().strip()]
     args += ['--group', 'dev'] if options.dev else ['--no-dev']
     if not options.download_python:
         args.append('--no-python-downloads')
-    call(args, env=env)
+    call(args, release=release, env=env)
     if options.build:
         sys.path.insert(0, str(ROOT / 'scripts'))
         from _common import npm
-        call(npm('ci', '--ignore-scripts', '--no-audit', '--no-fund'), env=env)
-        call([local_python(ROOT), str(ROOT / 'scripts/build.py')], env=env)
+        call(npm('ci', '--ignore-scripts', '--no-audit', '--no-fund'), release=release, env=env)
+        call([local_python(release), str(release / 'scripts/build.py')], release=release, env=env)
     elif not (ROOT / 'apps/web/dist/index.html').is_file():
         raise ValueError('Python installed. This source checkout needs install --build (Node/npm), or a verified release bundle containing apps/web/dist')
     return {'installed': True, 'developmentDependencies': options.dev, 'frontendBuilt': options.build, 'dataModified': False}
