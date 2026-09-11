@@ -337,9 +337,17 @@ class FileService:
                 derived = []
             if state == "ready" and row["purpose"] != "message":
                 # Only remove the original after the ready metadata commits.
-                # A filesystem failure is retried by cleanup; it is never served.
+                # A snapshot may still need its earlier processing-state original.
+                # Keep the hold check and unlink under the same storage lock.
                 try:
-                    source.unlink(missing_ok=True)
+                    with self.storage_lock:
+                        with self.runtime.db.read() as conn:
+                            hold = conn.execute("SELECT value FROM instance_metadata WHERE key='backup_active'").fetchone()
+                        if hold and hold[0] == "1":
+                            with self.runtime.db.write() as conn:
+                                self.schedule_cleanup(conn, 60000)
+                        else:
+                            source.unlink(missing_ok=True)
                 except OSError:
                     pass
             return {"state": state}

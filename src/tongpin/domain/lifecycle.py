@@ -133,6 +133,48 @@ class LifecycleService:
         self.runtime.presence_changed(actor.id)
         return {"deleted": True, "recoverBefore": deadline}
 
+    def purge_message_in(self, conn, mid, timestamp):
+        """Idempotent erasure shared by live retention and authority replay."""
+        conn.execute(
+            "UPDATE attachments SET message_id=NULL,state='expired',expires_at=?,error_code='CONTENT_PURGED' WHERE message_id=?",
+            (timestamp, mid),
+        )
+        conn.execute("DELETE FROM message_reactions WHERE message_id=?", (mid,))
+        conn.execute(
+            "UPDATE messages SET status='purged',text='',reply_id=NULL,mentioned_ids='[]',mention_all=0,removed_reason=NULL WHERE id=?",
+            (mid,),
+        )
+
+    def purge_account_in(self, conn, uid, timestamp):
+        """Erase private data after memberships close, retaining audited references."""
+        conn.execute(
+            "UPDATE users SET status='deleted',nickname='已注销用户',bio='',password_hash='!',site_role='user',preferences='{}',totp_secret=NULL,totp_last_counter=-1,avatar_id=NULL,muted_until=NULL,quota_bytes=NULL,updated_at=? WHERE id=?",
+            (timestamp, uid),
+        )
+        conn.execute(
+            "UPDATE attachments SET avatar_bound=0,state='expired',expires_at=?,error_code='ACCOUNT_DELETED' WHERE owner_id=? AND message_id IS NULL",
+            (timestamp, uid),
+        )
+        conn.execute(
+            "DELETE FROM reauth_tokens WHERE session_id IN(SELECT id FROM sessions WHERE user_id=?)",
+            (uid,),
+        )
+        conn.execute("DELETE FROM admin_previews WHERE actor_id=?", (uid,))
+        conn.execute(
+            "UPDATE sessions SET token_hash='erased:'||id,device='',second_factor_at=NULL,revoked_at=COALESCE(revoked_at,?),expires_at=?,last_seen_at=0,idle_ms=0 WHERE user_id=?",
+            (timestamp, timestamp, uid),
+        )
+        conn.execute(
+            "DELETE FROM sessions WHERE user_id=? AND NOT EXISTS(SELECT 1 FROM admin_commands c WHERE c.session_id=sessions.id)",
+            (uid,),
+        )
+        for table in ("recovery_codes", "reset_credentials", "bookmarks", "friend_preferences", "blocks", "notifications"):
+            conn.execute("DELETE FROM " + table + " WHERE user_id=?", (uid,))
+        conn.execute(
+            "UPDATE friend_requests SET note='',status=CASE WHEN status='pending' THEN 'cancelled' ELSE status END,updated_at=? WHERE sender_id=? OR target_id=?",
+            (timestamp, uid, uid),
+        )
+
     def cleanup(self, job=None):
         counts = {
             "messagesPurged": 0,
@@ -156,15 +198,7 @@ class LifecycleService:
             for row in removed:
                 # Unbinding alone would make a ready upload visible to its owner.
                 # Revoke the file state in the same transaction before file GC.
-                conn.execute(
-                    "UPDATE attachments SET message_id=NULL,state='expired',expires_at=?,error_code='CONTENT_PURGED' WHERE message_id=?",
-                    (timestamp, row["id"]),
-                )
-                conn.execute("DELETE FROM message_reactions WHERE message_id=?", (row["id"],))
-                conn.execute(
-                    "UPDATE messages SET status='purged',text='',reply_id=NULL,mentioned_ids='[]',mention_all=0,removed_reason=NULL WHERE id=?",
-                    (row["id"],),
-                )
+                self.purge_message_in(conn, row["id"], timestamp)
                 self.runtime.events.publish(
                     conn,
                     self.runtime.access.recipients(conn, row["conversation_id"]),
@@ -214,40 +248,10 @@ class LifecycleService:
                 ).fetchone():
                     more_accounts = True
                     continue
-                conn.execute(
-                    "UPDATE users SET status='deleted',nickname='已注销用户',bio='',password_hash='!',site_role='user',preferences='{}',totp_secret=NULL,totp_last_counter=-1,avatar_id=NULL,muted_until=NULL,quota_bytes=NULL,updated_at=? WHERE id=?",
-                    (timestamp, uid),
-                )
-                conn.execute(
-                    "UPDATE attachments SET avatar_bound=0,state='expired',expires_at=?,error_code='ACCOUNT_DELETED' WHERE owner_id=? AND message_id IS NULL",
-                    (timestamp, uid),
-                )
-                conn.execute(
-                    "DELETE FROM reauth_tokens WHERE session_id IN(SELECT id FROM sessions WHERE user_id=?)",
-                    (uid,),
-                )
                 # Pending previews no longer have an actor who can submit them.
                 # Completed command receipts retain only a non-authenticating
                 # session reference; device data and the old credential are erased.
-                conn.execute("DELETE FROM admin_previews WHERE actor_id=?", (uid,))
-                conn.execute(
-                    "UPDATE sessions SET token_hash='erased:'||id,device='',second_factor_at=NULL,revoked_at=COALESCE(revoked_at,?),expires_at=?,last_seen_at=0,idle_ms=0 WHERE user_id=?",
-                    (timestamp, timestamp, uid),
-                )
-                conn.execute(
-                    "DELETE FROM sessions WHERE user_id=? AND NOT EXISTS(SELECT 1 FROM admin_commands c WHERE c.session_id=sessions.id)",
-                    (uid,),
-                )
-                conn.execute("DELETE FROM recovery_codes WHERE user_id=?", (uid,))
-                conn.execute("DELETE FROM reset_credentials WHERE user_id=?", (uid,))
-                conn.execute("DELETE FROM bookmarks WHERE user_id=?", (uid,))
-                conn.execute("DELETE FROM friend_preferences WHERE user_id=?", (uid,))
-                conn.execute("DELETE FROM blocks WHERE user_id=?", (uid,))
-                conn.execute("DELETE FROM notifications WHERE user_id=?", (uid,))
-                conn.execute(
-                    "UPDATE friend_requests SET note='',status=CASE WHEN status='pending' THEN 'cancelled' ELSE status END,updated_at=? WHERE sender_id=? OR target_id=?",
-                    (timestamp, uid, uid),
-                )
+                self.purge_account_in(conn, uid, timestamp)
                 self.runtime.events.user_changed(conn, uid)
                 audit(conn, None, "account.delete.complete", uid)
                 counts["accountsPurged"] += 1

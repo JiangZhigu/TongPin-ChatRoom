@@ -264,6 +264,14 @@ def apply_current_authority(clone, authority_path, check):
             conn.execute(
                 "UPDATE conversation_preferences SET read_seq=MIN(read_seq,(SELECT last_seq FROM conversations WHERE id=conversation_id))"
             )
+            # Terminal states no longer enter the ordinary expiry selectors.
+            # Reapply the same erasure to old snapshot relations before success.
+            for row in conn.execute("SELECT id FROM messages WHERE status='purged'").fetchall():
+                check()
+                clone.lifecycle.purge_message_in(conn, row[0], now_ms())
+            for row in conn.execute("SELECT id FROM users WHERE status='deleted'").fetchall():
+                check()
+                clone.lifecycle.purge_account_in(conn, row[0], now_ms())
             audit(
                 conn,
                 None,
