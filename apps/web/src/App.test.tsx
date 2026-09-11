@@ -7,6 +7,7 @@ import { ConversationList } from './components/ConversationList';
 import { Composer } from './components/Composer';
 import { api, setCsrfToken } from './lib/api';
 import type { UserView } from './auth-types';
+import { StrictMode } from 'react';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); setCsrfToken(''); window.history.replaceState({}, '', '/'); });
 function healthyResponse(url: string) {
@@ -58,6 +59,53 @@ const dataReply = (data: unknown) => Promise.resolve({ ok: true, status: 200, js
 const failureReply = (code = 'AUTH_REQUIRED') => Promise.resolve({ ok: false, status: 401, json: async () => ({ error: { code, message: code === 'REAUTH_FAILED' ? '当前密码不正确' : '登录会话已失效' } }) });
 const captchaReply = () => dataReply({ captchaId: 'expiry-captcha', image: 'data:image/png;base64,', expiresAt: Date.now() + 120000 });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((finish) => { resolve = finish; }); return { promise, resolve }; }
+
+describe('M2 bootstrap StrictMode', () => {
+  it.each(['login', 'register'] as const)('creates one anonymous flow and submits its CSRF token through the actual %s form', async (operation) => {
+    let bootstrapCalls = 0;
+    let cookieFlowToken = '';
+    const submissions: { path: string; csrfToken: string | null; body: Record<string, unknown> }[] = [];
+    vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit = {}) => {
+      if (url.endsWith('/bootstrap')) {
+        // A first anonymous request has no flow cookie: each network request
+        // would create a distinct flow cookie and matching CSRF token.
+        const csrfToken = `anonymous-flow-${++bootstrapCalls}-csrf`;
+        cookieFlowToken = csrfToken;
+        return dataReply({ ...bootstrapData(null), registrationMode: 'open', csrfToken });
+      }
+      if (url.endsWith('/captcha')) return captchaReply();
+      if (url.endsWith(`/auth/${operation}`)) {
+        const csrfToken = new Headers(options.headers).get('X-CSRF-Token');
+        submissions.push({ path: url, csrfToken, body: JSON.parse(options.body as string) });
+        if (csrfToken !== cookieFlowToken) return Promise.resolve({ ok: false, status: 403, json: async () => ({ error: { code: 'CSRF_INVALID', message: '验证码流程与CSRF不匹配' } }) });
+        return dataReply({ user: expiryUser, csrfToken: 'post-auth-test-token', expiresAt: Date.now() + 60000, ...(operation === 'register' ? { recoveryCodes: ['STRICT-MODE-TEST-RECOVERY'] } : {}) });
+      }
+      throw new Error(`Unexpected test request: ${url}`);
+    }));
+    render(<StrictMode><App /></StrictMode>);
+    await screen.findByRole('heading', { name: '欢迎回来' });
+    if (operation === 'register') fireEvent.click(screen.getByRole('button', { name: '注册' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled());
+    expect(bootstrapCalls).toBe(1);
+    fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'strict_mode_user' } });
+    fireEvent.change(screen.getByLabelText('密码', { exact: true }), { target: { value: 'a strict mode test password' } });
+    fireEvent.change(screen.getByLabelText('图形验证码'), { target: { value: 'ABCDEF' } });
+    if (operation === 'register') {
+      fireEvent.change(screen.getByLabelText('昵称'), { target: { value: '严格模式测试' } });
+      fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'a strict mode test password' } });
+      fireEvent.click(screen.getByRole('checkbox', { name: '我已阅读并同意上述服务条款与隐私说明' }));
+      fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
+      expect(await screen.findByRole('heading', { name: '保存你的恢复码' })).toBeInTheDocument();
+    } else {
+      fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
+      expect(await screen.findByRole('heading', { name: '欢迎来到同频' })).toBeInTheDocument();
+    }
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]).toMatchObject({ path: `/api/v1/auth/${operation}`, csrfToken: 'anonymous-flow-1-csrf', body: { username: 'strict_mode_user', captchaId: 'expiry-captcha', captchaAnswer: 'ABCDEF' } });
+    expect(bootstrapCalls).toBe(1);
+    expect(screen.queryByText('验证码流程与CSRF不匹配')).not.toBeInTheDocument();
+  });
+});
 
 describe('M2 auth expiry', () => {
   it.each(['read', 'write', 'logout'] as const)('clears settings identity after AUTH_REQUIRED on %s', async (operation) => {
@@ -124,10 +172,14 @@ describe('M2 auth expiry', () => {
     }));
     render(<App />);
     await act(async () => { await api('/api/v1/account/sessions').catch(() => undefined); await api('/api/v1/account/security-events').catch(() => undefined); });
-    expect(bootstrapCalls).toBe(2);
+    // A new identity's flow must wait for the old Set-Cookie response to settle.
+    expect(bootstrapCalls).toBe(1);
+    await act(async () => initial.resolve(await dataReply(bootstrapData(expiryUser))));
+    await waitFor(() => expect(bootstrapCalls).toBe(2));
+    expect(screen.getByRole('heading', { name: '正在连接同频' })).toBeInTheDocument();
+    expect(screen.queryByText(expiryUser.nickname)).not.toBeInTheDocument();
     await act(async () => refreshed.resolve(await dataReply(bootstrapData(null))));
     expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
-    await act(async () => initial.resolve(await dataReply(bootstrapData(expiryUser))));
     expect(screen.getByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
     expect(screen.queryByText(expiryUser.nickname)).not.toBeInTheDocument();
   });

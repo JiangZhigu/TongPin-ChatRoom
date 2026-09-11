@@ -1,11 +1,36 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, onAuthExpired, setCsrfToken } from './api';
+import { api, fetchBootstrap, onAuthExpired, setCsrfToken } from './api';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); setCsrfToken(''); });
 const failure = (code: string) => ({ ok: false, status: 401, json: async () => ({ error: { code } }) });
 
 describe('API session recovery and bounded requests', () => {
+  it('shares an anonymous bootstrap request and sends its corresponding CSRF', async () => {
+    let finish!: (value: unknown) => void;
+    const fetchMock = vi.fn().mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; })).mockResolvedValue({ ok: true, json: async () => ({ data: {} }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const first = fetchBootstrap(); const second = fetchBootstrap();
+    expect(first).toBe(second); expect(fetchMock).toHaveBeenCalledTimes(1);
+    finish({ ok: true, json: async () => ({ data: { csrfToken: 'only-flow' } }) });
+    await first; await api('/login', { method: 'POST', body: {} });
+    expect(fetchMock.mock.calls[1][1].headers['X-CSRF-Token']).toBe('only-flow');
+  });
+
+  it('starts a new bootstrap after identity changes and ignores the old response token', async () => {
+    let finish!: (value: unknown) => void;
+    const fetchMock = vi.fn().mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; })).mockResolvedValue({ ok: true, json: async () => ({ data: { csrfToken: 'new-identity' } }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const old = fetchBootstrap();
+    setCsrfToken('new-identity');
+    const current = fetchBootstrap();
+    expect(current).not.toBe(old);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    finish({ ok: true, json: async () => ({ data: { csrfToken: 'old-identity' } }) }); await old; await current;
+    await api('/current', { method: 'POST', body: {} });
+    expect(fetchMock.mock.calls[2][1].headers['X-CSRF-Token']).toBe('new-identity');
+  });
+
   it('expires identity only for a session failure, keeping reauthentication failures retryable', async () => {
     setCsrfToken('current');
     const expired = vi.fn(); const unsubscribe = onAuthExpired(expired);

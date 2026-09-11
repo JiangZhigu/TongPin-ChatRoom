@@ -51,7 +51,8 @@ export async function api<T>(path: string, options: { method?: string; body?: un
       if (!response.ok) {
         const error = new APIError(response.status, payload?.error || { message: '服务暂不可用，请重试。' });
         if (['AUTH_REQUIRED', 'SESSION_REVOKED'].includes(error.code) && generation === identityGeneration) {
-          setCsrfToken('');
+          csrfToken = '';
+          identityGeneration += 1;
           for (const listener of expiredListeners) listener();
         }
         throw error;
@@ -68,4 +69,16 @@ export async function api<T>(path: string, options: { method?: string; body?: un
 
 export type User = { id: string; username: string; nickname: string; bio: string; siteRole: 'user' | 'super_admin'; status: string; createdAt: number; preferences: { invisible: boolean; readReceipts: boolean; doNotDisturb: boolean; [key: string]: unknown } };
 export type Bootstrap = { accountsEnabled: boolean; registrationMode: 'closed' | 'invite-only' | 'open'; csrfToken: string; user: User | null; terms: { version: string; operatorName: string; operatorContact: string; development: boolean; text: string } };
-export function fetchBootstrap() { return api<Bootstrap>('/api/v1/auth/bootstrap'); }
+let bootstrapFlight: { generation: number; promise: Promise<Bootstrap> } | undefined;
+export function fetchBootstrap(): Promise<Bootstrap> {
+  // StrictMode and simultaneous consumers must share one anonymous Set-Cookie response.
+  if (bootstrapFlight?.generation === identityGeneration) return bootstrapFlight.promise;
+  // A new identity waits for the previous request to settle so a delayed Set-Cookie
+  // cannot arrive after the new identity's bootstrap response.
+  const previous = bootstrapFlight;
+  const request = () => api<Bootstrap>('/api/v1/auth/bootstrap');
+  const flight = { generation: identityGeneration, promise: previous ? previous.promise.catch(() => undefined).then(request) : request() };
+  bootstrapFlight = flight;
+  void flight.promise.finally(() => { if (bootstrapFlight === flight) bootstrapFlight = undefined; }).catch(() => undefined);
+  return flight.promise;
+}
