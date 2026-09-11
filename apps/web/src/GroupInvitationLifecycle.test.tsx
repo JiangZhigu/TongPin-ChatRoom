@@ -13,7 +13,7 @@ import type { UserView } from './auth-types';
 // only chat transport so assertions concern explicit invitation continuation.
 vi.mock('./lib/chat-client', () => ({ ChatClient: class {
   state: ChatState = { phase: 'online', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null };
-  getSnapshot = () => this.state; subscribe = () => () => {}; start = async () => {}; stop = () => {}; updateUser = () => {}; refresh = async () => {};
+  getSnapshot = () => this.state; subscribe = () => () => {}; subscribeTaskEvents = () => () => {}; start = async () => {}; stop = () => {}; updateUser = () => {}; refresh = async () => {};
 } }));
 const actor: UserView = { id: 'invite-user', username: 'invite_user', nickname: '邀请测试用户', bio: '', siteRole: 'user', status: 'active', createdAt: 1, preferences: { invisible: false, readReceipts: true, doNotDisturb: false } };
 const token = 'lifecycle_group_invitation_token_12345678901234567890';

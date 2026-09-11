@@ -33,7 +33,7 @@ vi.mock('./lib/outbox', () => ({
 }));
 
 const chat = vi.hoisted(() => ({
-  state: null as ChatState | null, listeners: new Set<() => void>(),
+  state: null as ChatState | null, listeners: new Set<() => void>(), taskEvents: new Set<(event: { type: string; entityRef: string; conversationId: string | null }) => void>(),
   start: vi.fn<() => Promise<void>>(), stop: vi.fn<() => void>(), updateUser: vi.fn(),
   select: vi.fn<(id: string | null) => Promise<void>>(), older: vi.fn<() => Promise<void>>(),
   queue: vi.fn<(id: string, text: string, options?: { files: LocalAttachment[]; replyToMessageId?: string | null; mentionedUserIds?: string[]; mentionAll?: boolean }) => Promise<void>>(), retry: vi.fn<(id: string) => Promise<void>>(), cancel: vi.fn<(id: string) => Promise<void>>(),
@@ -45,6 +45,7 @@ const chat = vi.hoisted(() => ({
 }));
 vi.mock('./lib/chat-client', () => ({ ChatClient: class {
   getSnapshot = () => chat.state!;
+  subscribeTaskEvents = (listener: (event: { type: string; entityRef: string; conversationId: string | null }) => void) => { chat.taskEvents.add(listener); return () => { chat.taskEvents.delete(listener); }; };
   subscribe = (listener: () => void) => { chat.listeners.add(listener); return () => { chat.listeners.delete(listener); }; };
   start = chat.start; stop = chat.stop; updateUser = chat.updateUser; selectConversation = chat.select; loadOlder = chat.older;
   queue = chat.queue; retry = chat.retry; cancel = chat.cancel; getDraft = chat.getDraft; saveDraft = chat.saveDraft;
@@ -73,7 +74,7 @@ function dimensions(element: HTMLElement, initialHeight = 1000, initialTop = 200
 }
 beforeEach(() => {
   for (const value of Object.values(chat)) if (vi.isMockFunction(value)) value.mockReset();
-  chat.listeners.clear(); chat.state = freshState(); chat.histories = {};
+  chat.listeners.clear(); chat.taskEvents.clear(); chat.state = freshState(); chat.histories = {};
   for (const value of Object.values(taskUI)) if (vi.isMockFunction(value)) value.mockReset(); taskUI.listeners.clear(); taskUI.users = [];
   taskUI.state = { revision: 0, listRevision: 0, entities: {}, invalid: {}, online: false, enabled: true, enhanced: true, error: null };
   offline.read.mockReset().mockResolvedValue(null); offline.remove.mockReset().mockResolvedValue(); offline.listeners.clear();
@@ -683,5 +684,27 @@ describe('V3 deletion and IME integration', () => {
   });
   it('keeps IME enter and task buttons separate from the chat send action', () => {
     const send = vi.fn(); const create = vi.fn(); render(<Composer value="正在输入" onChange={vi.fn()} onSend={send} onCreateTask={create} />); const input = screen.getByLabelText('消息内容'); fireEvent.compositionStart(input); fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: true }); expect(send).not.toHaveBeenCalled(); expect(screen.getByRole('button', { name: '新建待办' })).toBeDisabled(); fireEvent.compositionEnd(input); fireEvent.click(screen.getByRole('button', { name: '新建待办' })); expect(create).toHaveBeenCalledTimes(1); expect(send).not.toHaveBeenCalled(); fireEvent.keyDown(input, { key: 'Enter', shiftKey: true }); expect(send).not.toHaveBeenCalled(); fireEvent.keyDown(input, { key: 'Enter' }); expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+describe('V3 source preview authority repair', () => {
+  const location = (text: string, status: Message['status'] = 'sent') => ({ conversation: conversation(), targetId: 'source-message', items: [{ ...message('source-message', '1', text), status }], hasBefore: false, hasAfter: false });
+  const emit = (type: string) => act(() => chat.taskEvents.forEach((receive) => receive({ type, entityRef: 'source-message', conversationId: 'dm-a' })));
+  async function opening() { enableTasks(); chat.histories['dm-a'] = [message('source-message', '1', 'CAPTURED-OLD-SOURCE')]; showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '转为待办' })); return screen.findByRole('dialog', { name: '从消息创建待办' }); }
+  it('never displays captured source text while initial authoritative context is pending', async () => {
+    const pending = deferred<Awaited<ReturnType<typeof response>>>(); vi.mocked(fetch).mockImplementation(() => pending.promise as Promise<Response>); const dialog = await opening(); expect(within(dialog).queryByText('CAPTURED-OLD-SOURCE')).not.toBeInTheDocument(); await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/v1/messages/source-message/context', expect.anything()));
+    await act(async () => pending.resolve(await response(location('FRESH-SOURCE')))); await within(dialog).findByText('FRESH-SOURCE'); expect(chat.jump).not.toHaveBeenCalled(); expect(chat.select).toHaveBeenCalledTimes(1);
+  });
+  it('invalidates source confirmation on message changes, rejects late contexts and preserves user input', async () => {
+    vi.mocked(fetch).mockImplementation(() => response(location('ORIGINAL-SERVER-SOURCE')) as Promise<Response>); const dialog = await opening(); await within(dialog).findByText('ORIGINAL-SERVER-SOURCE'); fireEvent.change(screen.getByLabelText(/待办标题/), { target: { value: '本人持续编辑' } }); fireEvent.click(screen.getByRole('checkbox', { name: /我已核对消息来源/ }));
+    const earlier = deferred<Awaited<ReturnType<typeof response>>>(); const newer = deferred<Awaited<ReturnType<typeof response>>>(); vi.mocked(fetch).mockImplementationOnce(() => earlier.promise as Promise<Response>).mockImplementationOnce(() => newer.promise as Promise<Response>); emit('message.updated'); expect(within(dialog).queryByText('ORIGINAL-SERVER-SOURCE')).not.toBeInTheDocument(); expect(screen.getByRole('checkbox', { name: /我已核对消息来源/ })).not.toBeChecked(); expect(screen.getByRole('button', { name: '确认创建待办' })).toBeDisabled(); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); emit('message.updated'); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    await act(async () => newer.resolve(await response(location('NEWEST-SOURCE')))); await within(dialog).findByText('NEWEST-SOURCE'); await act(async () => earlier.resolve(await response(location('LATE-STALE-SOURCE')))); expect(within(dialog).queryByText('LATE-STALE-SOURCE')).not.toBeInTheDocument(); expect(screen.getByLabelText(/待办标题/)).toHaveValue('本人持续编辑'); expect(screen.getByRole('checkbox', { name: /我已核对消息来源/ })).not.toBeChecked(); expect(taskUI.create).not.toHaveBeenCalled();
+  });
+  it('hides recalled or revoked source content without discarding the user form', async () => {
+    vi.mocked(fetch).mockImplementation(() => response(location('READABLE-SOURCE')) as Promise<Response>); const dialog = await opening(); await within(dialog).findByText('READABLE-SOURCE'); fireEvent.change(screen.getByLabelText(/待办标题/), { target: { value: '保留本机填写标题' } }); vi.mocked(fetch).mockImplementation(() => response(location('', 'recalled')) as Promise<Response>); emit('message.updated'); await within(dialog).findByText('来源消息当前不可用，请重新核对。'); expect(within(dialog).queryByText('READABLE-SOURCE')).not.toBeInTheDocument(); expect(screen.getByLabelText(/待办标题/)).toHaveValue('保留本机填写标题');
+    emit('access.revoked'); expect(screen.getByRole('button', { name: '确认创建待办' })).toBeDisabled(); expect(screen.getByLabelText(/待办标题/)).toHaveValue('保留本机填写标题'); expect(taskUI.create).not.toHaveBeenCalled(); expect(chat.jump).not.toHaveBeenCalled();
+  });
+  it('rejects a pending source read after access is revoked and retains local input', async () => {
+    vi.mocked(fetch).mockImplementation(() => response(location('BEFORE-REVOKE-SOURCE')) as Promise<Response>); const dialog = await opening(); await within(dialog).findByText('BEFORE-REVOKE-SOURCE'); fireEvent.change(screen.getByLabelText(/待办标题/), { target: { value: '不会丢失的本人输入' } });
+    const pending = deferred<Awaited<ReturnType<typeof response>>>(); vi.mocked(fetch).mockImplementationOnce(() => pending.promise as Promise<Response>); emit('message.updated'); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); emit('access.revoked'); await act(async () => pending.resolve(await response(location('LATE-REVOKED-SOURCE')))); expect(within(dialog).queryByText('LATE-REVOKED-SOURCE')).not.toBeInTheDocument(); expect(screen.getByLabelText(/待办标题/)).toHaveValue('不会丢失的本人输入'); expect(screen.getByRole('checkbox', { name: /我已核对消息来源/ })).toBeDisabled(); expect(taskUI.create).not.toHaveBeenCalled();
   });
 });

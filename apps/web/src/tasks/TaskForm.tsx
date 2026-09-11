@@ -7,11 +7,11 @@ import type { Task, TaskCreate, TaskDraft, TaskFields, TaskMeta, TaskPatch, Task
 import { AssignmentPicker, TaskFieldsEditor, useCreationPolicy } from './TaskFieldsEditor';
 import { CommandFeedback, TaskConflict, taskError, TaskLoadState, TaskUnavailable, useTaskCommand, useTaskState } from './TaskShared';
 
-export type TaskSourcePreview = { messageId: string; conversationId: string; text: string };
-export type TaskFormProps = { client: TaskClient; userId: string; conversations: Conversation[]; meta: TaskMeta; task?: Task; mode?: 'create' | 'edit' | 'copy'; initialGroupId?: string; source?: TaskSourcePreview; snapshot?: { messageId: string; value: TaskSnapshot }; draft?: TaskDraft; onSaved: (task: Task) => void; onClose: () => void; onDraftSaved?: () => void } & TaskConversationPaging;
+export type TaskSourcePreview = { messageId: string; conversationId: string; text: string; available?: boolean; revision?: number };
+export type TaskFormProps = { client: TaskClient; userId: string; conversations: Conversation[]; meta: TaskMeta; task?: Task; mode?: 'create' | 'edit' | 'copy'; initialGroupId?: string; source?: TaskSourcePreview; onRefreshSource?: () => void; snapshot?: { messageId: string; value: TaskSnapshot }; draft?: TaskDraft; onSaved: (task: Task) => void; onClose: () => void; onDraftSaved?: () => void } & TaskConversationPaging;
 const fromTask = (task: Task): TaskFields => ({ title: task.title, description: task.description, priority: task.priority, dueOn: task.dueOn, dueTimezone: task.dueTimezone, assigneeId: task.assignee?.id || null, listId: task.listId, tagIds: task.tagIds });
 export function TaskForm(props: TaskFormProps) { return <Form key={`${props.userId}:${props.task?.id || props.draft?.id || 'new'}:${props.mode || ''}`} {...props} />; }
-function Form({ client, userId, conversations, meta, task, mode = task ? 'edit' : 'create', initialGroupId, source, snapshot, draft, onSaved, onClose, onDraftSaved, ...paging }: TaskFormProps) {
+function Form({ client, userId, conversations, meta, task, mode = task ? 'edit' : 'create', initialGroupId, source, onRefreshSource, snapshot, draft, onSaved, onClose, onDraftSaved, ...paging }: TaskFormProps) {
   const mounted = useRef(true); useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const state = useTaskState(client); const command = useTaskCommand(client); const [base, setBase] = useState(task);
   const draftCreate = draft?.kind === 'create' ? draft.payload as TaskCreate : undefined;
@@ -19,6 +19,8 @@ function Form({ client, userId, conversations, meta, task, mode = task ? 'edit' 
   const [groupId, setGroupId] = useState(mode === 'copy' ? initialGroupId || '' : task?.groupId || draftCreate?.groupId || initialGroupId || '');
   const [fields, setFields] = useState<TaskFields>(() => ({ ...(task ? fromTask(task) : { title: snapshot?.value.title || '', description: snapshot?.value.description || '', priority: snapshot?.value.priority || 'normal', dueOn: snapshot?.value.dueOn || null, dueTimezone: snapshot?.value.dueTimezone || meta.preferences.timezone, assigneeId: userId, listId: null, tagIds: [] }), ...draft?.payload, ...(mode === 'copy' ? { assigneeId: userId, listId: null, tagIds: [] } : {}) }));
   const [confirmed, setConfirmed] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState(''); const [savingDraft, setSavingDraft] = useState(false); const [draftId, setDraftId] = useState(draft?.id); const [saved, setSaved] = useState<Task | null>(null); const [cleanupError, setCleanupError] = useState('');
+  const sourceUnavailable = !!source && source.available !== true;
+  useEffect(() => { setConfirmed(false); }, [source?.messageId, source?.revision, source?.available]);
   const current = task ? state.entities[task.id] : undefined; const unavailable = !!task && (!current || state.invalid[task.id] || current.viewerId !== userId);
   const policy = useCreationPolicy(client, scope === 'group' ? groupId || null : null, state.online && (mode === 'create' || mode === 'copy'));
   const sourceGroup = source ? conversations.find((item) => item.id === source.conversationId && item.kind === 'group') : undefined;
@@ -40,6 +42,7 @@ function Form({ client, userId, conversations, meta, task, mode = task ? 'edit' 
     return { ...common, scope, groupId: scope === 'group' ? groupId : null, ...(source ? { sourceMessageId: source.messageId } : draftCreate?.sourceMessageId ? { sourceMessageId: draftCreate.sourceMessageId } : {}), ...(snapshot ? { snapshotMessageId: snapshot.messageId } : draftCreate?.snapshotMessageId ? { snapshotMessageId: draftCreate.snapshotMessageId } : {}) };
   }
   function validate() {
+    if (sourceUnavailable) return '来源消息当前不可用，请重新核对。';
     if ([...fields.title.trim()].length < 1 || [...fields.title.trim()].length > 120) return '标题须为 1–120 个字符。';
     if ([...fields.description].length > 4000 || new TextEncoder().encode(fields.description).byteLength > 16384) return '描述不能超过 4,000 个字符或 16 KiB。';
     try { new Intl.DateTimeFormat('zh-CN', { timeZone: fields.dueTimezone.trim() }).format(); } catch { return '请输入有效的任务时区，例如 Asia/Shanghai。'; }
@@ -48,7 +51,7 @@ function Form({ client, userId, conversations, meta, task, mode = task ? 'edit' 
     return '';
   }
   async function submit() {
-    if (command.busy || savingDraft || saved || !state.online || !currentPermission || !creationPermission || unavailable) return;
+    if (command.busy || savingDraft || saved || !state.online || !currentPermission || !creationPermission || unavailable || sourceUnavailable) return;
     if (draft && draft.expiresAt <= Date.now()) { setError('此草稿已过期，不能直接提交。请返回草稿列表确认建立新草稿。'); return; }
     const issue = validate(); setError(issue); if (issue) return;
     const payload = data(); if (mode === 'edit' && !Object.keys(payload).length) { setError('尚未修改任何字段。'); return; }
@@ -69,15 +72,15 @@ function Form({ client, userId, conversations, meta, task, mode = task ? 'edit' 
         {mode !== 'edit' && <fieldset className="task-form-fields" disabled={locked}><label className="form-field">可见范围<select value={scope} disabled={mode === 'copy' || !!snapshot || !!draftCreate?.snapshotMessageId} onChange={(event) => { setScope(event.target.value as typeof scope); if (sourceGroup && event.target.value === 'group') setGroupId(sourceGroup.id); setFields({ ...fields, assigneeId: userId, listId: null, tagIds: [] }); setConfirmed(false); }}><option value="personal">个人 · 仅自己可见</option>{(!source || sourceGroup) && <option value="group">群共享</option>}</select></label>{scope === 'group' && <label className="form-field">所属群<select required value={groupId} onChange={(event) => { setGroupId(event.target.value); setFields({ ...fields, assigneeId: userId }); setConfirmed(false); }}><option value="">选择当前群</option>{conversations.filter((item) => item.kind === 'group' && (!source || item.id === source.conversationId)).map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>}</fieldset>}
         <p className={scope === 'personal' ? 'task-private-note' : 'warning-note'}>{scope === 'personal' ? '个人待办仅本人可见；分享静态副本不开放原任务。' : '群共享：当前及未来加入的成员可见当前摘要、描述与检查项。'}</p>
         {scope === 'group' && mode !== 'edit' && state.online && <TaskLoadState {...policy} />}{mode !== 'edit' && !source && <MoreTaskConversations {...paging} />}
-        {source && <section className="task-source-preview"><h3>消息来源预览</h3><p>{source.text || '此消息没有可复制的文本。'}</p><p>只建立经服务器核对的来源关系，不自动复制附件或分享任务。</p></section>}
+        {source && <section className="task-source-preview"><h3>消息来源预览</h3><p>{sourceUnavailable ? '来源消息当前不可用，请重新核对。' : source.text || '此消息没有可复制的文本。'}</p>{onRefreshSource && <button type="button" className="secondary-button" disabled={locked || !state.online} onClick={onRefreshSource}>重新核对来源消息</button>}<p>只建立经服务器核对的来源关系，不自动复制附件或分享任务。</p></section>}
         <TaskFieldsEditor fields={fields} onChange={setFields} userId={userId} groupId={scope === 'group' ? groupId || null : null} meta={meta} allowAssignOthers={allowOthers} assignDisabled={mode === 'edit' && !current?.capabilities.assign} disabled={locked || !currentPermission} />
-        {(mode === 'copy' || source || snapshot || draftCreate?.sourceMessageId || draftCreate?.snapshotMessageId) && <label className="task-check"><input type="checkbox" checked={confirmed} disabled={locked} onChange={(event) => setConfirmed(event.target.checked)} />{mode === 'copy' ? '我已核对以上选中字段，确认创建新群实体并让当前及未来成员可见' : snapshot || draftCreate?.snapshotMessageId ? '我已核对静态副本内容，确认创建自己的新待办，不修改原任务' : '我已核对消息来源与所选可见范围，确认创建独立待办'}</label>}
+        {(mode === 'copy' || source || snapshot || draftCreate?.sourceMessageId || draftCreate?.snapshotMessageId) && <label className="task-check"><input type="checkbox" checked={confirmed} disabled={locked || sourceUnavailable} onChange={(event) => setConfirmed(event.target.checked)} />{mode === 'copy' ? '我已核对以上选中字段，确认创建新群实体并让当前及未来成员可见' : snapshot || draftCreate?.snapshotMessageId ? '我已核对静态副本内容，确认创建自己的新待办，不修改原任务' : '我已核对消息来源与所选可见范围，确认创建独立待办'}</label>}
         {scope === 'group' && !group && <p className="task-error">该群不在当前群列表中，请重新同步或选择可用群。</p>}
         {reason && <p className="warning-note">{reason}</p>}{!currentPermission && <p className="warning-note">当前没有编辑或复制权限。</p>}
         {!state.online && <p className="warning-note">当前离线，只能保存创建或编辑草稿；不会自动创建、改派或分享。</p>}
         {error && <p role="alert" className="task-error">{error}</p>}<CommandFeedback {...command} />
         {command.conflict && <TaskConflict latest={command.conflict} draft={data() as Record<string, unknown>} onAccept={() => { setBase(command.conflict!); command.clear(); }} />}
-        <div className="task-actions"><button className="primary-button" disabled={command.busy || savingDraft || !state.online || !currentPermission || !creationPermission || !!command.conflict || (scope === 'group' && !group)}>{command.busy ? '正在提交…' : command.unknown ? '用同一编号核对并重试' : mode === 'copy' ? '确认创建群副本' : mode === 'edit' ? '保存待办修改' : '确认创建待办'}</button>{mode !== 'copy' && <button type="button" className="secondary-button" disabled={locked} onClick={() => void saveDraft()}>{savingDraft ? '正在保存草稿…' : '保存本机草稿'}</button>}</div>
+        <div className="task-actions"><button className="primary-button" disabled={command.busy || savingDraft || !state.online || !currentPermission || !creationPermission || sourceUnavailable || !!command.conflict || (scope === 'group' && !group)}>{command.busy ? '正在提交…' : command.unknown ? '用同一编号核对并重试' : mode === 'copy' ? '确认创建群副本' : mode === 'edit' ? '保存待办修改' : '确认创建待办'}</button>{mode !== 'copy' && <button type="button" className="secondary-button" disabled={locked} onClick={() => void saveDraft()}>{savingDraft ? '正在保存草稿…' : '保存本机草稿'}</button>}</div>
       </form>{notice && <p role="status" className="success-note">{notice}</p>}
     </>}
     <button className="text-button" disabled={command.busy || savingDraft} onClick={onClose}>关闭</button>
