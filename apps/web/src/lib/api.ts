@@ -38,7 +38,7 @@ export function onAuthExpired(listener: () => void): () => void {
   return () => { expiredListeners.delete(listener); };
 }
 
-export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; inviteToken?: string; responseType?: 'blob'; upload?: { id: string; blob: Blob } } = {}): Promise<T> {
+export async function api<T>(path: string, options: { method?: string; body?: unknown; signal?: AbortSignal; inviteToken?: string; responseType?: 'blob'; timeoutMs?: number; upload?: { id: string; blob: Blob } } = {}): Promise<T> {
   const method = options.method || 'GET';
   const generation = identityGeneration;
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -50,6 +50,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     headers['Content-Type'] = 'application/octet-stream'; headers['X-Upload-Id'] = options.upload.id;
   }
   const controller = new AbortController();
+  const binaryTimeout = options.responseType === 'blob' && typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) ? Math.max(REQUEST_TIMEOUT_MS, Math.min(600000, options.timeoutMs)) : REQUEST_TIMEOUT_MS;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   let cancel: (() => void) | undefined;
   const interrupted = new Promise<never>((_, reject) => {
@@ -57,9 +58,9 @@ export async function api<T>(path: string, options: { method?: string; body?: un
     if (options.signal?.aborted) cancel();
     else options.signal?.addEventListener('abort', cancel, { once: true });
     timeout = setTimeout(() => {
-      reject(new APIError(0, { code: 'REQUEST_TIMEOUT', message: ['GET', 'HEAD'].includes(method) ? '请求超时，请检查网络后重试。' : '请求超时，结果尚未确认。请先刷新确认结果，避免重复提交。' }));
+      reject(new APIError(0, { code: 'REQUEST_TIMEOUT', message: options.responseType === 'blob' ? '文件读取超时，请检查连接后重试。' : ['GET', 'HEAD'].includes(method) ? '请求超时，请检查网络后重试。' : '请求超时，结果尚未确认。请先刷新确认结果，避免重复提交。' }));
       controller.abort();
-    }, options.upload ? 120000 : REQUEST_TIMEOUT_MS);
+    }, options.upload ? 120000 : binaryTimeout);
   });
   try {
     return await Promise.race([interrupted, (async () => {
@@ -103,7 +104,7 @@ export async function api<T>(path: string, options: { method?: string; body?: un
   }
 }
 
-export function apiBlob(path: string, options: { body: unknown; signal?: AbortSignal }): Promise<Blob> {
+export function apiBlob(path: string, options: { body: unknown; signal?: AbortSignal; timeoutMs?: number }): Promise<Blob> {
   return api<Blob>(path, { ...options, method: 'POST', responseType: 'blob' });
 }
 

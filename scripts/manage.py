@@ -32,6 +32,7 @@ def main():
     sub.add_parser(
         "init-admin", help="Interactively create the first administrator; no default credentials."
     )
+    sub.add_parser('recover-admin', help='Offline host-only interactive recovery of an existing administrator; reasons, new password and verified authenticator required.')
     policy = sub.add_parser(
         "registration",
         help="Set local registration access. Production remains closed unless explicitly configured.",
@@ -92,6 +93,25 @@ def main():
             print("Save these separate second-factor recovery codes offline:")
             print("\n".join(factors))
             print("Administrator initialized. Close this private console after saving the codes.")
+        elif args.command == 'recover-admin':
+            username = validate_username(input('Existing administrator username: '))
+            reason = clean_text(input('Reason and identity verification performed (5-1000 characters): '), 5, 1000, 'reason')
+            if input('Repeat the administrator username to confirm host recovery: ') != username:
+                raise ValueError('Confirmation did not match; no account was changed')
+            password = validate_password(getpass.getpass('New password (15-128 characters): '))
+            if password != getpass.getpass('Repeat new password: '):
+                raise ValueError('Passwords do not match')
+            secret = pyotp.random_base32()
+            print('Add this NEW secret in a private environment. The previous factor will be revoked:')
+            print(secret)
+            print(pyotp.TOTP(secret).provisioning_uri(name=username, issuer_name='Tongpin'))
+            code = getpass.getpass('Current code from the NEW authenticator: ')
+            result = runtime.admin.recover_local_administrator(username, password, secret, code, reason)
+            print('Save the new password recovery codes offline:')
+            print('\n'.join(result['recoveryCodes']))
+            print('Save these separate new second-factor recovery codes offline:')
+            print('\n'.join(result['secondFactorRecoveryCodes']))
+            print('Recovery committed and audited. Old device sessions and recovery credentials are invalid.')
         elif args.command == "registration":
             reason = clean_text(args.reason, 5, 1000, "reason")
             if runtime.settings.production and args.mode == "open":

@@ -10,6 +10,7 @@ class JobRepository:
     def __init__(self, database: Database):
         self.db = database
         self.failure_handlers = {}
+        self.failure_observer = None
 
     def enqueue(self, kind, payload=None, *, entity_id="", dedupe_key=None, run_after=None):
         with self.db.write() as connection:
@@ -104,3 +105,5 @@ class JobRepository:
             if status == "failed" and handler:
                 # The job and its domain result become terminal in the same commit.
                 handler(connection, row, str(code)[:80])
+            if self.failure_observer:
+                self.failure_observer(identifier, code, status)

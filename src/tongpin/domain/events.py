@@ -192,6 +192,14 @@ class EventService:
                         alert = conn.execute('SELECT title,status FROM admin_alerts WHERE id=?', (row['entity_ref'],)).fetchone()
                         if alert:
                             item['text'] = alert['title'] + ('（已恢复）' if alert['status'] == 'resolved' else '，请查看运行监控。')
+                elif row['kind'] == 'system.notice':
+                    try:
+                        notice = self.runtime.admin.system_notice_in(conn, actor.id, row['entity_ref'])
+                        item['text'] = notice['title']
+                    except APIError:
+                        item['text'] = '系统通知当前不可访问。'
+                elif row['kind'] == 'administrator.invited':
+                    item['text'] = '收到管理员验证器绑定邀请，请在账号与安全中核对。'
                 elif row["kind"] == "report.created":
                     if actor.user["site_role"] == "super_admin":
                         item.update(text="收到新的治理举报，请进入全站后台处理", reportId=row["entity_ref"])

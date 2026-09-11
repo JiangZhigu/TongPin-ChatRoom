@@ -287,4 +287,4 @@ class LifecycleService:
                 (json.dumps({"at": timestamp, **counts}),),
             )
         self.runtime.revalidate_connections()
-        return counts | {"heldByBackup": False}
+        return counts | {"heldByBackup": False, "morePending": more}

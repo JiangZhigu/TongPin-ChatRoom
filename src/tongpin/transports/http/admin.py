@@ -5,6 +5,7 @@ from flask import Blueprint, g, request
 from tongpin.admin.authz import bounded_limit
 from tongpin.contracts.admin import AdminExecuteInput, AdminPreviewInput
 from tongpin.contracts.admin_s2 import ContentSearch, FileRead, FileSearch, SensitiveRead
+from tongpin.contracts.admin_s3 import AuditFilters, LogFilters, OperationDownload
 from tongpin.transports.http.auth import parse, principal, runtime, success
 from tongpin.transports.http.files import send_content
 
@@ -190,3 +191,59 @@ def settings_versions():
 @admin_blueprint.get("/site-invites")
 def site_invites():
     return success(runtime().admin.site_invites(principal(admin=True), **pagination()))
+
+
+@admin_blueprint.get('/announcements')
+def announcements():
+    return success(runtime().admin.announcements(principal(admin=True), status=request.args.get('status', ''), **pagination()))
+
+
+@admin_blueprint.get('/announcements/<aid>')
+def announcement(aid):
+    return success(runtime().admin.announcement(principal(admin=True), aid))
+
+
+@admin_blueprint.get('/administrators')
+def administrators():
+    return success(runtime().admin.administrators(principal(admin=True), **pagination()))
+
+
+def query_model(model):
+    values = {key: value for key, value in request.args.items() if key not in ('after', 'limit')}
+    for field in ('fromAt', 'until'):
+        if field in values:
+            try:
+                values[field] = int(values[field])
+            except ValueError:
+                pass  # The strict schema returns the normal validation response.
+    return model.model_validate(values)
+
+
+@admin_blueprint.get('/audit')
+def audit_events():
+    return success(runtime().admin.audit_events(principal(admin=True), query_model(AuditFilters), **pagination()))
+
+
+@admin_blueprint.get('/logs')
+def runtime_logs():
+    return success(runtime().admin.runtime_log_events(principal(admin=True), query_model(LogFilters), **pagination()))
+
+
+@admin_blueprint.get('/operations')
+def operations():
+    return success(runtime().admin.operations(principal(admin=True), kind=request.args.get('kind', ''), status=request.args.get('status', ''), **pagination()))
+
+
+@admin_blueprint.get('/operations/<oid>')
+def operation(oid):
+    return success(runtime().admin.operation(principal(admin=True), oid))
+
+
+@admin_blueprint.get('/jobs')
+def jobs():
+    return success(runtime().admin.operations(principal(admin=True), kind=request.args.get('kind', ''), status=request.args.get('status', ''), jobs=True, **pagination()))
+
+
+@admin_blueprint.post('/operations/<oid>/download')
+def operation_download(oid):
+    return send_content(runtime().admin.operation_download(principal(admin=True), oid, parse(OperationDownload), g.request_id), download=True)

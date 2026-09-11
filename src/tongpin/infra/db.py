@@ -129,13 +129,13 @@ class Database:
             ).fetchone()[0]
             return {"schemaVersion": version, "sqliteVersion": sqlite3.sqlite_version}
 
-    def backup(self, destination: Path) -> None:
+    def backup(self, destination: Path, *, check=lambda: None) -> None:
         if destination.exists():
             raise FileExistsError("Backup destination already exists")
         source = self.connect()
         target = sqlite3.connect(destination)
         try:
-            source.backup(target, pages=256)
+            source.backup(target, pages=256, progress=lambda status, remaining, total: check())
             result = target.execute("PRAGMA integrity_check").fetchone()[0]
             if result != "ok" or target.execute("PRAGMA foreign_key_check").fetchall():
                 raise RuntimeError("Backup integrity check failed")

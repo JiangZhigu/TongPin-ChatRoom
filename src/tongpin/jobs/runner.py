@@ -5,16 +5,17 @@ import logging
 
 
 class JobRunner:
-    def __init__(self, repository, executor, *, kinds=None, excluded_kinds=()):
+    def __init__(self, repository, executor, *, kinds=None, excluded_kinds=(), lease_ms=60000):
         self.repository = repository
         self.executor = executor
         self.handlers = {}
         self._task = None
         self._stop = asyncio.Event()
         self.kinds, self.excluded_kinds = kinds, excluded_kinds
+        self.lease_ms = lease_ms
 
     def claim(self):
-        return self.repository.claim(kinds=self.kinds, excluded_kinds=self.excluded_kinds)
+        return self.repository.claim(self.lease_ms, kinds=self.kinds, excluded_kinds=self.excluded_kinds)
 
     def start(self):
         self._task = asyncio.create_task(self._run(), name="tongpin-jobs")

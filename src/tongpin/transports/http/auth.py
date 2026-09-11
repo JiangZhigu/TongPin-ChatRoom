@@ -5,6 +5,7 @@ import secrets
 
 from flask import Blueprint, current_app, g, jsonify, request
 
+from tongpin.contracts.admin_s3 import EnrollmentFinish, EnrollmentStart
 from tongpin.contracts.auth import (
     LoginInput,
     PasswordInput,
@@ -40,6 +41,26 @@ def success(data, status=200):
 
 def parse(model=InputModel):
     return model.model_validate(request.get_json())
+
+
+@auth_blueprint.get('/api/v1/account/admin-enrollment')
+def admin_enrollment():
+    return success(runtime().admin.enrollment_status(principal()))
+
+
+@auth_blueprint.post('/api/v1/account/admin-enrollment/start')
+def admin_enrollment_start():
+    return success(runtime().admin.enrollment_start(principal(), parse(EnrollmentStart)))
+
+
+@auth_blueprint.post('/api/v1/account/admin-enrollment/finish')
+def admin_enrollment_finish():
+    return success(runtime().admin.enrollment_finish(principal(), parse(EnrollmentFinish)))
+
+
+@auth_blueprint.get('/api/v1/announcements/<aid>')
+def system_notice(aid):
+    return success(runtime().admin.system_notice(principal(), aid))
 
 
 def require_csrf():

@@ -438,11 +438,20 @@ class FileService:
 
     def cleanup(self, job=None):
         removed = 0
+        files_removed, bytes_released = 0, 0
+
+        def unlink_counted(path):
+            nonlocal files_removed, bytes_released
+            if path.is_file():
+                size = path.stat().st_size
+                path.unlink()
+                files_removed += 1
+                bytes_released += size
         with self.storage_lock, self.runtime.db.write() as conn:
             hold = conn.execute("SELECT value FROM instance_metadata WHERE key='backup_active'").fetchone()
             if hold and hold[0] == "1":
                 self.schedule_cleanup(conn)
-                return {"removed": 0, "heldByBackup": True}
+                return {"removed": 0, "filesRemoved": 0, "bytesReleased": 0, "heldByBackup": True}
             rows = conn.execute("SELECT * FROM attachments WHERE message_id IS NULL AND avatar_bound=0 AND expires_at<=? AND quota_bytes>0 ORDER BY expires_at LIMIT 100", (now_ms(),)).fetchall()
             for row in rows:
                 if row["state"] == "uploading" and (row["lease_until"] or 0) > now_ms():
@@ -450,14 +459,14 @@ class FileService:
                 try:
                     for key in {row["storage_key"], row["preview_key"], row["thumbnail_key"], row["storage_key"] + ".preview.webp", row["storage_key"] + ".thumbnail.webp"}:
                         if key:
-                            self.path(key).unlink(missing_ok=True)
+                            unlink_counted(self.path(key))
                 except OSError:
                     continue
                 conn.execute("UPDATE attachments SET state=CASE WHEN state IN ('cancelled','rejected') THEN state ELSE 'expired' END,quota_bytes=0,lease_token=NULL,lease_until=NULL,error_code=CASE WHEN state IN ('cancelled','rejected') THEN error_code ELSE 'UPLOAD_EXPIRED' END WHERE id=?", (row["id"],))
                 removed += 1
             for row in conn.execute("SELECT storage_key FROM attachments WHERE state='ready' AND purpose<>'message' LIMIT 100"):
                 try:
-                    self.path(row["storage_key"]).unlink(missing_ok=True)
+                    unlink_counted(self.path(row["storage_key"]))
                 except OSError:
                     pass
             conn.execute("DELETE FROM attachments WHERE quota_bytes=0 AND message_id IS NULL AND avatar_bound=0 AND expires_at<?", (now_ms() - 8 * DAY,))
@@ -466,5 +475,5 @@ class FileService:
         for path in islice(self.runtime.paths.temporary.glob("upload-*.part"), 100):
             checked = self.path(path.name, temporary=True)
             if now_ms() - int(checked.stat().st_mtime * 1000) > 600000:
-                checked.unlink(missing_ok=True)
-        return {"removed": removed}
+                unlink_counted(checked)
+        return {"removed": removed, "filesRemoved": files_removed, "bytesReleased": bytes_released}

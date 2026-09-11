@@ -33,6 +33,10 @@ AdminAction = Literal[
     "file.quarantine", "file.release", "file.revoke", "user.quota",
     "report.claim", "report.reopen", "report.reject", "report.resolve",
     "settings.update", "settings.rollback", "site_invite.create", "site_invite.revoke",
+    "announcement.create", "announcement.withdraw",
+    "administrator.invite", "administrator.cancel", "administrator.revoke", "administrator.factor_reset",
+    "export.create", "backup.create", "backup.verify", "backup.drill", "storage.cleanup",
+    "operation.cancel", "operation.retry", "job.retry",
 ]
 
 

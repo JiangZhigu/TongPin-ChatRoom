@@ -65,6 +65,10 @@ def create_http_app(runtime):
             (time.perf_counter() - g.get("started_at", time.perf_counter())) * 1000,
             path=request.path if request.method == 'POST' else '',
         )
+        if response.status_code >= 400:
+            payload = response.get_json(silent=True) if response.is_json else None
+            error = payload.get('error', {}) if isinstance(payload, dict) else {}
+            runtime.logs.push(error.get('code', 'HTTP_ERROR'), level='error' if response.status_code >= 500 else 'warning', route=request.method + ' ' + (request.url_rule.rule if request.url_rule else '(unmatched)'), status=response.status_code, actor_id=g.principal.id if hasattr(g, 'principal') else None, request_id=g.get('request_id'))
         return response
 
     @app.errorhandler(APIError)
@@ -107,7 +111,7 @@ def create_http_app(runtime):
     @app.errorhandler(Exception)
     def unexpected_error(error):
         logging.getLogger("tongpin").error(
-            "Unhandled request error %s [%s]", type(error).__name__, g.get("request_id", "")
+            "Unhandled request error %s [%s]", type(error).__name__, g.get("request_id", ""), extra={'request_id': g.get('request_id')}
         )
         return api_error(APIError("INTERNAL_ERROR", "服务暂时无法完成此操作。", 500))
 

@@ -28,3 +28,19 @@
 .admin-policy-fields small { color: #657a93; font-size: 12px; line-height: 1.7; }
 .admin-policy-fields .admin-policy-toggle { flex-direction: row; align-items: center; flex-wrap: wrap; }.admin-policy-toggle small { flex-basis: 100%; }
 @media (max-width: 600px) { .admin-filters-grid, .admin-policy-fields { grid-template-columns: minmax(0, 1fr); }.admin-sensitive-form { padding: 16px; } }
+.admin-s3-form, .admin-s3-form fieldset { display: grid; gap: 16px; min-width: 0; }
+.admin-s3-form { margin-block: 16px; }
+.admin-s3-form label { display: grid; gap: 7px; min-width: 0; color: #354e70; }
+.admin-s3-form input:not([type=checkbox]), .admin-s3-form select, .admin-s3-form textarea { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #cdd7e6; border-radius: 7px; color: #253957; background: white; font: inherit; }
+.admin-s3-form textarea { resize: vertical; }
+.admin-s3-form .admin-check { display: flex; align-items: center; }
+.admin-s3-form button { justify-self: start; }
+.admin-s3-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.admin-preserve-text { white-space: pre-wrap; overflow-wrap: anywhere; font-weight: 400; }
+.admin-json { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; background: #f4f7fb; padding: 12px; font-weight: 400; }
+.admin-table details { max-width: 600px; margin-block: 8px; font-weight: 400; }
+.admin-table summary { cursor: pointer; color: #254db4; }
+.admin-table small { display: block; overflow-wrap: anywhere; }
+.admin-table progress { max-width: 180px; width: 100%; accent-color: #2858c7; }
+.admin-enrollment-secret { overflow-wrap: anywhere; }
+@media (max-width: 600px) { .admin-s3-fields { grid-template-columns: minmax(0, 1fr); } }

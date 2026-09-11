@@ -383,7 +383,7 @@ async def test_cleanup_holds_backup_retries_disk_failure_and_leaves_bound_file(f
     orphan = upload(rt, one, conversation, body, "orphan.png")
     rt.files.cancel(one, orphan["id"])
     with rt.db.write() as conn:
-        conn.execute("INSERT INTO instance_metadata(key,value) VALUES('backup_active','1')")
+        conn.execute("INSERT INTO instance_metadata(key,value) VALUES('backup_active','1') ON CONFLICT(key) DO UPDATE SET value='1'")
         orphan_row = rt.files.row(conn, orphan["id"])
     assert rt.files.cleanup()["heldByBackup"]
     with rt.db.write() as conn:

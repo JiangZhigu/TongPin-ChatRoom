@@ -38,6 +38,7 @@ async def admin_app(settings):
     await rt.runner.stop()
     await rt.file_runner.stop()
     await rt.admin_runner.stop()
+    await rt.operation_runner.stop()
     rt._stopping.set()
     await rt._metric_task
     tokens, factors, totp_secrets = [], [], []

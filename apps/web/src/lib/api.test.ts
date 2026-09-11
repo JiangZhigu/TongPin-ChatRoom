@@ -92,6 +92,35 @@ describe('API session recovery and bounded requests', () => {
 });
 
 describe('audited binary reads', () => {
+  it('permits a bulk binary read beyond 15 seconds but caps the full body wait at ten minutes', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const blob = vi.fn(() => new Promise<Blob>(() => undefined));
+    vi.stubGlobal('fetch', vi.fn((_url, options) => { signal = options.signal; return Promise.resolve({ ok: true, blob }); }));
+    const pending = apiBlob('/bulk-archive', { body: { reason: '核对大归档' }, timeoutMs: 900000 });
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT', message: expect.stringContaining('文件读取超时') });
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(blob).toHaveBeenCalledTimes(1); expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(585000); await assertion;
+    expect(signal?.aborted).toBe(true); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('keeps ordinary requests at 15 seconds even when a binary timeout option is passed', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => new Promise(() => undefined) }));
+    const pending = api('/ordinary-timeout', { timeoutMs: 600000 });
+    const assertion = expect(pending).rejects.toMatchObject({ code: 'REQUEST_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(15000); await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('cancels a long binary body read immediately and removes its timer', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, blob: () => new Promise(() => undefined) }));
+    const pending = apiBlob('/cancel-bulk', { body: { reason: '取消大归档' }, timeoutMs: 600000, signal: controller.signal });
+    const assertion = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(17000); controller.abort(); await assertion;
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('uses the current session and CSRF with a POST reason and returns the actual bytes', async () => {
     setCsrfToken('binary-session');
     const blob = new Blob(['bounded-test-file']);

@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+from tongpin.admin.audit import safe_details
 from tongpin.admin.authz import compact, conflict, fingerprint, mute_until, unavailable
 from tongpin.admin.monitoring import validate_thresholds
+from tongpin.admin.operations import OPERATION_ACTIONS
 from tongpin.admin.validation import validate_s2_parameters
+from tongpin.admin.validation_s3 import validate_s3_parameters
 from tongpin.contracts.base import APIError
 from tongpin.domain.auth import Principal
 from tongpin.domain.security import audit
@@ -17,6 +20,20 @@ class CommandsAdmin:
     def action_impacts(payload):
         action, parameters = payload["action"], payload["parameters"]
         descriptions = {
+            'announcement.create': '创建持久发送任务，以系统身份投递到预览中的固定名单。实际发送结果请查看公告记录。',
+            'announcement.withdraw': '停止未发送部分，已收到者重新读取时看到撤回提示。',
+            'administrator.invite': '发出24小时内有效的管理邀请。目标本人必须验证密码及新验证器后才能获得权限。',
+            'administrator.cancel': '取消待完成的管理邀请和绑定挑战。',
+            'administrator.revoke': '撤销目标站点权限、旧第二因素及设备授权；保留普通账号。',
+            'administrator.factor_reset': '人工核验后废止旧因素及全部设备，目标以普通账号重新完成验证器绑定后才恢复站点权限。',
+            'export.create': '创建有数量/大小预算的私有导出任务，完成后原管理会话24小时内可下载。',
+            'backup.create': '创建数据库与附件完整备份任务。任务完成及完整性检查通过后才可下载。',
+            'backup.verify': '创建归档签名、文件校验和数据库完整性检查任务。',
+            'backup.drill': '在新隔离目录验证恢复，重新执行当前权限与到期规则，不替换本实例数据库。',
+            'storage.cleanup': '清理已到期且无有效引用的文件，记录实际释放空间和保留原因。',
+            'operation.cancel': '请求停止未完成步骤。已完成结果保留记录，最终状态以任务处理器回报为准。',
+            'operation.retry': '按当前权限和预算创建新任务，原失败或取消记录保留。',
+            'job.retry': '重新排入已注册且可安全重试的失败后台任务。',
             "user.ban": "封禁所列账号，并撤销其全部设备会话与再认证授权。",
             "user.unban": "解除账号封禁；此前撤销的设备需要重新登录。",
             "user.unmute": "解除所列账号的全站禁言。",
@@ -79,6 +96,8 @@ class CommandsAdmin:
 
     @staticmethod
     def validate_parameters(action, targets, parameters):
+        if validate_s3_parameters(action, targets, parameters):
+            return
         if validate_s2_parameters(action, targets, parameters):
             return
         expected = (
@@ -116,6 +135,12 @@ class CommandsAdmin:
             validate_thresholds(parameters["values"])
 
     def inspect_target(self, conn, action, target, parameters):
+        if action in OPERATION_ACTIONS:
+            return self.inspect_operation(conn, action, target, parameters)
+        if action.startswith('announcement.'):
+            return self.inspect_announcement(conn, action, target, parameters)
+        if action.startswith('administrator.'):
+            return self.inspect_administrator(conn, action, target, parameters)
         if action.startswith("message."):
             return self.inspect_content(conn, action, target, parameters)
         if action.startswith("file."):
@@ -367,13 +392,21 @@ class CommandsAdmin:
         self.runtime.auth.current_in_transaction(conn, actor, admin=True)
         parameters = json.loads(command["parameters_json"])
         code, message, status = None, None, "succeeded"
+        before = None
         conn.execute("SAVEPOINT admin_target")
         try:
             self.validate_parameters(command["action"], [item["target_id"]], parameters)
             snap, _, _ = self.inspect_target(conn, command["action"], item["target_id"], parameters)
+            before = safe_details(snap)
             if fingerprint(snap) != item["fingerprint"]:
                 raise conflict()
-            if command["action"].startswith("user."):
+            if command['action'] in OPERATION_ACTIONS:
+                message = self.apply_operation(conn, command, item['target_id'], parameters)
+            elif command['action'].startswith('announcement.'):
+                message = self.apply_announcement(conn, command, item['target_id'], parameters)
+            elif command['action'].startswith('administrator.'):
+                message = self.apply_administrator(conn, command, item['target_id'], parameters)
+            elif command["action"].startswith("user."):
                 message = self.apply_user(conn, command, item["target_id"], parameters)
             elif command["action"] == "session.revoke":
                 message = self.apply_session(conn, item["target_id"])
@@ -414,7 +447,8 @@ class CommandsAdmin:
                 "requestId": command["request_id"],
                 "jobId": command["job_id"],
                 "beforeFingerprint": item["fingerprint"],
-                "parameters": parameters,
+                "before": before,
+                "parameters": safe_details(parameters),
                 "code": code,
             },
         )

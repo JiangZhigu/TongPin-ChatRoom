@@ -25,6 +25,7 @@ from tongpin.infra.executors import BlockingExecutor
 from tongpin.infra.metrics import Metrics
 from tongpin.infra.paths import DataPaths
 from tongpin.infra.runtime_lock import RuntimeLock
+from tongpin.infra.runtime_logs import RuntimeLogs
 from tongpin.jobs.repository import JobRepository
 from tongpin.jobs.runner import JobRunner
 
@@ -39,9 +40,10 @@ class Runtime:
         self.cache = BoundedCache()
         self.executor = BlockingExecutor(settings.blocking_workers, settings.blocking_backlog)
         self.jobs = JobRepository(self.db)
-        self.runner = JobRunner(self.jobs, self.executor, excluded_kinds=("files.process", "admin.execute"))
+        self.runner = JobRunner(self.jobs, self.executor, excluded_kinds=("files.process", "admin.execute", "admin.operation"))
         self.file_runner = JobRunner(self.jobs, self.executor, kinds=("files.process",))
         self.admin_runner = JobRunner(self.jobs, self.executor, kinds=("admin.execute",))
+        self.operation_runner = JobRunner(self.jobs, self.executor, kinds=("admin.operation",), lease_ms=900000)
         self.metrics = Metrics()
         self.db.metrics = self.metrics
         self.ready = False
@@ -66,6 +68,8 @@ class Runtime:
         self.interactions = InteractionService(self)
         self.lifecycle = LifecycleService(self)
         self.admin = AdminService(self)
+        self.logs = RuntimeLogs(self)
+        self.jobs.failure_observer = lambda job_id, code, status: self.logs.push(code, level='error' if status == 'failed' else 'warning', job_id=job_id)
         self.runner.handlers["events.dispatch"] = self._dispatch_job
         self.runner.handlers["groups.expire"] = self.groups.expire_job
         self.runner.handlers["files.cleanup"] = self.files.cleanup
@@ -73,6 +77,11 @@ class Runtime:
         self.runner.handlers["retention.cleanup"] = self.lifecycle.cleanup
         self.admin_runner.handlers['admin.execute'] = self.admin.process_command
         self.jobs.failure_handlers['admin.execute'] = self.admin.fail_command
+        self.runner.handlers['announcements.publish'] = self.admin.publish_announcement
+        self.jobs.failure_handlers['announcements.publish'] = self.admin.fail_announcement
+        self.operation_runner.handlers['admin.operation'] = self.admin.process_operation
+        self.jobs.failure_handlers['admin.operation'] = self.admin.fail_operation
+        self.runner.handlers['backups.schedule'] = self.admin.scheduled_backup
 
     def initialize(self):
         self.paths.prepare()
@@ -85,6 +94,7 @@ class Runtime:
             if not self.secret:
                 self.secret = self.paths.development_secret()
             self.auth = AuthService(self)
+            self.admin.initialize_operations()
             self.files.initialize()
             self.lifecycle.initialize()
             self.ready = True
@@ -96,9 +106,11 @@ class Runtime:
     async def start(self):
         self.loop = asyncio.get_running_loop()
         await self.executor.run(self.initialize)
+        logging.getLogger('tongpin').addHandler(self.logs)
         self.runner.start()
         self.file_runner.start()
         self.admin_runner.start()
+        self.operation_runner.start()
         self._metric_task = asyncio.create_task(self._sample_metrics(), name="tongpin-metrics")
 
     async def _sample_metrics(self):
@@ -106,6 +118,7 @@ class Runtime:
             try:
                 sample = await self.executor.run(self.metrics.sample)
                 await self.executor.run(self.admin.sample_alerts, sample)
+                await self.executor.run(self.logs.persist)
             except Exception:  # noqa: BLE001 -- Monitoring failure must not disable session checks.
                 logging.getLogger("tongpin").error("Runtime monitoring sample failed")
             try:
@@ -130,6 +143,11 @@ class Runtime:
         await self.runner.stop()
         await self.file_runner.stop()
         await self.admin_runner.stop()
+        await self.operation_runner.stop()
+        try:
+            await self.executor.run(self.logs.persist)
+        finally:
+            logging.getLogger('tongpin').removeHandler(self.logs)
         self.admin.secrets.clear()
         self.cache.clear()
         self.interactions.typing_cache.clear()
