@@ -68,7 +68,7 @@ class JobRepository:
             if row is None:
                 return None
             connection.execute(
-                "UPDATE jobs SET status='running',attempts=attempts+1,lease_until=? WHERE id=?",
+                "UPDATE jobs SET status='running',attempts=attempts+1,lease_until=?,dedupe_key=CASE WHEN kind='events.dispatch' THEN NULL ELSE dedupe_key END WHERE id=?",
                 (now + lease_ms, row["id"]),
             )
             result = dict(row)

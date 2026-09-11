@@ -32,7 +32,32 @@ class Database:
         self.path = path
         self.migrations = migrations or Path(__file__).resolve().parents[1] / "migrations"
         self._writer = threading.RLock()
+        self._anchor = None
         self.metrics = None
+
+    def keep_open(self) -> None:
+        # An idle, transaction-free connection prevents every short-lived operation
+        # from becoming WAL's last connection and checkpointing on close. It never
+        # serves requests; request connections retain normal thread ownership.
+        with self._writer:
+            if self._anchor is None:
+                connection = sqlite3.connect(
+                    self.path, timeout=5, isolation_level=None, check_same_thread=False
+                )
+                try:
+                    connection.execute("PRAGMA foreign_keys=ON")
+                    connection.execute("PRAGMA synchronous=FULL")
+                    connection.execute("PRAGMA busy_timeout=5000")
+                except BaseException:
+                    connection.close()
+                    raise
+                self._anchor = connection
+
+    def close(self) -> None:
+        with self._writer:
+            if self._anchor is not None:
+                connection, self._anchor = self._anchor, None
+                connection.close()
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -61,13 +86,18 @@ class Database:
     def write(self) -> Iterator[sqlite3.Connection]:
         started = time.perf_counter()
         with self._writer:
+            stages = {"lock": (time.perf_counter() - started) * 1000}
+            phase = time.perf_counter()
             connection = self.connect()
+            stages["connect"] = (time.perf_counter() - phase) * 1000
             wait_ms, failed = None, False
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 wait_ms = (time.perf_counter() - started) * 1000
                 yield connection
+                phase = time.perf_counter()
                 connection.commit()
+                stages["commit"] = (time.perf_counter() - phase) * 1000
             except sqlite3.Error:
                 failed = True
                 connection.rollback()
@@ -76,9 +106,13 @@ class Database:
                 connection.rollback()
                 raise
             finally:
+                phase = time.perf_counter()
                 connection.close()
+                stages["close"] = (time.perf_counter() - phase) * 1000
+                stages["total"] = (time.perf_counter() - started) * 1000
                 if self.metrics:
                     self.metrics.database_write(wait_ms if wait_ms is not None else (time.perf_counter() - started) * 1000, failed)
+                    self.metrics.database_stages(stages)
 
     def migrate(self) -> list[int]:
         with self._writer:

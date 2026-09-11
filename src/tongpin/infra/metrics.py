@@ -16,6 +16,8 @@ class Metrics:
         self._samples = deque(maxlen=720)
         self._ws_latencies = deque(maxlen=2000)
         self._db_waits = deque(maxlen=2000)
+        self._db_stages = {key: deque(maxlen=2000) for key in ('lock', 'connect', 'commit', 'close', 'total')}
+        self.executor_stats = None
         self._lock = threading.Lock()
 
     def request(self, status, milliseconds, path=''):
@@ -43,6 +45,11 @@ class Metrics:
             self._counts['dbWriteErrors'] += int(failed)
             self._db_waits.append(milliseconds)
 
+    def database_stages(self, stages):
+        with self._lock:
+            for key, milliseconds in stages.items():
+                self._db_stages[key].append(milliseconds)
+
     @staticmethod
     def p95(values):
         ordered = sorted(values)
@@ -56,6 +63,9 @@ class Metrics:
             "cpuPercent": self._process.cpu_percent(),
             "threads": self._process.num_threads(),
         }
+        if self.executor_stats:
+            stats = self.executor_stats()
+            data.update(executorInflight=stats['inflight'], executorCapacity=stats['capacity'], executorRejected=stats['rejected'])
         with self._lock:
             if not self._samples:
                 data['cpuPercent'] = None
@@ -64,6 +74,7 @@ class Metrics:
             data['latencyP95Ms'] = self.p95(self._latencies)
             data['wsLatencyP95Ms'] = self.p95(self._ws_latencies)
             data['dbWaitP95Ms'] = self.p95(self._db_waits)
+            data['dbStageP95Ms'] = {key: self.p95(rows) for key, rows in self._db_stages.items()}
             self._samples.append(data)
         return data
 

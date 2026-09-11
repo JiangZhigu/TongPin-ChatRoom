@@ -15,9 +15,11 @@ class BlockingExecutor:
         self._capacity = workers + backlog
         self._inflight = 0
         self._closed = False
+        self._rejected = 0
 
     async def run(self, function, *args, **kwargs):
         if self._closed or self._inflight >= self._capacity:
+            self._rejected += 1
             raise CapacityExceeded("Blocking work queue is full")
         self._inflight += 1
         loop = asyncio.get_running_loop()
@@ -30,7 +32,7 @@ class BlockingExecutor:
         self._inflight -= 1
 
     def stats(self):
-        return {"inflight": self._inflight, "capacity": self._capacity}
+        return {"inflight": self._inflight, "capacity": self._capacity, "rejected": self._rejected, "closed": self._closed}
 
     def close(self):
         self._closed = True

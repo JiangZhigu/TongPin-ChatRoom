@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 
 
 class JobRunner:
-    def __init__(self, repository, executor, *, kinds=None, excluded_kinds=(), lease_ms=60000):
+    def __init__(self, repository, executor, *, kinds=None, excluded_kinds=(), lease_ms=60000, async_timeout=15):
         self.repository = repository
         self.executor = executor
         self.handlers = {}
@@ -13,6 +14,7 @@ class JobRunner:
         self._stop = asyncio.Event()
         self.kinds, self.excluded_kinds = kinds, excluded_kinds
         self.lease_ms = lease_ms
+        self.async_timeout = async_timeout
 
     def claim(self):
         return self.repository.claim(self.lease_ms, kinds=self.kinds, excluded_kinds=self.excluded_kinds)
@@ -41,7 +43,12 @@ class JobRunner:
                         )
                     else:
                         try:
-                            result = await self.executor.run(handler, job)
+                            if inspect.iscoroutinefunction(handler):
+                                # Async socket hints must not occupy a worker while
+                                # waiting for current-authority reads in that same pool.
+                                result = await asyncio.wait_for(handler(job), timeout=self.async_timeout)
+                            else:
+                                result = await self.executor.run(handler, job)
                         except Exception:  # noqa: BLE001 -- A failed durable job must not stop the runner.
                             await self.executor.run(
                                 self.repository.fail,

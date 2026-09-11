@@ -46,6 +46,7 @@ class Runtime:
         self.admin_runner = JobRunner(self.jobs, self.executor, kinds=("admin.execute",))
         self.operation_runner = JobRunner(self.jobs, self.executor, kinds=("admin.operation",), lease_ms=900000)
         self.metrics = Metrics()
+        self.metrics.executor_stats = self.executor.stats
         self.db.metrics = self.metrics
         self.ready = False
         self.auth = None
@@ -110,6 +111,11 @@ class Runtime:
     async def start(self):
         self.loop = asyncio.get_running_loop()
         await self.executor.run(self.initialize)
+        try:
+            await self.executor.run(self.db.keep_open)
+        except BaseException:
+            await self.stop()
+            raise
         logging.getLogger('tongpin').addHandler(self.logs)
         self.runner.start()
         self.file_runner.start()
@@ -166,9 +172,12 @@ class Runtime:
             try:
                 self.executor.close()
             finally:
-                self.lock.release()
-                if tempfile.tempdir == str(self.paths.temporary):
-                    tempfile.tempdir = self._previous_tempdir
+                try:
+                    self.db.close()
+                finally:
+                    self.lock.release()
+                    if tempfile.tempdir == str(self.paths.temporary):
+                        tempfile.tempdir = self._previous_tempdir
 
     @property
     def features(self):
@@ -296,20 +305,9 @@ class Runtime:
                 if self.transport:
                     await self.transport.emit(event, payload, to=sid)
 
-    def _dispatch_job(self, job):
-        if not self.loop or self.loop.is_closed():
-            raise RuntimeError("Event loop is unavailable")
-
-        async def dispatch():
-            for uid in job["payload"]["userIds"]:
-                await self.emit_to_user(uid, "sync.available", {})
-
-        future = asyncio.run_coroutine_threadsafe(dispatch(), self.loop)
-        try:
-            future.result(timeout=15)
-        except BaseException:
-            future.cancel()
-            raise
+    async def _dispatch_job(self, job):
+        for uid in job["payload"]["userIds"]:
+            await self.emit_to_user(uid, "sync.available", {})
         return {"hintDelivered": True}
 
     async def validate_connections(self):

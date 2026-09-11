@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from tongpin.contracts.base import APIError
 from tongpin.contracts.chat import sequence
 from tongpin.domain.chat import activity_cursor, next_activity
@@ -21,7 +24,13 @@ class EventService:
                 (uid, kind, ref, cid, now_ms()),
             )
         # The notification hint and data change commit together. Delivery may retry.
-        self.runtime.jobs.enqueue_in_transaction(conn, "events.dispatch", {"userIds": users})
+        # The hint contains no event payload: one pending hint can wake the same
+        # recipients for every committed event. Claim atomically releases its key,
+        # so events committed after that claim always create a subsequent hint.
+        hint_key = hashlib.sha256(json.dumps(users, separators=(",", ":")).encode()).hexdigest()
+        self.runtime.jobs.enqueue_in_transaction(
+            conn, "events.dispatch", {"userIds": users}, dedupe_key="pending-hint:" + hint_key
+        )
 
     def notify(self, conn, user_id, kind, ref, actor_id=None):
         nid = identifier("n_")
