@@ -18,10 +18,11 @@ vi.mock('./lib/tasks-client', () => ({ TaskClient: class {
 // Only the unrelated chat transport is isolated; bootstrap and auth use real api().
 vi.mock('./lib/chat-client', () => ({
   ChatClient: class {
-    private snapshot = { phase: 'online', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null };
+    private snapshot = { phase: 'connecting', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null };
+    private listeners = new Set<() => void>();
     getSnapshot = () => this.snapshot;
-    subscribe = () => () => undefined;
-    start = async () => undefined;
+    subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
+    start = async () => { this.snapshot = { ...this.snapshot, phase: 'online' }; this.listeners.forEach((listener) => listener()); };
     stop = () => undefined;
     updateUser = () => undefined;
     getLocalSummary = async () => ({ pending: 0, drafts: 0 });
@@ -79,11 +80,19 @@ const dataReply = (data: unknown) => Promise.resolve({ ok: true, status: 200, js
 const failureReply = (code = 'AUTH_REQUIRED') => Promise.resolve({ ok: false, status: 401, json: async () => ({ error: { code, message: code === 'REAUTH_FAILED' ? '当前密码不正确' : '登录会话已失效' } }) });
 const captchaReply = () => dataReply({ captchaId: 'expiry-captcha', image: 'data:image/png;base64,', expiresAt: Date.now() + 120000 });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((finish) => { resolve = finish; }); return { promise, resolve }; }
+async function openAccountSettings() {
+  // Only this mounted instance's start() publishes online; a previous instance's
+  // calls or an initial synthetic online snapshot cannot satisfy this readiness.
+  await screen.findByText('已连接', { exact: true });
+  expect(screen.getByText(expiryUser.nickname, { exact: true })).toBeInTheDocument();
+  // Navigation saves the outgoing draft asynchronously before committing the page.
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '设置' })); });
+}
 
 describe('M7 current-account restrictions', () => {
   it('shows server-supplied restriction reasons as read-only account information', async () => {
     vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply(bootstrapData({ ...expiryUser, restrictions: { uploadDisabled: true, groupCreationDisabled: false, reason: '附件违规审核期间', mutedUntil: 1999999999999, muteReason: '已核实连续骚扰' } })) : dataReply({ items: [] })));
-    render(<App />); fireEvent.click(await screen.findByRole('button', { name: '设置' })); await screen.findByRole('heading', { name: '账号使用限制' });
+    render(<App />); await openAccountSettings(); await screen.findByRole('heading', { name: '账号使用限制' });
     expect(screen.getByText('限制理由：附件违规审核期间')).toBeInTheDocument(); expect(screen.getByText('禁言理由：已核实连续骚扰')).toBeInTheDocument(); expect(screen.getByText('上传：已限制')).toBeInTheDocument(); expect(screen.getByText('创建群聊：未限制')).toBeInTheDocument(); expect(screen.queryByRole('button', { name: '解除限制' })).not.toBeInTheDocument();
   });
 });
@@ -138,18 +147,35 @@ describe('M2 bootstrap StrictMode', () => {
 describe('M2 auth expiry', () => {
   it.each(['read', 'write', 'logout'] as const)('clears settings identity after AUTH_REQUIRED on %s', async (operation) => {
     let bootstrapCalls = 0;
+    const expired = deferred<Awaited<ReturnType<typeof failureReply>>>();
+    const expiryRequests: { path: string; method: string; body: unknown }[] = [];
+    const expiryPath = operation === 'read' ? '/api/v1/account/sessions' : operation === 'write' ? '/api/v1/account/profile' : '/api/v1/auth/logout';
     vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit = {}) => {
       if (url.endsWith('/bootstrap')) return dataReply(bootstrapData(bootstrapCalls++ === 0 ? expiryUser : null));
       if (url.endsWith('/captcha')) return captchaReply();
-      if ((operation === 'read' && url.endsWith('/sessions')) || (operation === 'write' && options.method === 'PATCH') || (operation === 'logout' && url.endsWith('/logout'))) return failureReply();
+      if (url === '/api/v1/auth/me') return dataReply({ user: expiryUser });
+      if (url === expiryPath) {
+        expiryRequests.push({ path: url, method: options.method || 'GET', body: options.body ? JSON.parse(options.body as string) : null });
+        return expired.promise;
+      }
       return dataReply({ items: [] });
     }));
     render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: '设置' }));
+    await openAccountSettings();
+    expect(await screen.findByRole('heading', { name: '账号设置' })).toBeInTheDocument();
     if (operation === 'write') {
       fireEvent.change(await screen.findByLabelText('昵称'), { target: { value: '未提交的资料' } });
-      fireEvent.click(screen.getByRole('button', { name: '保存资料' }));
-    } else if (operation === 'logout') fireEvent.click(await screen.findByRole('button', { name: '退出登录' }));
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: '保存资料' })); });
+      expect(screen.getByLabelText('昵称')).toHaveValue('未提交的资料');
+    } else if (operation === 'logout') {
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: '退出登录' })); });
+    }
+    // The expiry must come from this settings operation, after the real page mounted.
+    await waitFor(() => expect(expiryRequests).toHaveLength(1));
+    expect(expiryRequests[0]).toEqual({ path: expiryPath, method: operation === 'read' ? 'GET' : operation === 'write' ? 'PATCH' : 'POST', body: operation === 'write' ? { nickname: '未提交的资料', bio: '' } : operation === 'logout' ? {} : null });
+    expect(bootstrapCalls).toBe(1);
+    expect(screen.queryByRole('heading', { name: '欢迎回来' })).not.toBeInTheDocument();
+    await act(async () => { expired.resolve(await failureReply()); });
     expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '账号设置' })).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue('未提交的资料')).not.toBeInTheDocument();
@@ -183,7 +209,7 @@ describe('M2 auth expiry', () => {
       if (url.endsWith('/reauth')) return failureReply('REAUTH_FAILED');
       return dataReply({ items: [] });
     }));
-    render(<App />); fireEvent.click(await screen.findByRole('button', { name: '设置' }));
+    render(<App />); await openAccountSettings();
     fireEvent.click(await screen.findByRole('button', { name: '验证身份并重新生成' }));
     fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'wrong in-memory password' } });
     fireEvent.click(screen.getByRole('button', { name: '确认并继续' }));
@@ -213,16 +239,20 @@ describe('M2 auth expiry', () => {
     expect(screen.queryByText(expiryUser.nickname)).not.toBeInTheDocument();
   });
   it('does not let a late profile success restore the expired user', async () => {
-    const profile = deferred<Awaited<ReturnType<typeof dataReply>>>(); let bootstrapCalls = 0;
-    vi.stubGlobal('fetch', vi.fn((url: string) => {
+    const profile = deferred<Awaited<ReturnType<typeof dataReply>>>(); let bootstrapCalls = 0; let profileStarted = false;
+    vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit = {}) => {
       if (url.endsWith('/bootstrap')) return dataReply(bootstrapData(bootstrapCalls++ === 0 ? expiryUser : null));
       if (url.endsWith('/captcha')) return captchaReply();
-      if (url.endsWith('/profile')) return profile.promise;
-      if (url.endsWith('/auth/me')) return failureReply();
+      if (url.endsWith('/profile') && options.method === 'PATCH') { profileStarted = true; return profile.promise; }
+      // Settings now verifies identity on mount. Expire only after the pending write exists.
+      if (url.endsWith('/auth/me')) return profileStarted ? failureReply() : dataReply({ user: expiryUser });
       return dataReply({ items: [] });
     }));
-    render(<App />); fireEvent.click(await screen.findByRole('button', { name: '设置' }));
-    fireEvent.click(await screen.findByRole('button', { name: '保存资料' }));
+    render(<App />); await openAccountSettings();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '保存资料' })); });
+    expect(profileStarted).toBe(true);
+    expect(screen.getByRole('heading', { name: '账号设置' })).toBeInTheDocument();
+    expect(bootstrapCalls).toBe(1);
     await act(async () => { await api('/api/v1/auth/me').catch(() => undefined); });
     expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
     await act(async () => profile.resolve(await dataReply({ user: expiryUser })));
