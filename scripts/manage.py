@@ -11,7 +11,7 @@ import sys
 import pyotp
 from _common import environment
 
-os.environ.update(environment())
+os.environ.update(environment(create_cache=False))
 
 from tongpin.config import Settings
 from tongpin.domain.security import (
@@ -39,6 +39,11 @@ def main():
     )
     policy.add_argument("mode", choices=["closed", "invite-only", "open"])
     policy.add_argument("--reason", required=True)
+    operator = sub.add_parser('operator', help='Set reviewed operator information offline before production startup; registration remains unchanged.')
+    operator.add_argument('--name', required=True)
+    operator.add_argument('--contact', required=True)
+    operator.add_argument('--terms-version', required=True)
+    operator.add_argument('--reason', required=True)
     sub.add_parser("status", help="Read local account and runtime configuration status.")
     args = parser.parse_args()
     runtime = Runtime(Settings.from_env())
@@ -112,6 +117,24 @@ def main():
             print('Save these separate new second-factor recovery codes offline:')
             print('\n'.join(result['secondFactorRecoveryCodes']))
             print('Recovery committed and audited. Old device sessions and recovery credentials are invalid.')
+        elif args.command == 'operator':
+            values = {
+                'operator_name': clean_text(args.name, 1, 100, 'name'),
+                'operator_contact': clean_text(args.contact, 1, 200, 'contact'),
+                'terms_version': clean_text(args.terms_version, 1, 80, 'termsVersion'),
+            }
+            if values['terms_version'].startswith('development'):
+                raise ValueError('Choose a reviewed non-development terms version')
+            reason = clean_text(args.reason, 5, 1000, 'reason')
+            with runtime.db.write() as conn:
+                current = runtime.policy.get(conn)
+                previous_version = current.pop('version')
+                if previous_version == 0:
+                    conn.execute('INSERT OR IGNORE INTO policy_versions VALUES(0,?,NULL,?,?)', (json.dumps(current), 'Initial policy before offline operator configuration', now_ms()))
+                current.update(values)
+                conn.execute('INSERT INTO policy_versions VALUES(?,?,NULL,?,?)', (previous_version + 1, json.dumps(current), reason, now_ms()))
+                audit(conn, None, 'settings.local_operator', reason=reason, details={'version': previous_version + 1})
+            print('Operator information saved and audited. Registration policy was not changed.')
         elif args.command == "registration":
             reason = clean_text(args.reason, 5, 1000, "reason")
             if runtime.settings.production and args.mode == "open":

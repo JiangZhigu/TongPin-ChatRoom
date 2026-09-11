@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def environment():
+def environment(*, create_cache=True):
     result = os.environ.copy()
     values = {
         "UV_CACHE_DIR": ROOT / ".codex/cache/uv",
@@ -18,8 +18,9 @@ def environment():
         "PLAYWRIGHT_BROWSERS_PATH": ROOT / ".codex/cache/playwright",
     }
     for key, path in values.items():
-        path.mkdir(parents=True, exist_ok=True)
-        result[key] = str(path)
+        if create_cache:
+            path.mkdir(parents=True, exist_ok=True)
+            result[key] = str(path)
     dotenv = ROOT / ".env"
     if dotenv.exists():
         for line in dotenv.read_text(encoding="utf-8-sig").splitlines():

@@ -1,0 +1,7 @@
+# Configure these absolute paths. This is a foreground task entry, not a Windows Service binary.
+$controller = 'C:\Tongpin\controller'
+$configuration = 'C:\Tongpin\config\production.env'
+$stateFile = 'C:\Tongpin\control\active.json'
+& (Join-Path $controller '.venv\Scripts\python.exe') (Join-Path $controller 'scripts\deploy.py') --env-file $configuration run --state $stateFile
+exit $LASTEXITCODE
+

@@ -1,0 +1,8 @@
+# SQL migration checksums must remain identical on every checkout/platform.
+*.sql text eol=lf
+*.sh text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

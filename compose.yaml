@@ -1,0 +1,32 @@
+services:
+  app:
+    build: .
+    image: tongpin-chatroom:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file:
+      - ${TONGPIN_CONFIG_FILE:?Set an absolute path to your protected production.env}
+    environment:
+      TONGPIN_HOST: 0.0.0.0
+      TONGPIN_PORT: 8765
+      TONGPIN_DATA_DIR: /persistent
+    ports:
+      - 127.0.0.1:8765:8765
+    volumes:
+      - type: bind
+        source: ${TONGPIN_PERSISTENT_DIR:?Set an absolute persistent data directory}
+        target: /persistent
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
