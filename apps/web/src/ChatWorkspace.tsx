@@ -44,7 +44,7 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
   const [draftFiles, setDraftFiles] = useState<LocalAttachment[]>([]); const draftFilesRef = useRef<LocalAttachment[]>([]); const [fileError, setFileError] = useState('');
   const draftRevision = useRef(new Map<string, number>()); const draftChain = useRef(Promise.resolve());
   const textRevision = useRef(new Map<string, number>());
-  const committedDrafts = useRef(new Map<string, { files: Set<string>; textRevision: number }>());
+  const committedDrafts = useRef(new Map<string, { files: Set<string>; textRevision: number; savedDraftRevision: number }>());
   const draftTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [draftLoading, setDraftLoading] = useState(false); const [draftNotice, setDraftNotice] = useState('');
   const [sending, setSending] = useState(false); const queueBusy = useRef(false);
@@ -87,11 +87,16 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
   }
   function persistDraft(id: string, text: string, position?: SavedPosition, files: LocalAttachment[] = draftFilesRef.current) {
     const revision = textRevision.current.get(id) || 0;
-    const next = draftChain.current.catch(() => undefined).then(() => {
+    const fullRevision = draftRevision.current.get(id) || 0;
+    const next = draftChain.current.catch(() => undefined).then(async () => {
       // A save captured before a queue commit may run after it. Normalize at
       // execution time, not only in the editor, so transferred blobs stay out.
       const committed = committedDrafts.current.get(id);
-      return client.saveDraft(id, committed && revision <= committed.textRevision ? '' : text, { ...(position ? { scrollTop: position.scrollTop, anchorId: position.anchorId } : {}), files: committed ? files.filter((file) => !committed.files.has(file.id)) : files });
+      // Reconciliation may already have persisted a newer text+files snapshot.
+      // An older queued write must not regress either part of that snapshot.
+      if (committed && fullRevision < committed.savedDraftRevision) return;
+      await client.saveDraft(id, committed && revision <= committed.textRevision ? '' : text, { ...(position ? { scrollTop: position.scrollTop, anchorId: position.anchorId } : {}), files: committed ? files.filter((file) => !committed.files.has(file.id)) : files });
+      if (committed) committed.savedDraftRevision = Math.max(committed.savedDraftRevision, fullRevision);
     });
     draftChain.current = next;
     return next;
@@ -226,7 +231,7 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
       const submission = draftChain.current.catch(() => undefined).then(async () => {
         await client.queue(id, text, { files });
         const previous = committedDrafts.current.get(id);
-        const committed = { files: new Set([...(previous?.files || []), ...files.map((file) => file.id)]), textRevision: Math.max(previous?.textRevision ?? -1, revision) };
+        const committed = { files: new Set([...(previous?.files || []), ...files.map((file) => file.id)]), textRevision: Math.max(previous?.textRevision ?? -1, revision), savedDraftRevision: previous?.savedDraftRevision ?? -1 };
         committedDrafts.current.set(id, committed);
         if (!mounted.current) return;
         const current = selectedRef.current === id && draftReady.current;
@@ -239,7 +244,9 @@ export function ChatWorkspace({ user, onUserChange, onSignedOut, invitationToken
           draftRef.current = remainingText; setDraft(remainingText); draftFilesRef.current = remainingFiles; setDraftFiles(remainingFiles); setFileError(''); setDraftNotice('');
         }
         const position = positions.current.get(id);
+        const savedRevision = draftRevision.current.get(id) || 0;
         await client.saveDraft(id, remainingText, { ...(position ? { scrollTop: position.scrollTop, anchorId: position.anchorId } : {}), files: remainingFiles });
+        if (current) committed.savedDraftRevision = Math.max(committed.savedDraftRevision, savedRevision);
       });
       draftChain.current = submission;
       await submission;

@@ -146,6 +146,23 @@ describe('M6-FIX-UI committed attachment drafts', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeEnabled()); expect(drafts.get('dm-a')).toMatchObject({ text: '发送期间的新文本', files: [] });
     fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1]).toEqual(['dm-a', '发送期间的新文本', { files: [] }]);
   });
+  it.each([false, true])('M6-FIX2 preserves the newest full draft before debounce fires, removed B=%s', async (removeB) => {
+    const { drafts, commit, write } = persistence(); const queue = deferred<void>(); const snapshots: { text: string; names: string[] }[] = [];
+    chat.saveDraft.mockImplementation(async (id, text, position) => { write(id, text, position); if (id === 'dm-a') snapshots.push({ text, names: drafts.get(id)!.files.map((value) => value.name) }); });
+    chat.queue.mockImplementation(async (id, _text, options) => { await queue.promise; commit(id, options!.files); });
+    const view = showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalled());
+    // Adding B captures the old text version in an immediate save. Do not
+    // advance the 350 ms debounce after editing or removing that attachment.
+    fireEvent.change(screen.getByLabelText('文件附件'), { target: { files: [new File(['B'], 'B.txt', { type: 'text/plain' })] } });
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '无需等待防抖的新正文' } });
+    if (removeB) fireEvent.click(screen.getByRole('button', { name: '移除附件 B.txt' }));
+    await act(async () => queue.resolve()); await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeEnabled());
+    const names = removeB ? [] : ['B.txt']; expect(drafts.get('dm-a')?.text).toBe('无需等待防抖的新正文'); expect(drafts.get('dm-a')?.files.map((value) => value.name)).toEqual(names);
+    // No older write may briefly regress the state after reconciliation either.
+    expect(snapshots.every((saved) => saved.text === '无需等待防抖的新正文' && JSON.stringify(saved.names) === JSON.stringify(names))).toBe(true);
+    view.unmount(); showWorkspace(); await openConversation(); expect(screen.getByLabelText('消息内容')).toHaveValue('无需等待防抖的新正文');
+    fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1][1]).toBe('无需等待防抖的新正文'); expect(chat.queue.mock.calls[1][2]?.files.map((value) => value.name)).toEqual(names);
+  });
   it('serializes a delayed earlier save, queue commit and during-queue saves without restoring transferred A', async () => {
     const { drafts, write, commit } = persistence(); const earlier = deferred<void>(); const queue = deferred<void>(); const later = deferred<void>(); let writes = 0;
     chat.saveDraft.mockImplementation(async (id, text, position) => { writes++; await (writes === 1 ? earlier.promise : later.promise); write(id, text, position); });
