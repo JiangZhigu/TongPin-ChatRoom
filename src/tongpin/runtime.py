@@ -54,6 +54,7 @@ class Runtime:
         self.transport = None
         self._metric_task = None
         self._stopping = asyncio.Event()
+        self._shutdown_task = None
         self._previous_tempdir = None
         self.connections = {}
         self._connection_lock = threading.RLock()
@@ -134,31 +135,40 @@ class Runtime:
                 pass
 
     async def stop(self):
+        # Both ASGI shutdown and local maintenance may request stop. Share completion
+        # so a second caller neither submits to a closed pool nor releases a new owner's lock.
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(self._shutdown(), name="tongpin-shutdown")
+        await asyncio.shield(self._shutdown_task)
+
+    async def _shutdown(self):
         self.ready = False
         self._stopping.set()
-        if self._metric_task:
-            await self._metric_task
-        pending = list(self._presence_tasks.values())
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        await self.runner.stop()
-        await self.file_runner.stop()
-        await self.admin_runner.stop()
-        await self.operation_runner.stop()
         try:
+            if self._metric_task:
+                await self._metric_task
+            pending = list(self._presence_tasks.values())
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            await self.runner.stop()
+            await self.file_runner.stop()
+            await self.admin_runner.stop()
+            await self.operation_runner.stop()
             await self.executor.run(self.logs.persist)
         finally:
             logging.getLogger('tongpin').removeHandler(self.logs)
-        self.admin.secrets.clear()
-        self.cache.clear()
-        self.interactions.typing_cache.clear()
-        self.interactions.typing_rate.clear()
-        self.executor.close()
-        self.lock.release()
-        if tempfile.tempdir == str(self.paths.temporary):
-            tempfile.tempdir = self._previous_tempdir
+            self.admin.secrets.clear()
+            self.cache.clear()
+            self.interactions.typing_cache.clear()
+            self.interactions.typing_rate.clear()
+            try:
+                self.executor.close()
+            finally:
+                self.lock.release()
+                if tempfile.tempdir == str(self.paths.temporary):
+                    tempfile.tempdir = self._previous_tempdir
 
     @property
     def features(self):

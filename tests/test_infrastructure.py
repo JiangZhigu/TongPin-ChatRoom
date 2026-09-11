@@ -159,3 +159,47 @@ def test_production_configuration_requires_real_secret_and_https(tmp_path):
         ).validate()
     with pytest.raises(ValueError, match="loopback"):
         Settings(data_root=tmp_path / "data", host="0.0.0.0").validate()
+
+
+@pytest.mark.asyncio
+async def test_runtime_stop_is_idempotent_and_concurrent_callers_share_completion(settings):
+    import asyncio
+
+    from tongpin.runtime import Runtime
+
+    runtime = Runtime(settings)
+    await runtime.start()
+    await asyncio.gather(runtime.stop(), runtime.stop())
+    replacement_lock = RuntimeLock(runtime.paths.lock_file)
+    replacement_lock.acquire()
+    try:
+        await runtime.stop()
+        with pytest.raises(RuntimeError, match="another Tongpin"):
+            RuntimeLock(runtime.paths.lock_file).acquire()
+        assert runtime.executor.stats()["inflight"] == 0
+    finally:
+        replacement_lock.release()
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_persistence_failure_still_releases_owned_resources(settings, monkeypatch):
+    import tempfile
+
+    from tongpin.runtime import Runtime
+
+    runtime = Runtime(settings)
+    await runtime.start()
+    runtime._stopping.set()
+    await runtime._metric_task
+
+    def failed_persist():
+        raise OSError("isolated shutdown disk failure")
+
+    monkeypatch.setattr(runtime.logs, "persist", failed_persist)
+    with pytest.raises(OSError, match="disk failure"):
+        await runtime.stop()
+    lock = RuntimeLock(runtime.paths.lock_file)
+    lock.acquire()
+    lock.release()
+    assert tempfile.tempdir != str(runtime.paths.temporary)
+    assert runtime.executor._closed

@@ -15,7 +15,7 @@ from tongpin.transports.asgi.body_limits import GuardedWSGI
 
 
 @pytest.mark.asyncio
-async def test_health_real_flask_adapter_and_admin_disabled(settings):
+async def test_health_real_flask_adapter_and_admin_requires_identity(settings):
     app = create_application(settings)
     await app.runtime.start()
     try:
@@ -28,7 +28,7 @@ async def test_health_real_flask_adapter_and_admin_disabled(settings):
             assert (await client.get("/api/v1/auth/bootstrap")).json()["data"][
                 "accountsEnabled"
             ] is True
-            assert (await client.get("/api/v1/admin/users")).status_code == 503
+            assert (await client.get("/api/v1/admin/users")).status_code == 401
             assert (await client.post("/api/v1/admin/users", json={})).status_code == 403
     finally:
         await app.runtime.stop()
