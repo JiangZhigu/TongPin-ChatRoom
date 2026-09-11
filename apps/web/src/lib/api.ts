@@ -61,6 +61,11 @@ export async function api<T>(path: string, options: { method?: string; body?: un
       if (typeof payload.data?.csrfToken === 'string' && generation === identityGeneration) setCsrfToken(payload.data.csrfToken);
       return payload.data as T;
     })()]);
+  } catch (error) {
+    if (error instanceof TypeError && !controller.signal.aborted) {
+      throw new APIError(0, { code: 'NETWORK_ERROR', message: ['GET', 'HEAD'].includes(method) ? '连接暂时中断，请检查网络后重新连接。' : '连接暂时中断，操作结果尚未确认。请重新连接并确认结果。' });
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
     if (cancel) options.signal?.removeEventListener('abort', cancel);

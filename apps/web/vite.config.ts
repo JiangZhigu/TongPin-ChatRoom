@@ -1,8 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { offlineShell } from './offline-shell.ts';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), offlineShell()],
   server: {
     host: "localhost",
     port: 5173,

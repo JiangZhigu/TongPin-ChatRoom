@@ -6,6 +6,15 @@ afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); setCsrfToken(''); }
 const failure = (code: string) => ({ ok: false, status: 401, json: async () => ({ error: { code } }) });
 
 describe('API session recovery and bounded requests', () => {
+  it('translates browser network errors without claiming an unconfirmed write failed', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    const expired = vi.fn(); const unsubscribe = onAuthExpired(expired);
+    try {
+      await expect(api('/offline')).rejects.toMatchObject({ code: 'NETWORK_ERROR', message: '连接暂时中断，请检查网络后重新连接。' });
+      await expect(api('/offline-write', { method: 'POST', body: {} })).rejects.toMatchObject({ code: 'NETWORK_ERROR', message: expect.stringContaining('操作结果尚未确认') });
+      expect(expired).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
   it('shares an anonymous bootstrap request and sends its corresponding CSRF', async () => {
     let finish!: (value: unknown) => void;
     const fetchMock = vi.fn().mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; })).mockResolvedValue({ ok: true, json: async () => ({ data: {} }) });

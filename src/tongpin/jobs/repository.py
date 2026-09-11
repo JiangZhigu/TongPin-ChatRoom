@@ -11,24 +11,36 @@ class JobRepository:
         self.db = database
 
     def enqueue(self, kind, payload=None, *, entity_id="", dedupe_key=None, run_after=None):
-        identifier = secrets.token_urlsafe(18)
         with self.db.write() as connection:
-            connection.execute(
-                "INSERT INTO jobs(id,kind,entity_id,dedupe_key,payload_json,status,run_after,created_at) VALUES(?,?,?,?,?,'pending',?,?) ON CONFLICT(dedupe_key) DO NOTHING",
-                (
-                    identifier,
-                    kind,
-                    entity_id,
-                    dedupe_key,
-                    json.dumps(payload or {}),
-                    run_after or now_ms(),
-                    now_ms(),
-                ),
+            return self.enqueue_in_transaction(
+                connection,
+                kind,
+                payload,
+                entity_id=entity_id,
+                dedupe_key=dedupe_key,
+                run_after=run_after,
             )
-            if dedupe_key:
-                identifier = connection.execute(
-                    "SELECT id FROM jobs WHERE dedupe_key=?", (dedupe_key,)
-                ).fetchone()[0]
+
+    def enqueue_in_transaction(
+        self, connection, kind, payload=None, *, entity_id="", dedupe_key=None, run_after=None
+    ):
+        identifier = secrets.token_urlsafe(18)
+        connection.execute(
+            "INSERT INTO jobs(id,kind,entity_id,dedupe_key,payload_json,status,run_after,created_at) VALUES(?,?,?,?,?,'pending',?,?) ON CONFLICT(dedupe_key) DO NOTHING",
+            (
+                identifier,
+                kind,
+                entity_id,
+                dedupe_key,
+                json.dumps(payload or {}),
+                run_after or now_ms(),
+                now_ms(),
+            ),
+        )
+        if dedupe_key:
+            identifier = connection.execute(
+                "SELECT id FROM jobs WHERE dedupe_key=?", (dedupe_key,)
+            ).fetchone()[0]
         return identifier
 
     def claim(self, lease_ms=60000):

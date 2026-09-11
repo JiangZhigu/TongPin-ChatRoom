@@ -12,6 +12,7 @@ from werkzeug.exceptions import HTTPException
 from tongpin import __version__
 from tongpin.contracts.base import APIError
 from tongpin.transports.http.auth import auth_blueprint, require_csrf
+from tongpin.transports.http.chat import chat_blueprint
 
 
 def create_http_app(runtime):
@@ -48,6 +49,8 @@ def create_http_app(runtime):
         )
         if request.path.startswith(("/api/", "/health/")):
             response.headers["Cache-Control"] = "no-store"
+        if request.path in {"/", "/index.html", "/service-worker.js"}:
+            response.headers["Cache-Control"] = "no-cache"
         if runtime.settings.production:
             response.headers["Strict-Transport-Security"] = "max-age=31536000"
         runtime.metrics.request(
@@ -115,6 +118,7 @@ def create_http_app(runtime):
         return success({"status": "ready", "version": __version__, "features": runtime.features})
 
     app.register_blueprint(auth_blueprint)
+    app.register_blueprint(chat_blueprint)
 
     @app.route(
         "/api/v1/admin", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE"]
@@ -132,6 +136,8 @@ def create_http_app(runtime):
         target = (dist / path).resolve()
         if path and target.is_file() and target.is_relative_to(dist):
             return send_from_directory(dist, path)
+        if path.startswith("assets/") or path == "service-worker.js":
+            raise APIError("RESOURCE_UNAVAILABLE", "页面资源不存在，请重新加载。", 404)
         if (dist / "index.html").is_file():
             return send_from_directory(dist, "index.html")
         return success(

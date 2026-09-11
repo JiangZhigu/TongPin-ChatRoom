@@ -5,8 +5,8 @@ import { Modal } from './components/Modal';
 import { api, fetchBootstrap, onAuthExpired } from './lib/api';
 import type { AuthResult, BootstrapView, UserView } from './auth-types';
 import { AuthPage } from './AuthPage';
-import { AccountSettings } from './AccountSettings';
-import { AppShell } from './components/AppShell';
+import { ChatWorkspace } from './ChatWorkspace';
+import { OfflineRecoveryPage } from './OfflineRecoveryPage';
 import { EmptyState } from './components/EmptyState';
 
 const DevelopmentPreview = import.meta.env.DEV ? lazy(() => import('./DevelopmentPreview')) : null;
@@ -59,6 +59,7 @@ export function App() {
 
 function AccountApplication({ admin }: { admin: boolean }) {
   const [bootstrap, setBootstrap] = useState<BootstrapView | null>(null); const [error, setError] = useState('');
+  const [showLocalContent, setShowLocalContent] = useState(false);
   const generation = useRef(0); const mounted = useRef(false); const expiryRefreshPending = useRef(false);
   const reloadBootstrap = useCallback(() => {
     const requestGeneration = ++generation.current;
@@ -91,10 +92,13 @@ function AccountApplication({ admin }: { admin: boolean }) {
   function userChanged(updated: UserView) {
     if (mounted.current && generation.current === viewGeneration) setBootstrap((current) => current ? { ...current, user: updated } : current);
   }
-  if (!bootstrap) return <main className="boot-screen"><Brand /><EmptyState title={error ? '暂时无法连接服务' : '正在连接同频'} description={error || '正在确认服务与账号状态。'} action={error ? <button className="primary-button" onClick={reloadBootstrap}><RefreshCw size={16} />重新连接</button> : undefined} /></main>;
+  if (!bootstrap) {
+    if (showLocalContent && error) return <OfflineRecoveryPage onBack={() => setShowLocalContent(false)} onReconnect={() => { setShowLocalContent(false); reloadBootstrap(); }} />;
+    return <main className="boot-screen"><Brand /><EmptyState title={error ? '暂时无法连接服务' : '正在连接同频'} description={error || '正在确认服务与账号状态。'} action={error ? <><button className="primary-button" onClick={reloadBootstrap}><RefreshCw size={16} />重新连接</button><button className="text-button" onClick={() => setShowLocalContent(true)}>查看本机待发与草稿</button></> : undefined} /></main>;
+  }
   if (!bootstrap.accountsEnabled) return <WelcomePage />;
   if (!bootstrap.user) return <AuthPage bootstrap={bootstrap} admin={admin} onAuthenticated={authenticated} />;
   if (admin) return <AdminEntry onSignedOut={signedOut} />;
   const user = bootstrap.user;
-  return <div className="authenticated-app"><AppShell conversations={[]} onSelectConversation={() => undefined} accountFooter={<div className="account-footer"><span className="avatar">{user.nickname.slice(0, 1)}</span><div><strong>{user.nickname}</strong><small>@{user.username}</small></div><a href="/admin" aria-label="管理入口"><ShieldCheck size={19} /></a></div>} settingsContent={<AccountSettings user={user} onUserChange={userChanged} onSignedOut={signedOut} />}><EmptyState title="欢迎来到同频" description="账号已就绪。聊天功能尚未启用，你可以先在设置中完善个人资料和管理账号安全。" /></AppShell></div>;
+  return <ChatWorkspace key={user.id} user={user} onUserChange={userChanged} onSignedOut={signedOut} />;
 }

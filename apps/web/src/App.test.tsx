@@ -9,6 +9,21 @@ import { api, setCsrfToken } from './lib/api';
 import type { UserView } from './auth-types';
 import { StrictMode } from 'react';
 
+// Authentication tests retain the real App/ChatWorkspace/settings components.
+// Only the unrelated chat transport is isolated; bootstrap and auth use real api().
+vi.mock('./lib/chat-client', () => ({
+  ChatClient: class {
+    private snapshot = { phase: 'online', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null };
+    getSnapshot = () => this.snapshot;
+    subscribe = () => () => undefined;
+    start = async () => undefined;
+    stop = () => undefined;
+    updateUser = () => undefined;
+    getLocalSummary = async () => ({ pending: 0, drafts: 0 });
+    logout = async () => { const { api: request } = await import('./lib/api'); await request('/api/v1/auth/logout', { method: 'POST', body: {} }); };
+  },
+}));
+
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); setCsrfToken(''); window.history.replaceState({}, '', '/'); });
 function healthyResponse(url: string) {
   const data = url === '/health/ready' ? { status: 'ready', version: '0.1.0', features: { accounts: false } } : { accountsEnabled: false, registrationMode: 'closed' };
@@ -119,9 +134,9 @@ describe('M2 auth expiry', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: '设置' }));
     if (operation === 'write') {
-      fireEvent.change(screen.getByLabelText('昵称'), { target: { value: '未提交的资料' } });
+      fireEvent.change(await screen.findByLabelText('昵称'), { target: { value: '未提交的资料' } });
       fireEvent.click(screen.getByRole('button', { name: '保存资料' }));
-    } else if (operation === 'logout') fireEvent.click(screen.getByRole('button', { name: '退出登录' }));
+    } else if (operation === 'logout') fireEvent.click(await screen.findByRole('button', { name: '退出登录' }));
     expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '账号设置' })).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue('未提交的资料')).not.toBeInTheDocument();
@@ -155,7 +170,7 @@ describe('M2 auth expiry', () => {
       return dataReply({ items: [] });
     }));
     render(<App />); fireEvent.click(await screen.findByRole('button', { name: '设置' }));
-    fireEvent.click(screen.getByRole('button', { name: '验证身份并重新生成' }));
+    fireEvent.click(await screen.findByRole('button', { name: '验证身份并重新生成' }));
     fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'wrong in-memory password' } });
     fireEvent.click(screen.getByRole('button', { name: '确认并继续' }));
     expect(await screen.findByText('当前密码不正确')).toBeInTheDocument();
@@ -193,7 +208,7 @@ describe('M2 auth expiry', () => {
       return dataReply({ items: [] });
     }));
     render(<App />); fireEvent.click(await screen.findByRole('button', { name: '设置' }));
-    fireEvent.click(screen.getByRole('button', { name: '保存资料' }));
+    fireEvent.click(await screen.findByRole('button', { name: '保存资料' }));
     await act(async () => { await api('/api/v1/auth/me').catch(() => undefined); });
     expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
     await act(async () => profile.resolve(await dataReply({ user: expiryUser })));

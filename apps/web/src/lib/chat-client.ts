@@ -1,0 +1,468 @@
+import { io, type Socket } from 'socket.io-client';
+import { api, APIError, onAuthExpired, type User } from './api';
+import type { ChatSnapshot, ChatState, Contact, Conversation, Draft, FriendRequest, HistoryPage, Message, NotificationItem, Page, QueuedMessage, SendPayload, SendResult, SyncEvent, SyncPage, UserSummary } from './chat-types';
+import { addQueuedMessage, changeQueuedMessage, clearLocalUser, forgetIdentity, localError, localSummary, OUTBOX_AGE_MS, readDraft, readOfflineIdentity, readQueue, rememberIdentity, saveLocalDraft, withDeliveryLock } from './outbox';
+
+const initialState = (): ChatState => ({ phase: 'connecting', conversations: [], contacts: [], requests: [], notifications: [], notificationCount: 0, selectedId: null, messages: [], historyBefore: null, historyLoading: false, outbox: [], error: null, nextConversations: null, nextContacts: null, nextRequests: null, nextNotifications: null, onlineNotice: null });
+const permanentErrors = new Set(['VALIDATION_ERROR', 'PAYLOAD_TOO_LARGE', 'IDEMPOTENCY_CONFLICT', 'STALE_ACCESS', 'FRIENDSHIP_REQUIRED', 'CONTACT_UNAVAILABLE', 'RESOURCE_UNAVAILABLE', 'MUTED', 'CONVERSATION_FROZEN', 'FILE_REJECTED', 'OUTBOX_EXPIRED']);
+const bySequence = (one: Message, two: Message) => BigInt(one.seq) < BigInt(two.seq) ? -1 : BigInt(one.seq) > BigInt(two.seq) ? 1 : one.id.localeCompare(two.id);
+export function mergeMessages(existing: Message[], additions: Message[]): Message[] { return [...new Map([...existing, ...additions].map((message) => [message.id, message])).values()].sort(bySequence); }
+function mergeItems<T extends { id: string }>(existing: T[], additions: T[]): T[] { return [...new Map([...existing, ...additions].map((item) => [item.id, item])).values()]; }
+function errorMessage(error: unknown) { return error instanceof Error ? error.message : '暂时无法完成操作，请重试。'; }
+export function validateMessageText(text: string, allowEmpty = false) {
+  if ([...text].length > 4000 || new TextEncoder().encode(text).byteLength > 16384) throw new APIError(413, { code: 'PAYLOAD_TOO_LARGE', message: '消息最多4000字且不超过16 KiB。' });
+  if (!allowEmpty && !text.trim()) throw new APIError(422, { code: 'VALIDATION_ERROR', message: '请填写消息内容。' });
+  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(text) || [...text].some((character) => { const code = character.codePointAt(0)!; return code >= 0xd800 && code <= 0xdfff; })) throw new APIError(422, { code: 'VALIDATION_ERROR', message: '消息不能包含无效或控制字符。' });
+}
+
+type WindowCache = { accessKey: string; messages: Message[]; before: string | null };
+export class ChatClient {
+  private user: User;
+  private state = initialState();
+  private listeners = new Set<() => void>();
+  private running = false;
+  private generation = 0;
+  private selectionGeneration = 0;
+  private controller = new AbortController();
+  private socket: Socket | null = null;
+  private channel: BroadcastChannel | null = null;
+  private unsubscribeExpiry: (() => void) | null = null;
+  private cursor = '0';
+  private initialized = false;
+  private syncFlight: Promise<void> | null = null;
+  private syncAgain = false;
+  private drainFlight: Promise<void> | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
+  private instanceId = crypto.randomUUID();
+  private windows = new Map<string, WindowCache>();
+  private localReady = false;
+  private enqueueFlight: Promise<void> = Promise.resolve();
+  private reading = new Set<string>();
+  private online = () => { if (this.running) void this.reconnect(); };
+  private offline = () => { if (this.running) { this.initialized = false; this.set({ phase: 'offline' }); this.closeSocket(); } };
+
+  constructor(user: User) { this.user = user; }
+  getSnapshot = (): ChatState => this.state;
+  subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  updateUser(user: User) { if (user.id === this.user.id) this.user = user; }
+  private set(patch: Partial<ChatState>) { this.state = { ...this.state, ...patch }; for (const listener of this.listeners) listener(); }
+  private current(epoch: number) { return this.running && epoch === this.generation; }
+  private request<T>(path: string, options: { method?: string; body?: unknown } = {}) { return api<T>('/api/v1' + path, { ...options, signal: this.controller.signal }); }
+  private announce() { this.channel?.postMessage({ type: 'local.changed', userId: this.user.id }); }
+
+  async start(): Promise<void> {
+    if (this.running) return;
+    this.running = true; const epoch = ++this.generation; this.controller = new AbortController();
+    this.set({ phase: 'connecting', error: null });
+    window.addEventListener('online', this.online); window.addEventListener('offline', this.offline);
+    this.unsubscribeExpiry = onAuthExpired(() => this.expire());
+    if (typeof BroadcastChannel !== 'undefined') {
+      this.channel = new BroadcastChannel('tongpin-state-v1');
+      this.channel.onmessage = (event) => {
+        if (!this.current(epoch)) return;
+        if (event.data?.type === 'identity.changed' && event.data.userId !== this.user.id) { this.expire(); return; }
+        if (event.data?.userId === this.user.id) { void this.loadLocal(epoch); void this.synchronize(); }
+      };
+    }
+    this.pollTimer = setInterval(() => {
+      if (!this.current(epoch)) return;
+      void this.loadLocal(epoch);
+      if (this.initialized) { void this.synchronize(); void this.drain(); }
+      else if (navigator.onLine && !this.syncFlight) void this.reconnect();
+    }, 5000);
+    const flight = this.initialize(epoch);
+    this.syncFlight = flight;
+    try { await flight; }
+    catch (error) { this.connectionFailure(error, epoch); }
+    finally { if (this.syncFlight === flight) this.syncFlight = null; }
+  }
+
+  stop(): void {
+    this.running = false; this.generation++; this.selectionGeneration++; this.initialized = false;
+    this.controller.abort(); this.closeSocket();
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.pollTimer = null; this.reconnectTimer = null; this.noticeTimer = null;
+    this.unsubscribeExpiry?.(); this.unsubscribeExpiry = null;
+    this.channel?.close(); this.channel = null;
+    window.removeEventListener('online', this.online); window.removeEventListener('offline', this.offline);
+    this.windows.clear(); this.syncFlight = null; this.drainFlight = null;
+  }
+
+  private expire() {
+    if (!this.running) return;
+    this.stop();
+    void forgetIdentity(this.user.id).catch(() => undefined);
+    this.set({ ...initialState(), phase: 'expired', error: '登录身份已改变，请重新登录后继续。' });
+  }
+
+  private connectionFailure(error: unknown, epoch: number) {
+    if (!this.current(epoch) || this.controller.signal.aborted) return;
+    if (error instanceof APIError && ['AUTH_REQUIRED', 'SESSION_REVOKED', 'LOCAL_IDENTITY_CHANGED'].includes(error.code)) { this.expire(); return; }
+    this.initialized = false;
+    this.set({ phase: 'offline', error: error instanceof APIError ? error.message : '连接暂时中断。本机待发内容会保留，恢复连接后先核对权限。' });
+    this.scheduleReconnect();
+  }
+
+  private async verifyIdentity(epoch: number) {
+    let previous = null;
+    try { previous = await readOfflineIdentity(); this.localReady = true; }
+    catch (error) { this.localReady = false; if (this.current(epoch)) this.set({ error: localError(error).message }); }
+    const data = await this.request<{ user: User }>('/auth/me');
+    if (!this.current(epoch)) return;
+    if (data.user.id !== this.user.id) { this.expire(); throw new APIError(401, { code: 'AUTH_REQUIRED', message: '浏览器已切换账号。' }); }
+    this.user = data.user;
+    if (this.localReady) {
+      try { await rememberIdentity(this.user, previous); }
+      catch (error) {
+        if (error instanceof APIError && error.code === 'LOCAL_IDENTITY_CHANGED') throw error;
+        this.localReady = false; this.set({ error: localError(error).message });
+      }
+      if (this.localReady && previous?.user.id !== this.user.id) this.channel?.postMessage({ type: 'identity.changed', userId: this.user.id });
+    }
+  }
+
+  private async initialize(epoch: number) {
+    await this.verifyIdentity(epoch);
+    if (!this.current(epoch)) return;
+    await this.loadLocal(epoch);
+    await this.openSocket(epoch);
+    if (!this.current(epoch)) return;
+    await this.fullSnapshot(epoch);
+    if (this.current(epoch)) void this.drain();
+  }
+
+  private async reconnect() {
+    if (!this.running || !navigator.onLine || this.syncFlight) return;
+    const epoch = this.generation;
+    const flight = this.initialize(epoch).catch((error) => this.connectionFailure(error, epoch));
+    this.syncFlight = flight;
+    try { await flight; } finally { if (this.syncFlight === flight) this.syncFlight = null; }
+  }
+
+  private scheduleReconnect() {
+    if (!this.running || this.reconnectTimer || !navigator.onLine) return;
+    const delay = Math.min(30000, 1000 * 2 ** Math.min(5, this.retryAttempt++)) * (0.8 + Math.random() * 0.4);
+    this.reconnectTimer = setTimeout(() => { this.reconnectTimer = null; void this.reconnect(); }, delay);
+  }
+
+  private closeSocket() { if (this.socket) { this.socket.removeAllListeners(); this.socket.disconnect(); this.socket = null; } }
+  private async openSocket(epoch: number): Promise<void> {
+    if (this.socket?.connected || !this.current(epoch)) return;
+    this.closeSocket();
+    const ticket = await this.request<{ ticket: string }>('/auth/ws-ticket', { method: 'POST', body: {} });
+    if (!this.current(epoch)) return;
+    const socket = io(window.location.origin, { transports: ['websocket'], autoConnect: false, reconnection: false, forceNew: true, withCredentials: true, timeout: 6000, auth: { ticket: ticket.ticket } });
+    this.socket = socket;
+    socket.on('sync.available', () => { if (this.current(epoch)) { this.syncAgain = true; if (this.initialized) void this.synchronize(); } });
+    socket.on('presence.changed', (value: { userId: string; online: boolean; notify: boolean; user: UserSummary }) => {
+      if (!this.current(epoch)) return;
+      this.set({ contacts: this.state.contacts.map((item) => item.id === value.userId ? { ...item, online: value.online } : item), conversations: this.state.conversations.map((item) => item.peer?.id === value.userId ? { ...item, peer: { ...item.peer, online: value.online } } : item) });
+      if (value.notify && value.online && !this.user.preferences.doNotDisturb) {
+        this.set({ onlineNotice: { id: crypto.randomUUID(), user: value.user } });
+        if (this.noticeTimer) clearTimeout(this.noticeTimer);
+        this.noticeTimer = setTimeout(() => { if (this.current(epoch)) this.set({ onlineNotice: null }); }, 6000);
+      }
+    });
+    socket.on('disconnect', () => {
+      if (!this.current(epoch) || this.socket !== socket) return;
+      this.set({ phase: navigator.onLine ? 'degraded' : 'offline' });
+      this.scheduleReconnect();
+    });
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); this.controller.signal.removeEventListener('abort', finish); resolve(); };
+      const timer = setTimeout(finish, 6500);
+      this.controller.signal.addEventListener('abort', finish, { once: true });
+      socket.on('connect', () => { if (this.current(epoch)) { this.retryAttempt = 0; if (this.initialized) this.set({ phase: 'online' }); } finish(); });
+      socket.on('connect_error', () => { finish(); if (this.current(epoch)) this.scheduleReconnect(); });
+      socket.connect();
+    });
+  }
+
+  private async fullSnapshot(epoch: number) {
+    if (this.current(epoch)) this.set({ phase: 'syncing' });
+    const snapshot = await this.request<ChatSnapshot>('/sync/snapshot');
+    if (!this.current(epoch)) return;
+    const selected = this.state.selectedId;
+    // Fresh server state replaces stale permission-bearing lists.
+    this.windows.clear();
+    this.set({ messages: [], historyBefore: null });
+    this.cursor = snapshot.cursor;
+    this.set({ contacts: snapshot.contacts.items, conversations: snapshot.conversations.items, requests: snapshot.requests.items, nextContacts: snapshot.contacts.nextCursor, nextConversations: snapshot.conversations.nextCursor, nextRequests: snapshot.requests.nextCursor });
+    if (selected && !this.state.conversations.some((item) => item.id === selected)) {
+      try {
+        const detail = await this.request<Conversation>('/conversations/' + encodeURIComponent(selected));
+        if (this.current(epoch)) this.upsertConversation(detail);
+      } catch (error) { if (error instanceof APIError && [403, 404].includes(error.status)) this.revokeConversation(selected); else throw error; }
+    }
+    await this.catchUp(epoch);
+    await this.loadNotifications(epoch, false);
+    if (!this.current(epoch)) return;
+    this.initialized = true; this.retryAttempt = 0;
+    this.set({ phase: this.socket?.connected ? 'online' : 'degraded', error: this.localReady ? null : this.state.error });
+    if (this.state.selectedId) await this.selectConversation(this.state.selectedId);
+  }
+
+  async refresh(): Promise<void> {
+    if (!this.running) return;
+    if (this.syncFlight) await this.syncFlight;
+    const epoch = this.generation;
+    const flight = (async () => { await this.verifyIdentity(epoch); if (this.current(epoch)) await this.fullSnapshot(epoch); })();
+    this.syncFlight = flight;
+    try { await flight; } catch (error) { this.connectionFailure(error, epoch); throw error; }
+    finally { if (this.syncFlight === flight) this.syncFlight = null; }
+    if (this.current(epoch)) void this.drain();
+  }
+
+  private async synchronize(): Promise<void> {
+    if (!this.running || !this.initialized) return;
+    if (this.syncFlight) { this.syncAgain = true; return; }
+    const epoch = this.generation;
+    const flight = (async () => {
+      try { await this.catchUp(epoch); if (this.current(epoch)) this.set({ phase: this.socket?.connected ? 'online' : 'degraded' }); }
+      catch (error) { if (error instanceof APIError && error.code === 'RESYNC_REQUIRED') await this.fullSnapshot(epoch); else this.connectionFailure(error, epoch); }
+    })();
+    this.syncFlight = flight;
+    try { await flight; } finally { if (this.syncFlight === flight) this.syncFlight = null; }
+  }
+
+  private async catchUp(epoch: number) {
+    do {
+      this.syncAgain = false;
+      let more: boolean;
+      do {
+        const page = await this.request<SyncPage>('/sync?after=' + encodeURIComponent(this.cursor) + '&limit=100');
+        if (!this.current(epoch)) return;
+        let contactsChanged = false; let notificationsChanged = false;
+        for (const event of page.items) {
+          if (!this.current(epoch)) return;
+          if (BigInt(event.cursor) <= BigInt(this.cursor)) continue;
+          await this.applyEvent(event, epoch);
+          contactsChanged ||= event.type === 'contacts.changed';
+          notificationsChanged ||= event.type.startsWith('notification.');
+        }
+        if (contactsChanged) {
+          const [contacts, requests] = await Promise.all([this.request<Page<Contact>>('/friends?limit=100'), this.request<Page<FriendRequest>>('/friend-requests?limit=100')]);
+          if (this.current(epoch)) this.set({ contacts: contacts.items, requests: requests.items, nextContacts: contacts.nextCursor, nextRequests: requests.nextCursor });
+        }
+        if (notificationsChanged) await this.loadNotifications(epoch, false);
+        if (!this.current(epoch)) return;
+        this.cursor = page.cursor; more = page.hasMore;
+      } while (more && this.current(epoch));
+    } while (this.syncAgain && this.current(epoch));
+  }
+
+  private upsertConversation(conversation: Conversation) {
+    const cached = this.windows.get(conversation.id);
+    if (cached && cached.accessKey !== conversation.accessKey) {
+      this.windows.delete(conversation.id);
+      if (this.state.selectedId === conversation.id) this.set({ messages: [], historyBefore: null });
+    }
+    this.set({ conversations: mergeItems(this.state.conversations, [conversation]).sort((one, two) => Number(two.preferences.pinned) - Number(one.preferences.pinned) || two.updatedAt - one.updatedAt || one.id.localeCompare(two.id)) });
+  }
+
+  private revokeConversation(cid: string) {
+    this.windows.delete(cid);
+    if (this.state.selectedId === cid) { this.selectionGeneration++; this.set({ selectedId: null, messages: [], historyBefore: null, historyLoading: false }); }
+    this.set({ conversations: this.state.conversations.filter((conversation) => conversation.id !== cid) });
+  }
+
+  private async applyEvent(event: SyncEvent, epoch: number) {
+    if (event.type === 'access.revoked' && event.conversationId) { this.revokeConversation(event.conversationId); return; }
+    if (event.conversation) this.upsertConversation(event.conversation);
+    if (event.message) {
+      const message = event.message;
+      const cache = this.windows.get(message.conversationId);
+      const update = (messages: Message[]) => mergeMessages(messages, [message]).map((item) => message.status !== 'sent' && item.reply?.id === message.id ? { ...item, reply: { ...item.reply, status: 'unavailable' as const, text: '', author: '' } } : item);
+      if (cache) {
+        const updated = update(cache.messages);
+        cache.messages = updated.slice(-1000);
+        if (updated.length > 1000) cache.before = cache.messages[0].seq;
+      }
+      if (this.state.selectedId === message.conversationId) this.set({ messages: update(this.state.messages) });
+      if (message.senderId === this.user.id && message.clientMessageId && this.localReady) {
+        await changeQueuedMessage(this.user.id, this.user.id + ':' + message.clientMessageId, () => null);
+        await this.loadLocal(epoch); this.announce();
+      }
+    }
+  }
+
+  async selectConversation(id: string | null): Promise<void> {
+    const previous = this.state.selectedId;
+    if (previous && previous !== id) this.cacheWindow(previous);
+    const selection = ++this.selectionGeneration; const epoch = this.generation;
+    if (!id) { this.set({ selectedId: null, messages: [], historyBefore: null, historyLoading: false }); return; }
+    const cache = this.windows.get(id);
+    this.set({ selectedId: id, messages: cache?.messages || (previous === id ? this.state.messages : []), historyBefore: cache?.before || null, historyLoading: true });
+    if (!navigator.onLine || !this.initialized) { this.set({ historyLoading: false }); return; }
+    try {
+      const [conversation, history] = await Promise.all([this.request<Conversation>('/conversations/' + encodeURIComponent(id)), this.request<HistoryPage>('/conversations/' + encodeURIComponent(id) + '/messages?limit=50')]);
+      if (!this.current(epoch) || this.selectionGeneration !== selection) return;
+      const matching = cache?.accessKey === conversation.accessKey;
+      this.upsertConversation(conversation);
+      this.set({ messages: mergeMessages(matching ? cache.messages : [], history.items), historyBefore: matching ? cache.before : history.nextCursor, historyLoading: false });
+      this.cacheWindow(id);
+    } catch (error) {
+      if (!this.current(epoch) || this.selectionGeneration !== selection) return;
+      if (error instanceof APIError && [403, 404].includes(error.status)) this.revokeConversation(id);
+      this.set({ historyLoading: false, error: errorMessage(error) });
+      throw error;
+    }
+  }
+
+  private cacheWindow(cid: string) {
+    const conversation = this.state.conversations.find((item) => item.id === cid);
+    if (!conversation) return;
+    this.windows.delete(cid);
+    const messages = this.state.messages.slice(-1000);
+    this.windows.set(cid, { accessKey: conversation.accessKey, messages, before: this.state.messages.length > 1000 ? messages[0].seq : this.state.historyBefore });
+    while (this.windows.size > 10) this.windows.delete(this.windows.keys().next().value!);
+  }
+
+  async loadOlder(): Promise<void> {
+    const cid = this.state.selectedId; const before = this.state.historyBefore;
+    if (!cid || !before || this.state.historyLoading) return;
+    const epoch = this.generation; const selection = this.selectionGeneration;
+    this.set({ historyLoading: true });
+    try {
+      const history = await this.request<HistoryPage>('/conversations/' + encodeURIComponent(cid) + '/messages?limit=50&beforeSeq=' + encodeURIComponent(before));
+      if (!this.current(epoch) || selection !== this.selectionGeneration) return;
+      this.set({ messages: mergeMessages(history.items, this.state.messages), historyBefore: history.nextCursor, historyLoading: false });
+      this.cacheWindow(cid);
+    } catch (error) { if (this.current(epoch) && selection === this.selectionGeneration) this.set({ historyLoading: false, error: errorMessage(error) }); throw error; }
+  }
+
+  private async loadLocal(epoch: number) {
+    if (!this.localReady) return;
+    try {
+      const hint = await readOfflineIdentity();
+      if (!this.current(epoch)) return;
+      if (hint?.user.id !== this.user.id) { this.expire(); return; }
+      const entries = await readQueue(this.user.id);
+      for (const entry of entries) if (entry.expiresAt <= Date.now() && entry.errorCode !== 'OUTBOX_EXPIRED') await changeQueuedMessage(this.user.id, entry.key, (item) => ({ ...item, state: 'failed', errorCode: 'OUTBOX_EXPIRED', error: '待发内容已超过7天，已停止自动发送。可以复制内容后重新编辑。' }));
+      if (this.current(epoch)) this.set({ outbox: await readQueue(this.user.id) });
+    } catch (error) { if (this.current(epoch)) this.set({ error: localError(error).message }); }
+  }
+
+  async queue(conversationId: string, text: string, options: { replyToMessageId?: string; mentionedUserIds?: string[] } = {}): Promise<void> {
+    validateMessageText(text);
+    const conversation = this.state.conversations.find((item) => item.id === conversationId);
+    if (!this.running || !conversation?.canSend) throw new APIError(403, { code: conversation?.sendErrorCode || 'RESOURCE_UNAVAILABLE', message: conversation?.sendDisabledReason || '当前会话无法发送，请保留草稿。' });
+    if (!this.localReady) throw localError();
+    const epoch = this.generation; const clientMessageId = crypto.randomUUID();
+    const payload: SendPayload = { clientMessageId, text, attachmentIds: [], replyToMessageId: options.replyToMessageId || null, mentionedUserIds: options.mentionedUserIds || [], accessKey: conversation.accessKey, actorContext: this.user.id };
+    const entry: QueuedMessage = { key: this.user.id + ':' + clientMessageId, userId: this.user.id, conversationId, conversationTitle: conversation.title, payload, createdAt: Date.now(), expiresAt: Date.now() + OUTBOX_AGE_MS, state: 'queued', attempts: 0, retryAt: 0, error: null, errorCode: null, files: [] };
+    const saving = this.enqueueFlight.catch(() => undefined).then(async () => {
+      if (!this.current(epoch)) throw new APIError(401, { code: 'AUTH_REQUIRED', message: '账号状态已改变，内容尚未排队。' });
+      await addQueuedMessage(entry);
+    });
+    this.enqueueFlight = saving;
+    await saving;
+    if (this.current(epoch)) { await this.loadLocal(epoch); this.announce(); void this.drain(); }
+  }
+
+  async retry(clientMessageId: string): Promise<void> {
+    const key = this.user.id + ':' + clientMessageId;
+    await changeQueuedMessage(this.user.id, key, (item) => {
+      if (['STALE_ACCESS', 'IDEMPOTENCY_CONFLICT', 'OUTBOX_EXPIRED'].includes(item.errorCode || '')) throw new APIError(409, { code: item.errorCode!, message: '这条内容不能按原状态重试，请复制回编辑器并检查后重新发送。' });
+      return { ...item, state: 'queued', retryAt: 0, error: null, errorCode: null };
+    });
+    await this.refresh(); await this.loadLocal(this.generation); this.announce(); void this.drain();
+  }
+
+  async cancel(clientMessageId: string): Promise<void> {
+    await changeQueuedMessage(this.user.id, this.user.id + ':' + clientMessageId, () => null);
+    await this.loadLocal(this.generation); this.announce();
+  }
+
+  private async send(entry: QueuedMessage): Promise<SendResult> {
+    if (this.socket?.connected) {
+      const ack = await this.socket.timeout(10000).emitWithAck('message.send', { ...entry.payload, v: 1, conversationId: entry.conversationId, requestId: crypto.randomUUID() }) as { ok: boolean; status?: number; error?: { code: string; message: string; retryAfterMs?: number }; data: SendResult };
+      if (!ack?.ok) throw new APIError(ack?.status || 503, ack?.error || { code: 'INVALID_RESPONSE', message: '消息结果尚未确认，请稍后重试。' });
+      return ack.data;
+    }
+    return this.request<SendResult>('/conversations/' + encodeURIComponent(entry.conversationId) + '/messages', { method: 'POST', body: entry.payload });
+  }
+
+  private async drain(): Promise<void> {
+    if (this.drainFlight || !this.running || !this.initialized || !this.localReady || !navigator.onLine) return;
+    const epoch = this.generation; const signal = this.controller.signal;
+    const flight = withDeliveryLock(this.user.id, this.instanceId, signal, async (stillOwner) => {
+      await this.verifyIdentity(epoch);
+      if (!this.current(epoch) || !stillOwner()) return;
+      const entries = await readQueue(this.user.id);
+      for (const entry of entries) {
+        if (!this.current(epoch) || !stillOwner() || !navigator.onLine) break;
+        if (entry.state === 'failed' || entry.retryAt > Date.now()) continue;
+        try {
+          const conversation = await this.request<Conversation>('/conversations/' + encodeURIComponent(entry.conversationId));
+          if (!this.current(epoch) || !stillOwner()) break;
+          if (entry.expiresAt <= Date.now()) throw new APIError(409, { code: 'OUTBOX_EXPIRED', message: '待发内容已超过7天，请复制后重新编辑。' });
+          if (!conversation.canSend) throw new APIError(403, { code: conversation.sendErrorCode || 'RESOURCE_UNAVAILABLE', message: conversation.sendDisabledReason || '当前无法发送。' });
+          if (entry.payload.accessKey !== conversation.accessKey) throw new APIError(409, { code: 'STALE_ACCESS', message: '会话权限期已改变，这条待发内容已停止发送。请复制并检查后重新编辑。' });
+          const retained = await changeQueuedMessage(this.user.id, entry.key, (item) => ({ ...item, state: 'sending', attempts: item.attempts + 1, error: null, errorCode: null }));
+          if (!retained || !this.current(epoch) || !stillOwner()) continue;
+          await this.loadLocal(epoch); this.announce();
+          const result = await this.send(retained);
+          await changeQueuedMessage(this.user.id, entry.key, () => null);
+          if (this.current(epoch)) {
+            if (this.state.selectedId === result.message.conversationId) this.set({ messages: mergeMessages(this.state.messages, [result.message]) });
+            await this.loadLocal(epoch); this.announce(); this.syncAgain = true; void this.synchronize();
+          }
+        } catch (error) {
+          if (!this.current(epoch)) break;
+          if (error instanceof APIError && ['AUTH_REQUIRED', 'SESSION_REVOKED', 'LOCAL_IDENTITY_CHANGED'].includes(error.code)) { this.expire(); break; }
+          const code = error instanceof APIError ? error.code : 'NETWORK_ERROR';
+          const terminal = permanentErrors.has(code);
+          const delay = Math.max(error instanceof APIError ? error.retryAfterMs || 0 : 0, Math.min(30000, 1000 * 2 ** Math.min(entry.attempts + 1, 5))) * (0.9 + Math.random() * 0.2);
+          await changeQueuedMessage(this.user.id, entry.key, (item) => ({ ...item, state: terminal ? 'failed' : 'queued', retryAt: Date.now() + delay, errorCode: code, error: error instanceof APIError ? error.message : '发送结果尚未确认，将使用同一消息标识重试。' }));
+          await this.loadLocal(epoch); this.announce();
+          if (!terminal) break;
+        }
+      }
+    }).catch((error) => { if (this.current(epoch)) this.connectionFailure(error, epoch); });
+    this.drainFlight = flight;
+    try { await flight; } finally { if (this.drainFlight === flight) this.drainFlight = null; }
+  }
+
+  getDraft(conversationId: string): Promise<Draft | null> { return readDraft(this.user.id, conversationId); }
+  saveDraft(conversationId: string, text: string, position: { scrollTop?: number; anchorId?: string } = {}): Promise<void> { return saveLocalDraft(this.user.id, conversationId, text, position); }
+  async getLocalSummary(): Promise<{ pending: number; drafts: number }> { await this.enqueueFlight.catch(() => undefined); return localSummary(this.user.id); }
+  async logout(choice: 'keep' | 'delete'): Promise<void> {
+    const pendingSave = this.enqueueFlight; const pendingSend = this.drainFlight;
+    this.stop();
+    await pendingSave.catch(() => undefined); await pendingSend?.catch(() => undefined);
+    try {
+      await api('/api/v1/auth/logout', { method: 'POST', body: {} });
+      if (choice === 'delete') await clearLocalUser(this.user.id);
+      await forgetIdentity(this.user.id);
+      if (typeof BroadcastChannel !== 'undefined') { const channel = new BroadcastChannel('tongpin-state-v1'); channel.postMessage({ type: 'identity.changed', userId: null }); channel.close(); }
+      this.set({ ...initialState(), phase: 'expired' });
+    } catch (error) { void this.start(); throw error; }
+  }
+
+  async read(conversationId: string, seq: string): Promise<void> {
+    if (!this.running || !this.initialized || this.state.selectedId !== conversationId || document.visibilityState !== 'visible' || !document.hasFocus() || this.reading.has(conversationId)) return;
+    const conversation = this.state.conversations.find((item) => item.id === conversationId);
+    if (!conversation || BigInt(seq) <= BigInt(conversation.readSeq)) return;
+    this.reading.add(conversationId); const epoch = this.generation;
+    try { await this.request('/conversations/' + encodeURIComponent(conversationId) + '/read', { method: 'POST', body: { readSeq: seq } }); const current = await this.request<Conversation>('/conversations/' + encodeURIComponent(conversationId)); if (this.current(epoch)) this.upsertConversation(current); }
+    finally { this.reading.delete(conversationId); }
+  }
+
+  private async loadNotifications(epoch: number, more: boolean) {
+    const cursor = more ? this.state.nextNotifications : null;
+    if (more && !cursor) return;
+    const page = await this.request<Page<NotificationItem> & { unreadCount: number }>('/notifications?limit=100' + (cursor ? '&after=' + encodeURIComponent(cursor) : ''));
+    if (this.current(epoch)) this.set({ notifications: more ? mergeItems(this.state.notifications, page.items) : page.items, notificationCount: page.unreadCount, nextNotifications: page.nextCursor });
+  }
+  async loadMoreNotifications(): Promise<void> { await this.loadNotifications(this.generation, true); }
+  async loadMoreConversations(): Promise<void> { const cursor = this.state.nextConversations; if (!cursor) return; const epoch = this.generation; const page = await this.request<Page<Conversation>>('/conversations?limit=100&after=' + encodeURIComponent(cursor)); if (this.current(epoch)) { for (const item of page.items) this.upsertConversation(item); this.set({ nextConversations: page.nextCursor }); } }
+  async loadMoreContacts(): Promise<void> { const cursor = this.state.nextContacts; if (!cursor) return; const epoch = this.generation; const page = await this.request<Page<Contact>>('/friends?limit=100&after=' + encodeURIComponent(cursor)); if (this.current(epoch)) this.set({ contacts: mergeItems(this.state.contacts, page.items), nextContacts: page.nextCursor }); }
+  async loadMoreRequests(): Promise<void> { const cursor = this.state.nextRequests; if (!cursor) return; const epoch = this.generation; const page = await this.request<Page<FriendRequest>>('/friend-requests?limit=100&after=' + encodeURIComponent(cursor)); if (this.current(epoch)) this.set({ requests: mergeItems(this.state.requests, page.items), nextRequests: page.nextCursor }); }
+}

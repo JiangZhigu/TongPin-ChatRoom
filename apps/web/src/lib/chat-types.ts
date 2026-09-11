@@ -1,0 +1,20 @@
+import type { User } from './api';
+
+export type UserSummary = Pick<User, 'id' | 'username' | 'nickname'>;
+export type Contact = UserSummary & { relationship: 'self' | 'friend' | 'incoming' | 'outgoing' | 'none'; requestId: string | null; online: boolean; blocked: boolean; notifyOnline: boolean };
+export type FriendRequest = { id: string; sender: UserSummary; target: UserSummary; direction: 'incoming' | 'outgoing'; note: string; status: 'pending' | 'accepted' | 'rejected' | 'cancelled'; createdAt: number };
+export type Attachment = { id: string; name: string; size: number; mime: string; kind: 'image' | 'file'; contentUrl: string; thumbnailUrl?: string };
+export type Message = { id: string; conversationId: string; seq: string; senderId: string | null; sender: UserSummary | null; clientMessageId: string | null; kind: 'user' | 'system'; text: string; status: 'sent' | 'recalled' | 'moderated' | 'purged'; createdAt: number; replyToMessageId: string | null; reply: { id: string; status: 'available' | 'unavailable'; text: string; author: string } | null; mentionedUserIds: string[]; attachments: Attachment[]; reactions: { key: string; count: number; mine: boolean }[] };
+export type Conversation = { id: string; kind: 'direct' | 'group'; title: string; description: string; peer: (UserSummary & { online: boolean }) | null; role: 'owner' | 'admin' | 'member'; periodId: string | null; memberCount: number; lastSeq: string; readSeq: string; peerReadSeq: string | null; unreadCount: number; lastMessage: Message | null; canSend: boolean; sendDisabledReason: string | null; sendErrorCode: string | null; accessKey: string; updatedAt: number; preferences: { muted: boolean; pinned: boolean; archived: boolean } };
+export type Page<T> = { items: T[]; nextCursor: string | null };
+export type HistoryPage = { items: Message[]; hasMore: boolean; nextCursor: string | null; lastSeq: string };
+export type SendPayload = { clientMessageId: string; text: string; attachmentIds: string[]; replyToMessageId: string | null; mentionedUserIds: string[]; accessKey: string; actorContext?: string };
+export type SendResult = { message: Message; duplicate: boolean };
+export type QueuedMessage = { key: string; userId: string; conversationId: string; conversationTitle: string; payload: SendPayload; createdAt: number; expiresAt: number; state: 'queued' | 'sending' | 'failed'; attempts: number; retryAt: number; error: string | null; errorCode: string | null; files: { id: string; blob: Blob; name: string; mime: string; attachmentId?: string }[] };
+export type Draft = { key: string; userId: string; conversationId: string; text: string; updatedAt: number; scrollTop?: number; anchorId?: string };
+export type NotificationItem = { id: string; type: string; entityRef: string; createdAt: number; readAt: number | null; text: string; request?: FriendRequest };
+export type SyncEvent = { v: number; eventId: string; cursor: string; type: string; entityRef: string; occurredAt: number; conversationId: string | null; conversation?: Conversation; message?: Message };
+export type SyncPage = { items: SyncEvent[]; cursor: string; highWatermark: string; hasMore: boolean };
+export type ChatSnapshot = { cursor: string; contacts: Page<Contact>; conversations: Page<Conversation>; requests: Page<FriendRequest>; policy: { messageCodepoints: number; messageBytes: number; outboxCount: number; outboxDays: number } };
+export type ConnectionPhase = 'connecting' | 'syncing' | 'online' | 'degraded' | 'offline' | 'expired';
+export type ChatState = { phase: ConnectionPhase; conversations: Conversation[]; contacts: Contact[]; requests: FriendRequest[]; notifications: NotificationItem[]; notificationCount: number; selectedId: string | null; messages: Message[]; historyBefore: string | null; historyLoading: boolean; outbox: QueuedMessage[]; error: string | null; nextConversations: string | null; nextContacts: string | null; nextRequests: string | null; nextNotifications: string | null; onlineNotice: { id: string; user: UserSummary } | null };

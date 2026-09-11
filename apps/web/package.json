@@ -26,8 +26,10 @@
     "@playwright/test": ">=1.50 <2",
     "@testing-library/jest-dom": ">=6 <7",
     "@testing-library/react": ">=16 <17",
+    "@types/node": "^24.13.4",
     "@types/react": ">=19 <20",
     "@types/react-dom": ">=19 <20",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": ">=26 <28",
     "typescript": ">=5.8 <6",
     "vitest": ">=3 <5"

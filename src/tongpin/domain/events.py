@@ -1,0 +1,179 @@
+from __future__ import annotations
+
+from tongpin.contracts.base import APIError
+from tongpin.contracts.chat import sequence
+from tongpin.domain.chat import activity_cursor, next_activity
+from tongpin.domain.security import identifier
+from tongpin.infra.db import now_ms
+
+
+class EventService:
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    def publish(self, conn, recipients, kind, ref, cid=None):
+        users = sorted(set(recipients))
+        if not users:
+            return
+        for uid in users:
+            conn.execute(
+                "INSERT INTO user_events(user_id,kind,entity_ref,conversation_id,created_at) VALUES(?,?,?,?,?)",
+                (uid, kind, ref, cid, now_ms()),
+            )
+        # The notification hint and data change commit together. Delivery may retry.
+        self.runtime.jobs.enqueue_in_transaction(conn, "events.dispatch", {"userIds": users})
+
+    def notify(self, conn, user_id, kind, ref, actor_id=None):
+        nid = identifier("n_")
+        conn.execute(
+            "INSERT INTO notifications(id,user_id,kind,entity_ref,actor_id,created_at) VALUES(?,?,?,?,?,?)",
+            (nid, user_id, kind, ref, actor_id, now_ms()),
+        )
+        self.publish(conn, [user_id], "notification.created", nid)
+
+    def user_changed(self, conn, uid):
+        friends = conn.execute(
+            "SELECT low_id,high_id FROM friendships WHERE low_id=? OR high_id=?", (uid, uid)
+        ).fetchall()
+        self.publish(conn, [uid], "account.changed", uid)
+        for relation in friends:
+            other = relation["high_id"] if relation["low_id"] == uid else relation["low_id"]
+            self.publish(conn, [other], "contacts.changed", uid)
+        rows = conn.execute(
+            "SELECT id FROM conversations c WHERE (kind='direct' AND (low_id=? OR high_id=?)) OR (kind='group' AND EXISTS(SELECT 1 FROM memberships m WHERE m.conversation_id=c.id AND m.user_id=? AND m.left_at IS NULL))",
+            (uid, uid, uid),
+        ).fetchall()
+        for row in rows:
+            self.publish(
+                conn,
+                self.runtime.access.recipients(conn, row["id"]),
+                "conversation.updated",
+                row["id"],
+                row["id"],
+            )
+
+    @staticmethod
+    def high_watermark(conn):
+        row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name='user_events'").fetchone()
+        return row[0] if row else 0
+
+    def materialize(self, conn, actor, row):
+        event = {
+            "v": 1,
+            "eventId": str(row["id"]),
+            "cursor": str(row["id"]),
+            "type": row["kind"],
+            "entityRef": row["entity_ref"],
+            "occurredAt": row["created_at"],
+            "conversationId": row["conversation_id"],
+        }
+        if row["conversation_id"]:
+            try:
+                event["conversation"] = self.runtime.chat.conversation_view(
+                    conn, actor.id, row["conversation_id"]
+                )
+                if row["kind"].startswith("message."):
+                    message, _ = self.runtime.access.message(conn, actor.id, row["entity_ref"])
+                    event["message"] = self.runtime.chat.message_view(conn, actor.id, message)
+            except APIError as error:
+                if error.status not in (403, 404):
+                    raise
+                event["type"] = "access.revoked"
+                event.pop("conversation", None)
+        return event
+
+    def sync(self, actor, after, limit=100):
+        cursor = sequence(after)
+        with self.runtime.db.read() as conn:
+            actor = self.runtime.auth.current_in_transaction(conn, actor)
+            floor = int(
+                conn.execute(
+                    "SELECT value FROM instance_metadata WHERE key='event_floor'"
+                ).fetchone()[0]
+            )
+            high = self.high_watermark(conn)
+            if cursor < floor or cursor > high:
+                raise APIError("RESYNC_REQUIRED", "同步记录已更新，请重新获取当前可访问内容。", 410)
+            rows = conn.execute(
+                "SELECT * FROM user_events WHERE user_id=? AND id>? AND id<=? ORDER BY id LIMIT ?",
+                (actor.id, cursor, high, limit + 1),
+            ).fetchall()
+            more = len(rows) > limit
+            page = rows[:limit]
+            return {
+                "items": [self.materialize(conn, actor, row) for row in page],
+                "cursor": str(page[-1]["id"] if more else high),
+                "highWatermark": str(high),
+                "hasMore": more,
+            }
+
+    def snapshot(self, actor):
+        with self.runtime.db.read() as conn:
+            actor = self.runtime.auth.current_in_transaction(conn, actor)
+            # All first pages and this high watermark use one SQLite read snapshot.
+            return {
+                "cursor": str(self.high_watermark(conn)),
+                "contacts": self.runtime.contacts.list_in(conn, actor.id, limit=100),
+                "conversations": self.runtime.chat.list_in(conn, actor.id, limit=100),
+                "requests": self.runtime.contacts.requests_in(conn, actor.id, limit=100),
+                "policy": {
+                    "messageCodepoints": 4000,
+                    "messageBytes": 16384,
+                    "outboxCount": 100,
+                    "outboxDays": 7,
+                },
+            }
+
+    def notifications(self, actor, before="", limit=50):
+        boundary, last_id = activity_cursor(before)
+        with self.runtime.db.read() as conn:
+            self.runtime.auth.current_in_transaction(conn, actor)
+            rows = conn.execute(
+                "SELECT * FROM notifications WHERE user_id=? AND (?=0 OR created_at<? OR(created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?",
+                (actor.id, boundary, boundary, boundary, last_id, limit + 1),
+            ).fetchall()
+            items = []
+            for row in rows[:limit]:
+                item = {
+                    "id": row["id"],
+                    "type": row["kind"],
+                    "entityRef": row["entity_ref"],
+                    "createdAt": row["created_at"],
+                    "readAt": row["read_at"],
+                    "text": "状态已更新，请查看相关列表。",
+                }
+                if row["kind"] in ("friend.requested", "friend.accepted"):
+                    request = conn.execute(
+                        "SELECT * FROM friend_requests WHERE id=? AND (sender_id=? OR target_id=?)",
+                        (row["entity_ref"], actor.id, actor.id),
+                    ).fetchone()
+                    if request:
+                        item["request"] = self.runtime.contacts.request_view(
+                            conn, actor.id, request
+                        )
+                        item["text"] = (
+                            "收到新的好友申请"
+                            if row["kind"] == "friend.requested"
+                            else "好友申请已通过"
+                        )
+                items.append(item)
+            unread = conn.execute(
+                "SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL",
+                (actor.id,),
+            ).fetchone()[0]
+            return {"items": items, "nextCursor": next_activity(rows, limit), "unreadCount": unread}
+
+    def read_notification(self, actor, nid):
+        with self.runtime.db.write() as conn:
+            self.runtime.auth.current_in_transaction(conn, actor)
+            row = conn.execute(
+                "SELECT 1 FROM notifications WHERE id=? AND user_id=?", (nid, actor.id)
+            ).fetchone()
+            if not row:
+                raise APIError("RESOURCE_UNAVAILABLE", "通知不存在。", 404)
+            conn.execute(
+                "UPDATE notifications SET read_at=COALESCE(read_at,?) WHERE id=? AND user_id=?",
+                (now_ms(), nid, actor.id),
+            )
+            self.publish(conn, [actor.id], "notification.updated", nid)
+        return {"id": nid, "read": True}

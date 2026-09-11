@@ -426,6 +426,7 @@ class AuthService:
                 "UPDATE users SET nickname=?,bio=?,updated_at=? WHERE id=?",
                 (nickname, bio, now_ms(), principal.id),
             )
+            self.runtime.events.user_changed(conn, principal.id)
             user = conn.execute("SELECT * FROM users WHERE id=?", (principal.id,)).fetchone()
         return {"user": public_user(user)}
 
@@ -438,7 +439,9 @@ class AuthService:
                 "UPDATE users SET preferences=?,updated_at=? WHERE id=?",
                 (json.dumps(prefs), now_ms(), principal.id),
             )
+            self.runtime.events.user_changed(conn, principal.id)
             user = conn.execute("SELECT * FROM users WHERE id=?", (principal.id,)).fetchone()
+        self.runtime.presence_changed(principal.id)
         return {"user": public_user(user)}
 
     def security_events(self, principal):
