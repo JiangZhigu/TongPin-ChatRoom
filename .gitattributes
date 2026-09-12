@@ -6,3 +6,7 @@
 Dockerfile text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+# Pinned Unicode hashes and generated emoji bytes must survive Windows checkout.
+vendor/unicode/** text eol=lf
+apps/web/src/data/emoji.json text eol=lf
+src/tongpin/data/emoji.json text eol=lf
