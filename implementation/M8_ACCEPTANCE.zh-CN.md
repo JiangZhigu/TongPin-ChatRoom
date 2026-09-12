@@ -4,12 +4,14 @@
 
 共享证据索引保存在项目 `.codex/work-logs/tongpin-m0-20260911-01a08d87/verification-index.json`，本地原始数据不发布至GitHub。M8旧全量失败、定向修复和新冻结回归见 [M8记录](M8_DELIVERY.zh-CN.md)：`2658025` 上Python212/212、Vitest435/435通过，0失败/错误/跳过，逻辑受测输入前后无变化，记录 `M8-FINAL-REGRESSION-01-01`。
 
+追加认证行为另见[注册/登录记录](REGISTRATION_LOGIN_DELIVERY.zh-CN.md)：新站open，正常登录无验证码，第5次连续密码失败才挑战；68项不同后端用例有通过证据。53b0afe的新三平台CI各63项平台后端、445项完整前端及真实浏览器全部通过，Docker真实HTTP/WS通过。上述212/435仍属于M8历史冻结，不称为53b0afe的新全量后端。用户要求的新同等级Astra现正独立执行完整Edge体验。
+
 ## 原设计 A–G
 
 | 条目 | 核对内容 | 现有证据与实际边界 |
 |---|---|---|
-| A01 | 注册、唯一性、昵称/长度 | [M2](M2_DELIVERY.zh-CN.md)真实注册；test_auth注册唯一/验证；新冻结全量通过 |
-| A02 | 服务端CAPTCHA及错误/过期 | M2浏览器及test_auth，生产响应不含答案 |
+| A01 | 注册、唯一性、昵称/长度 | [M2](M2_DELIVERY.zh-CN.md)及追加批次真实注册；test_auth唯一/验证；新增默认open、/register直达及保留已存策略验证 |
+| A02 | 服务端CAPTCHA及错误/过期 | M2及追加真实浏览器；注册/找回必须CAPTCHA，登录第5次密码失败后才要求；test_auth/test_login_challenge，生产响应不含答案 |
 | A03 | CAPTCHA并发消费/轮换/重启 | test_auth的atomic_attempts_rotation_expiry_and_restart；M2错误后恢复界面 |
 | A04 | Argon2id、盐、敏感信息 | M2凭据检查及test_auth；待推送历史和后续增量的公开范围审查已通过 |
 | A05 | Cookie/CSRF/旋转/限流/到期 | test_auth及M2真实HTTP/WS；HTTPS真实域名证书属于目标主机验收 |
@@ -50,16 +52,16 @@
 | E06 | 上传绑定/ready/取消/孤儿 | test_files、test_files_live及M6浏览器 |
 | E07 | IndexedDB Blob刷新/配额恢复 | M6真实离线刷新重传与本机配额界面回归 |
 | E08 | 扫描未知/失败不假报clean | test_file_validation环回扫描协议、test_files；本机无真实Clamd服务，生产一般文件保持隔离 |
-| F01 | 浅灰浅蓝与布局基线 | M1–M7/V3阶段截图；最终Astra体验尚未执行 |
-| F02 | 页面/弹层可达与操作 | 阶段浏览器覆盖各模块；完整独立体验逐入口待执行 |
+| F01 | 浅灰浅蓝与布局基线 | M1–M7/V3阶段截图；最终Astra正在独立Edge体验，结果待记录 |
+| F02 | 页面/弹层可达与操作 | 阶段浏览器覆盖各模块；完整独立体验正在逐入口执行 |
 | F03 | 长度/纯文本/IME/换行 | 输入与Composer单元、浏览器文字发送；物理中文候选确认未由自动化代表 |
 | F04 | 草稿/滚动位置/分页锚点 | M3/M4/M6/M7浏览器与客户端单元，阶段缺陷已修复 |
 | F05 | Unicode emoji/检索/肤色/最近 | M7浏览器、test_emoji、EmojiPicker；Unicode源/许可证随发布包 |
 | F06 | 320–1920及手机导航/软键盘 | V3六种宽度及M9六截图无横向溢出；真实手机软键盘仍未测 |
 | F07 | 弹层焦点/Escape/aria/缩放 | Modal/组件直接检查与阶段浏览器；屏幕阅读器和全站对比度审计未宣称完成 |
 | F08 | 断线/失权/限流/失败真状态 | 各阶段真实故障路径和修复；最终体验复核文案 |
-| F09 | 正式包无模拟认证/假ACK | 独立生产工程、M1–M7构建与源检查；待推送历史及后续安装/CI增量公开范围审查通过，候选包355文件清单校验通过 |
-| G01 | 三平台运行/构建/SQLite/上传 | [M9第三轮CI](M9_DELIVERY.zh-CN.md)三标准runner全部通过：各41项平台后端、435项前端、真实浏览器；系统/SQLite版本按日志分别列明 |
+| F09 | 正式包无模拟认证/假ACK | 独立生产工程、M1–M7及追加认证检查；公开范围与增量审查通过，最新53b0afe候选357文件和构建回执校验通过 |
+| G01 | 三平台运行/构建/SQLite/上传 | [追加CI](REGISTRATION_LOGIN_DELIVERY.zh-CN.md)三标准runner全部通过：各63项平台后端、445项前端、真实浏览器；应用Python/SQLite按日志分别列明 |
 | G02 | 缓存/持久规则/单实例 | test_infrastructure、test_m1_live真实第二实例与重启 |
 | G03 | 限流/容量/DB忙/空间退化 | 有界执行器/上传/配额检查；M8-SQLITE-FAULT-01-01两项真实BUSY/FULL通过：消息/事件完全回滚，恢复后原编号唯一提交；不填满物理磁盘 |
 | G04 | 100连接600秒实测 | M8-LOAD-COMPARE-01-01通过：6005/6005，p95 217.14ms；硬件/分位数/缺样与恢复时间见M8记录 |
