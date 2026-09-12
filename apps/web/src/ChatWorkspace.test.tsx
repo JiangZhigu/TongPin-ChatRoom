@@ -651,6 +651,26 @@ function enableTasks() {
 }
 
 describe('V3 task shell integration', () => {
+  it.each([true, false])('creates in the selected group from its side panel even when personal creation is %s', async (canCreatePersonal) => {
+    enableTasks();
+    taskUI.meta.mockResolvedValue({ ...integrationMeta, canCreatePersonal, writeReason: canCreatePersonal ? null : '个人待办数量已达上限' });
+    chat.state!.conversations = [{ ...conversation('group-current', '当前协作群'), kind: 'group', peer: null }, { ...conversation('group-other', '另一个群'), kind: 'group', peer: null }];
+    taskUI.groupSettings.mockImplementation(async (groupId: string) => ({ groupId, canManage: false, canCreate: true, writeReason: null, createPolicy: 'members', count: 0, quota: 500, etag: 'group-v1' }));
+    taskUI.create.mockResolvedValue({ ...integrationTask, scope: 'group', groupId: 'group-current', groupName: '当前协作群', title: '群侧栏创建的待办' });
+    showWorkspace(); await openConversation('当前协作群');
+    const panel = within(screen.getByRole('region', { name: '群待办概览' }));
+    await waitFor(() => expect(panel.getByRole('button', { name: '创建群待办' })).toBeEnabled());
+    fireEvent.click(panel.getByRole('button', { name: '创建群待办' }));
+    const form = within(await screen.findByRole('dialog', { name: '新建待办' }));
+    expect(form.getByLabelText('可见范围')).toHaveValue('group');
+    expect(form.getByLabelText('所属群')).toHaveValue('group-current');
+    fireEvent.change(form.getByLabelText(/待办标题/), { target: { value: '群侧栏创建的待办' } });
+    await waitFor(() => expect(form.getByRole('button', { name: '确认创建待办' })).toBeEnabled());
+    fireEvent.click(form.getByRole('button', { name: '确认创建待办' }));
+    await waitFor(() => expect(taskUI.create).toHaveBeenCalledTimes(1));
+    expect(taskUI.create).toHaveBeenCalledWith(expect.objectContaining({ scope: 'group', groupId: 'group-current', title: '群侧栏创建的待办' }), expect.any(String));
+    expect(chat.queue).not.toHaveBeenCalled();
+  });
   it('starts one task client for the account and stops it on unmount', async () => {
     enableTasks(); const view = showWorkspace(); await waitFor(() => expect(taskUI.meta).toHaveBeenCalled()); expect(taskUI.users).toEqual([user.id]); expect(taskUI.start).toHaveBeenCalledTimes(1); view.unmount(); expect(taskUI.stop).toHaveBeenCalledTimes(1); expect(taskUI.listeners.size).toBe(0);
   });
