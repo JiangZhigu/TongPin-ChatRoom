@@ -21,5 +21,5 @@ foreach ($candidate in $candidates) {
     & $candidate.Name @prefix (Join-Path $projectRoot 'scripts\deploy.py') @Arguments
     exit $LASTEXITCODE
 }
-Write-Error 'Python 3.12 is required. Install an approved runtime, then run tongpin.cmd doctor.'
+Write-Error 'Python 3.12+ is required for this command. Run install.cmd to prepare Python automatically.'
 exit 1

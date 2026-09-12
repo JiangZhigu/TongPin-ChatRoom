@@ -103,29 +103,31 @@ def test_install_bootstrap_rejects_redirected_environment_before_download(tmp_pa
 @pytest.mark.parametrize('exit_code', [0, 17])
 def test_windows_install_launcher_from_external_directory(tmp_path, exit_code):
     candidate = tmp_path / 'package with spaces'
-    candidate.mkdir()
+    (candidate / 'scripts').mkdir(parents=True)
     shutil.copyfile(ROOT / 'install.cmd', candidate / 'install.cmd')
-    (candidate / 'tongpin.cmd').write_bytes(
-        ('@echo off\r\necho %*>"%~dp0captured.txt"\r\nexit /b ' + str(exit_code) + '\r\n').encode('ascii'))
-    result = subprocess.run(['cmd.exe', '/d', '/c', str(candidate / 'install.cmd')],
+    (candidate / 'scripts/bootstrap_windows.ps1').write_text(
+        'param([Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments)\n'
+        '$Arguments | Set-Content -LiteralPath (Join-Path (Split-Path $PSScriptRoot) "captured.txt")\n'
+        'exit ' + str(exit_code) + '\n')
+    result = subprocess.run(['cmd.exe', '/d', '/c', str(candidate / 'install.cmd'), '--dev', '--build'],
                             cwd=tmp_path, env=os.environ | {'TONGPIN_NO_PAUSE': '1'},
                             capture_output=True, text=True, check=False)
     assert result.returncode == exit_code
-    assert (candidate / 'captured.txt').read_text().strip() == 'install --bootstrap-tools --download-python'
+    assert (candidate / 'captured.txt').read_text().splitlines() == ['--dev', '--build']
 
 
 @pytest.mark.skipif(not shutil.which('sh'), reason='POSIX shell unavailable on this host')
 @pytest.mark.parametrize('exit_code', [0, 17])
 def test_posix_install_launcher_from_external_directory(tmp_path, exit_code):
     candidate = tmp_path / 'package with spaces'
-    candidate.mkdir()
+    (candidate / 'scripts').mkdir(parents=True)
     shutil.copyfile(ROOT / 'install.sh', candidate / 'install.sh')
-    (candidate / 'tongpin.sh').write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$(dirname "$0")/captured.txt"\nexit ' + str(exit_code) + '\n')
-    result = subprocess.run(['sh', str(candidate / 'install.sh')], cwd=tmp_path,
+    (candidate / 'scripts/bootstrap_unix.sh').write_text(
+        'tp_install() { printf "%s\\n" "$@" > "$TP_ROOT/captured.txt"; return ' + str(exit_code) + '; }\n')
+    result = subprocess.run(['sh', str(candidate / 'install.sh'), '--dev', '--build'], cwd=tmp_path,
                             capture_output=True, text=True, check=False)
     assert result.returncode == exit_code
-    assert (candidate / 'captured.txt').read_text().splitlines() == ['install', '--bootstrap-tools', '--download-python']
+    assert (candidate / 'captured.txt').read_text().splitlines() == ['--dev', '--build']
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell native stderr behavior')

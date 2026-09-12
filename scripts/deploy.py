@@ -101,10 +101,10 @@ def doctor():
     commands = {name: shutil.which(name) for name in ('uv', 'node', 'npm', 'docker', 'systemctl', 'launchctl', 'apt-get', 'dnf', 'yum', 'zypper', 'pacman', 'apk', 'brew', 'winget')}
     return {'platform': platform.platform(), 'python': platform.python_version(), 'sqlite': sqlite3.sqlite_version,
             'linux': os_release, 'commands': commands, 'project': str(ROOT),
-            'required': {'bootstrapPython': '3.12 or newer', 'python': '3.12.13',
+            'required': {'bootstrapPython': '3.8 or newer (native installers prepare it when missing)', 'python': '3.12.13',
                          'node': '24.15.x (source builds only)', 'npm': '11.12.x (source builds only)',
                          'uv': '0.11.27 or compatible (automatically prepared when missing)'},
-            'next': 'For a prebuilt release, run install.cmd on Windows or sh install.sh on Linux/macOS; only bootstrap Python 3.12 or newer must be installed manually. The installer prepares missing uv and permits project-local Python downloads, then installs locked backend dependencies. Node/npm are needed only to build frontend source. Without systemd/launchd, use the foreground run entry under an approved supervisor. No sudo, global package, Docker or service installation is performed here.'}
+            'next': 'For a prebuilt release, run install.cmd on Windows or sh install.sh on Linux/macOS, even when Python is missing. Native installers detect the platform and prepare bootstrap Python with its package manager, then prepare project-local uv, Python 3.12.13 and locked dependencies. System package installation may require administrator authentication; --dry-run on the native installer prints its plan without changes. Direct deploy.py commands still require Python 3.12+. Node/npm are needed only to build frontend source. No Docker or service installation is performed.'}
 
 
 def install(options):

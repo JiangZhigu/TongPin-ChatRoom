@@ -6,5 +6,5 @@ for candidate in "$PROJECT_ROOT/.venv/bin/python" python3 python; do
     exec "$candidate" "$PROJECT_ROOT/scripts/deploy.py" "$@"
   fi
 done
-printf '%s\n' 'Python 3.12 is required. Install an approved runtime, then run sh tongpin.sh doctor.' >&2
+printf '%s\n' 'Python 3.12+ is required for this command. Run sh install.sh to prepare Python automatically.' >&2
 exit 1

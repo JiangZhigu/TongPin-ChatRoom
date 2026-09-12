@@ -78,14 +78,14 @@ flowchart LR
 
 | 方式 | 适合谁 | 需要手动准备 |
 | :--- | :--- | :--- |
-| **已构建前端的发布 ZIP** | 希望直接运行应用 | **Python 3.12 或更新版本** |
-| **从源码安装** | 需要修改或重新构建前端 | Python 3.12+、Node.js 24.x、npm 11.x |
+| **已构建前端的发布 ZIP** | 希望直接运行应用 | 联网及系统包管理器所需权限；**Python 可以自动安装** |
+| **从源码安装** | 需要修改或重新构建前端 | Node.js 24.x、npm 11.x；Python 可以自动安装 |
 
-两种方式的项目运行时均锁定为 **Python 3.12.13**，后端依赖由 `uv.lock` 固定。下面的安装命令会自动准备缺失的 uv，并允许复用或下载项目指定的 Python；首次安装需要联网。
+两种方式的项目运行时均锁定为 **Python 3.12.13**，后端依赖由 `uv.lock` 固定。安装入口会检测系统、架构和 Linux 发行版：已有 Python 3.8+ 时复用它完成引导；没有时通过系统包管理器安装，再准备项目指定的 Python、uv 和后端依赖。首次安装需要联网，系统安装阶段可能要求 sudo、doas 或 Windows 授权。
 
 ### 方式一：使用发布包
 
-将已经包含前端的 ZIP 解压到一个有写入权限的独立目录。**部署时无需安装 Node.js、npm 或手动安装 uv。** 若拿到的是仓库源码，请使用下一节的源码安装方式。
+将已经包含前端的 ZIP 解压到一个有写入权限的独立目录。**无需预先手动安装 Python、Node.js、npm 或 uv。** Windows 需要可用的 winget；Linux 使用发行版包管理器；macOS 缺少包管理器时会自动准备 Homebrew。若拿到的是仓库源码，请使用下一节的源码安装方式。
 
 **Windows**
 
@@ -114,15 +114,15 @@ sh ./tongpin.sh manage init-admin
 sh ./tongpin.sh run
 ```
 
-使用 `sh` 调用不依赖 ZIP 是否保留脚本的可执行权限。更详细的准备条件与故障处理见 [只需 Python 的安装说明](INSTALL-PYTHON.zh-CN.md)。
+使用 `sh` 调用不依赖 ZIP 是否保留脚本的可执行权限。可先运行 `install.cmd --dry-run` 或 `sh ./install.sh --dry-run` 查看检测结果和安装计划，这不会下载或安装软件。发行版支持范围、提权和故障处理见 [自动安装说明](INSTALL-PYTHON.zh-CN.md)。
 
-> **平台验证说明：** 同一份发布包提供 Windows、Linux 和 macOS 入口。2026-09-12 的 Python 安装包已在 Windows x64 上验证全新解压、无 Node/npm/uv 环境安装、服务启动和实际页面；该安装包尚未完成 Linux/macOS 原生安装验证。仓库历史三平台 CI 的范围见阶段交付记录。
+> **平台验证说明：** 同一份发布包提供 Windows、Linux 和 macOS 入口。系统包管理器分支使用隔离替身测试，避免修改测试主机；这不等同于真实系统安装验收。Linux/macOS 的原生包管理器安装尚未在本轮实测，仓库历史三平台 CI 的范围见阶段交付记录。
 
 ### 方式二：从源码安装
 
 准备以下工具，并确认能在终端中调用：
 
-- **Python 3.12 或更新版本**：用于启动安装器，项目实际使用 3.12.13。
+- **可用的系统包管理器与安装权限**：缺少 Python 时自动准备，项目实际使用 3.12.13。
 - **Node.js 24.x**：最低版本为 24.15.0。
 - **npm 11.x**：最低版本为 11.12.1。
 
@@ -136,7 +136,7 @@ cd TongPin-ChatRoom
 **Windows PowerShell**
 
 ```powershell
-.\tongpin.cmd install --bootstrap-tools --download-python --dev --build
+.\install.cmd --dev --build
 .\tongpin.cmd manage init-admin
 .\tongpin.cmd run
 ```
@@ -144,12 +144,12 @@ cd TongPin-ChatRoom
 **Linux / macOS**
 
 ```sh
-sh ./tongpin.sh install --bootstrap-tools --download-python --dev --build
+sh ./install.sh --dev --build
 sh ./tongpin.sh manage init-admin
 sh ./tongpin.sh run
 ```
 
-`--dev` 安装开发检查所需的依赖，`--build` 安装锁定的前端依赖并构建页面。安装工具、下载的 Python、缓存及虚拟环境均使用项目目录；已有符合要求的工具或 Python 可以复用。
+`--dev` 安装开发检查所需的依赖，`--build` 安装锁定的前端依赖并构建页面。系统包管理器安装的引导 Python 使用其正常安装位置；项目运行时、uv、缓存及虚拟环境使用项目目录。已有符合要求的工具或 Python 可以复用，项目依赖不会安装到系统 Python 中。
 
 ### 第一次使用
 
@@ -217,7 +217,7 @@ TongPin-ChatRoom/
 
 | 你想了解 | 阅读文档 |
 | :--- | :--- |
-| 只安装 Python，直接使用发布包 | [发布包安装说明](INSTALL-PYTHON.zh-CN.md) |
+| 没有 Python，自动准备环境并使用发布包 | [发布包安装说明](INSTALL-PYTHON.zh-CN.md) |
 | 安装入口、平台差异与命令参数 | [安装与平台入口](docs/INSTALL.zh-CN.md) |
 | 环境变量、站点策略与生产预检 | [配置参考](docs/CONFIGURATION.zh-CN.md) |
 | 聊天、群组、文件、待办与账号操作 | [用户指南](docs/USER_GUIDE.zh-CN.md) |
