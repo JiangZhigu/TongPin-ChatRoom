@@ -2,7 +2,7 @@
 
 任务 ID：tongpin-m0-20260911-01a08d87。更新：2026-09-12。项目根：F:/py/demo_chatroom。
 
-当前：**M1–M9、完整SA01–SA14及V3完整P0/P1的阶段实现、验收及交付准备已完成。2026-09-12追加开放注册与连续5次密码错误才要求验证码，本机定向、真实注册/登录流程和独立审查通过。提交53b0afe的新三平台CI已全部通过：各63项后端、445项前端及真实浏览器，Docker真实HTTP/WS通过。最终新Astra已按要求继承主智能体模型与思考等级，开始使用agent-browser驱动Edge的完整体验；发现问题后继续修复复测，再正式交付。** FE-1持续执行，无逐阶段确认点。重大事项见[待确认清单](PENDING_CONFIRMATIONS.zh-CN.md)。
+当前：**M1–M9、完整SA01–SA14及V3完整P0/P1的阶段实现、验收及交付准备已完成。开放注册、连续5次密码错误才要求验证码、新版UI及3项真实体验缺陷修复已整合；3项缺陷均有对应候选的真实Edge复测。完整体验仍在同一最终Astra中继续，未提前宣布正式交付。最新a0909d9三平台诊断CI四作业通过：三平台各497项前端，Windows121项后端，Ubuntu/macOS各118项及3项Windows专属跳过，真实浏览器与Docker通过。原bf4601b的两次HTTP500尚未定位，保留失败历史。系统Python自动引导已整合到5a9fe578并审查通过；其CI中Ubuntu/macOS/Docker通过，Windows因PowerShell5.1测试输出折行失败。该测试问题已定位、修正并审查。完整Edge体验又发现群主转让后旧管理弹层不更新，正在修复；下一轮统一验证。** FE-1持续执行，无逐阶段确认点。完整体验与版本边界见[UX记录](UX_REVIEW.zh-CN.md)，重大事项见[待确认清单](PENDING_CONFIRMATIONS.zh-CN.md)。
 
 ## 授权与固定范围
 
@@ -29,7 +29,8 @@
 | M8 | 新冻结全量及600秒负载通过 | Python212/212、Vitest435/435；[联合回归/负载](M8_DELIVERY.zh-CN.md)、[A–G/SA逐项映射](M8_ACCEPTANCE.zh-CN.md)；真实SQLite BUSY/FULL故障恢复2项通过 |
 | M9 交付准备 | 脚本/真实演练/增量复审/三平台CI通过 | 三平台各41项后端、435项前端及浏览器通过，Docker真实HTTP/WS通过；安装/配置/用户/管理员/运维文档齐全，冻结后生成UX前候选包；[M9记录](M9_DELIVERY.zh-CN.md) |
 | 注册/登录追加 | 本机定向/浏览器/审查及三平台CI通过 | 68项不同后端用例有通过证据，35项UI及类型检查通过；真实注册/登录挑战与重置通过；新CI第三轮三平台各63后端/445前端及真实浏览器、Docker均通过，前两轮失败保留；见[批次记录](REGISTRATION_LOGIN_DELIVERY.zh-CN.md) |
-| UX-POST | 新同等级Astra正在执行 | 使用agent-browser驱动Edge，从53b0afe校验候选启动，至少8个隔离身份完整体验聊天室、待办、账号与SA01–SA14；实际结果待完成后单列，不提前记通过 |
+| UX-POST | 同一最终Astra继续新版候选体验 | 使用agent-browser驱动Edge，从53b0afe经73快照继续到bf4601b，至少8个隔离身份覆盖聊天室、待办、账号与SA01–SA14；3项真实P2已修复并页面复测；第4项群管理远端状态刷新问题正在修复，剩余断言逐行记录于[UX记录](UX_REVIEW.zh-CN.md)，未提前记完整通过 |
+| 自动安装器追加 | 已整合并审查，平台复验待完成 | 5a9fe578整合系统识别、缺Python包管理器引导及项目内3.12.13准备；复用另一任务117项安装/部署测试和Windows真实Python3.8至项目3.12.13安装/服务/页面证据，14文件与实际安装包匹配。原生无Python系统安装及Linux/macOS冷安装仍未验证 |
 | M9 实际上线 | 未开始 | 默认在本次授权范围外；不影响可部署交付 |
 
 「已验证」仅覆盖对应行注明范围，不将设计原型、单元测试或HTTP状态等同完整产品验收。Windows本机与Windows/macOS/Ubuntu标准CI均有实际执行证据，具体环境见M9记录；没有以CI代替物理移动设备、其他Linux发行版或实际生产部署验收。
@@ -38,14 +39,14 @@
 
 - 公开目标：[JiangZhigu/TongPin-ChatRoom](https://github.com/JiangZhigu/TongPin-ChatRoom)。保留 main 初始化提交 4a195bc091429f6fc06cc79ce116117d53f4b1c0 和 Apache-2.0 LICENSE。
 - M1–M9保留完整递进历史。2026-09-11远端曾确认到4894103，该次同步操作者不作推断。2026-09-12主智能体在历史/增量公开范围审查后，按FE06授权分批快进推送至 `e3c066fa9b3617dfca9734e5f8f567e0463c0260`；[三平台CI第三轮](https://github.com/JiangZhigu/TongPin-ChatRoom/actions/runs/34637137650)四任务全部通过。之后仅交付Markdown说明更新，包内清单及外部交付回执保存最终文档提交SHA。
-- 注册/登录追加及测试修复现已推送至 `53b0afe7dfedfcbf1ce74dfea480e81f56999f35`；[新三平台CI](https://github.com/JiangZhigu/TongPin-ChatRoom/actions/runs/34672494067)四任务全部通过。最终体验候选为357文件的 `dist/releases/tongpin-0.1.0-edge-ux-candidate.zip`，清单和构建回执已校验；此前M9候选和日志继续保留。
+- 注册/登录追加阶段曾推送至 `53b0afe7dfedfcbf1ce74dfea480e81f56999f35`；[该阶段三平台CI](https://github.com/JiangZhigu/TongPin-ChatRoom/actions/runs/34672494067)四任务全部通过。首次完整体验候选为357文件的 `dist/releases/tongpin-0.1.0-edge-ux-candidate.zip`，清单和构建回执已校验；此后UI整合、体验修复和安装器提交及候选见[UX记录](UX_REVIEW.zh-CN.md)。历史包和日志继续保留。
 - 用户原始61文件基线中59个保留文件未改，2个旧版文档为用户主动删除；原设计ZIP与完整原型目录不进入代码发布。
 - 用户新增V3设计目录与ZIP保持原样，单独记录哈希基线并排除公开提交；不照搬参考SQL或原型假数据。
 - .codex、.venv、node_modules、测试数据和本机配置均本地忽略；账户和浏览器验证使用项目内独立DATA_DIR与随机测试身份，不接触正式数据。
 
 ## 当前协作与证据
 
-personal-subagents持续启用，standard；累计13个不同子智能体含历史9个、注册批次Git/UI/审查3个及最终新Astra1个，最多3个同时执行子任务。主智能体负责核心逻辑、整合、记录和真实环境检查。浏览器累计预算30轮：此前20轮、第二及第三轮新CI共6个实际平台浏览器，最终Edge体验登记为连续第27轮，保留受影响修复复测空间。首轮新CI未进入浏览器，没有重复累计；失败后的新环境证据缺项是预算更新依据，历史计数未重置。
+personal-subagents持续启用，standard；累计13个不同子智能体含历史9个、注册批次Git/UI/审查3个及最终新Astra1个，最多3个同时执行子任务。主智能体负责核心逻辑、整合、记录和真实环境检查。截至5a9fe578安装器CI完成，本任务已累计41个实际浏览器环境执行，当前预算43；Windows该轮未到浏览器阶段，已释放未使用的预留次数。同一版本的连续页面操作不逐次计轮。历史失败、用户暂停后的新UI复验及三平台环境均保留累计记录，不因换阶段清零。后续确需新环境执行时先登记原因和额度。
 
 [当前API约定](API_CURRENT.zh-CN.md) · [共享验证索引](../.codex/work-logs/tongpin-m0-20260911-01a08d87/verification-index.json) · [阶段记录](../.codex/work-logs/tongpin-m0-20260911-01a08d87/SUMMARY.md) · [验收计划](VERIFICATION_PLAN.zh-CN.md)。
 
