@@ -262,7 +262,7 @@ printf '%s\n' '#!/bin/sh' ': > "$TP_ROOT/brew-installed"' > "$target"
 
 
 @pytest.fixture
-def windows(tmp_path):
+def windows(tmp_path, request):
     if os.name != 'nt':
         pytest.skip('Windows PowerShell installer')
     candidate = release_fixture(tmp_path)
@@ -289,14 +289,19 @@ function Invoke-TongpinNative([string]$Executable,[string[]]$NativeArguments) {
     return [int]$env:TP_TEST_RUNTIME_EXIT
 }
 try { exit (Invoke-TongpinInstall $ProjectRoot ($env:TP_TEST_ARGS | ConvertFrom-Json)) }
-catch { Write-Error $_ -ErrorAction Continue; exit 1 }
+# The fixture asserts the thrown message, not PowerShell host formatting.
+# Windows PowerShell 5.1 can wrap even inside words after a long script path.
+catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 ''', encoding='utf-8')
     env = os.environ | {'TP_TEST_LIBRARY': str(ROOT / 'scripts/bootstrap_windows.ps1'),
                        'TP_TEST_LOG': str(log), 'TP_TEST_WINGET': '1', 'TP_TEST_EXISTING': '0',
                        'TP_TEST_PACKAGE_EXIT': '0', 'TP_TEST_RUNTIME_EXIT': '0', 'TP_TEST_NO_DISCOVERY': '0'}
 
+    powershell = (str(Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+                  if getattr(request, 'param', 'path') == 'legacy' else 'powershell.exe')
+
     def run(*args, **values):
-        result = subprocess.run(['powershell.exe', '-NoLogo', '-NoProfile', '-File', str(script), str(candidate)],
+        result = subprocess.run([powershell, '-NoLogo', '-NoProfile', '-File', str(script), str(candidate)],
                                 cwd=tmp_path, env=env | {'TP_TEST_ARGS': json.dumps(args)} | values,
                                 capture_output=True, text=True, check=False)
         rows = [json.loads(line) for line in log.read_text(encoding='utf-8-sig').splitlines()] if log.exists() else []
@@ -347,6 +352,7 @@ def test_windows_installer_error_or_cancel_does_not_retry(windows, code):
     assert len(rows) == 1
 
 
+@pytest.mark.parametrize('windows', ['path', 'legacy'], indirect=True)
 def test_windows_missing_winget_stops_without_alternate_installer(windows):
     result, rows = windows.run(TP_TEST_WINGET='0')
     assert result.returncode != 0 and rows == []
