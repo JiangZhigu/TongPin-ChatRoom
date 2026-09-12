@@ -48,6 +48,18 @@ def admin_enrollment():
     return success(runtime().admin.enrollment_status(principal()))
 
 
+@auth_blueprint.get('/api/v1/account/navigation')
+def account_navigation():
+    actor = principal()
+    try:
+        runtime().auth.require_admin(actor)
+    except APIError as error:
+        if error.code != 'FORBIDDEN':
+            raise
+        return success({'admin': None})
+    return success({'admin': {'href': '/admin'}})
+
+
 @auth_blueprint.post('/api/v1/account/admin-enrollment/start')
 def admin_enrollment_start():
     return success(runtime().admin.enrollment_start(principal(), parse(EnrollmentStart)))

@@ -139,7 +139,9 @@ describe('M2 account security UI', () => {
   it('does not optimistically change a preference after server rejection', async () => {
     vi.stubGlobal('fetch', vi.fn((url: string, options?: RequestInit) => options?.method === 'PATCH' ? Promise.resolve({ ok: false, status: 403, json: async () => ({ error: { code: 'FORBIDDEN', message: '设置未保存' } }) }) : response({ items: [] })));
     const changed = vi.fn(); render(<AccountSettings user={user} onUserChange={changed} onSignedOut={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: '登录设备' }));
     await screen.findByText('暂无可显示的登录设备。');
+    fireEvent.click(screen.getByRole('tab', { name: '隐私与通知偏好' }));
     fireEvent.click(screen.getByRole('checkbox', { name: /隐身状态/ }));
     expect(await screen.findByText('设置未保存')).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /隐身状态/ })).not.toBeChecked(); expect(changed).not.toHaveBeenCalled();
@@ -152,6 +154,7 @@ describe('M2 account security UI', () => {
     const session = { id: 'test-session', device: '测试浏览器', createdAt: 1, lastSeenAt: 1, expiresAt: 2, current: false };
     vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit = {}) => { requests.push({ url, method: options.method, body: options.body ? JSON.parse(options.body as string) : undefined }); if (url.endsWith('/reauth')) return response({ reauthToken: 'test-action-token' }); if (options.method === 'DELETE') return response({ revoked: true }); return response({ items: url.endsWith('/sessions') ? [session] : [] }); }));
     render(<AccountSettings user={user} onUserChange={vi.fn()} onSignedOut={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: '登录设备' }));
     fireEvent.click(await screen.findByRole('button', { name: '撤销会话' }));
     fill('当前密码', 'a safe test password'); fireEvent.click(screen.getByRole('button', { name: '确认并继续' }));
     expect(await screen.findByText('该设备会话已撤销。')).toBeInTheDocument();
@@ -165,7 +168,9 @@ describe('M2 account security UI', () => {
     const signedOut = vi.fn();
     vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit = {}) => { requests.push({ url, body: options.body ? JSON.parse(options.body as string) : undefined }); if (url.endsWith('/reauth')) return response({ reauthToken: 'password-action-token' }); if (url.endsWith('/password')) return response({ changed: true }); return response({ items: [] }); }));
     render(<AccountSettings user={user} onUserChange={vi.fn()} onSignedOut={signedOut} />);
+    fireEvent.click(screen.getByRole('tab', { name: '登录设备' }));
     await screen.findByText('暂无可显示的登录设备。');
+    fireEvent.click(screen.getByRole('tab', { name: '修改密码' }));
     fill('新密码', 'a safe new password'); fill('确认新密码', 'a safe new password');
     fireEvent.click(screen.getByRole('button', { name: '验证身份并修改密码' }));
     expect(signedOut).not.toHaveBeenCalled();

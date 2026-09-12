@@ -3,13 +3,15 @@ import type { UserView } from './auth-types';
 import type { AdminEnrollment, AdminEnrollmentResult, AdminEnrollmentStatus } from './lib/admin-s3-types';
 import { api, APIError, onAuthExpired } from './lib/api';
 
-export function AdminEnrollmentPanel({ user, onUserChange }: { user: UserView; onUserChange: (user: UserView) => void }) {
-  return <Enrollment key={user.id} user={user} onUserChange={onUserChange} />;
+export function AdminEnrollmentPanel({ user, onUserChange, onBusyChange }: { user: UserView; onUserChange: (user: UserView) => void; onBusyChange?: (busy: boolean) => void }) {
+  return <Enrollment key={user.id} user={user} onUserChange={onUserChange} onBusyChange={onBusyChange} />;
 }
-function Enrollment({ user, onUserChange }: { user: UserView; onUserChange: (user: UserView) => void }) {
+function Enrollment({ user, onUserChange, onBusyChange }: { user: UserView; onUserChange: (user: UserView) => void; onBusyChange?: (busy: boolean) => void }) {
   const [status, setStatus] = useState<AdminEnrollmentStatus | null>(null); const [enrollment, setEnrollment] = useState<AdminEnrollment | null>(null); const [result, setResult] = useState<AdminEnrollmentResult | null>(null);
   const [password, setPassword] = useState(''); const [code, setCode] = useState(''); const [saved, setSaved] = useState(false); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [attempt, setAttempt] = useState(0); const [unknown, setUnknown] = useState(false);
   const controller = useRef<AbortController | null>(null); const lock = useRef(false);
+  const interactionBusy = busy || !!enrollment || !!result;
+  useEffect(() => { onBusyChange?.(interactionBusy); return () => onBusyChange?.(false); }, [interactionBusy, onBusyChange]);
   useEffect(() => {
     const request = new AbortController(); controller.current = request; setStatus(null); setEnrollment(null); setResult(null); setPassword(''); setCode(''); setSaved(false); setError(''); setBusy(false); lock.current = false;
     const unsubscribe = onAuthExpired(() => { request.abort(); setStatus(null); setEnrollment(null); setResult(null); setPassword(''); setCode(''); setError('身份已失效，请重新登录。'); });

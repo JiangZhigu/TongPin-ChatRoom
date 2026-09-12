@@ -9,6 +9,7 @@ import { AdminActionDialog } from './AdminActionDialog';
 import { AdminContext, type ActionRequest } from './AdminShared';
 import { AdminShell } from './AdminShell';
 import { AccountSettings } from '../AccountSettings';
+import { ProfileSettings } from '../ProfileSettings';
 
 vi.mock('../lib/api', async (original) => ({ ...await original<typeof import('../lib/api')>(), api: vi.fn() }));
 const requestApi = vi.mocked(api);
@@ -129,37 +130,37 @@ describe('M7 ADMIN account restriction refresh', () => {
   function settings(value = account) { return <AccountSettings user={value} onUserChange={vi.fn()} onSignedOut={vi.fn()} />; }
   function changed(userId: string) { window.dispatchEvent(new CustomEvent('tongpin:account-changed', { detail: { userId } })); }
   it('reads current restrictions on opening instead of trusting an old bootstrap prop and preserves drafts', async () => {
-    const pending = deferred<unknown>(); requestApi.mockImplementation((path) => path === '/api/v1/auth/me' ? pending.promise : Promise.resolve({ items: [] })); render(settings());
+    const pending = deferred<unknown>(); requestApi.mockImplementation((path) => path === '/api/v1/auth/me' ? pending.promise : Promise.resolve({ items: [] })); render(<>{settings()}<ProfileSettings user={account} onUserChange={vi.fn()} /></>); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' }));
     expect(screen.getByText('正在核对当前账号限制…')).toBeInTheDocument(); fireEvent.change(screen.getByLabelText('昵称'), { target: { value: '正在编辑的昵称' } }); fireEvent.change(screen.getByLabelText('个人简介'), { target: { value: '正在编辑的简介' } });
     await act(async () => { pending.resolve({ user: { ...account, nickname: '服务器的新昵称', bio: '服务器的新简介', restrictions: latestRestrictions } }); });
     expect(screen.getByText('上传：未限制')).toBeInTheDocument(); expect(screen.getByText('限制理由：管理员已核实解除')).toBeInTheDocument(); expect(screen.getByLabelText('昵称')).toHaveValue('正在编辑的昵称'); expect(screen.getByLabelText('个人简介')).toHaveValue('正在编辑的简介');
   });
   it('refreshes on an ID-only matching event and ignores other identities', async () => {
-    let response = { ...account }; requestApi.mockImplementation(async (path) => path === '/api/v1/auth/me' ? { user: response } : { items: [] }); render(settings()); await waitFor(() => expect(screen.queryByText('正在核对当前账号限制…')).not.toBeInTheDocument());
+    let response = { ...account }; requestApi.mockImplementation(async (path) => path === '/api/v1/auth/me' ? { user: response } : { items: [] }); render(settings()); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' })); await waitFor(() => expect(screen.queryByText('正在核对当前账号限制…')).not.toBeInTheDocument());
     await act(async () => changed('unrelated-user')); expect(requestApi.mock.calls.filter(([path]) => path === '/api/v1/auth/me')).toHaveLength(1);
     response = { ...account, restrictions: latestRestrictions }; await act(async () => changed(account.id)); expect(screen.getByText('限制理由：管理员已核实解除')).toBeInTheDocument(); expect(requestApi.mock.calls.filter(([path]) => path === '/api/v1/auth/me')).toHaveLength(2);
   });
   it('refreshes through the existing device/security button and discards an older in-flight result', async () => {
-    const first = deferred<unknown>(); const next = deferred<unknown>(); let requests = 0; requestApi.mockImplementation((path) => path === '/api/v1/auth/me' ? (++requests === 1 ? first.promise : next.promise) : Promise.resolve({ items: [] })); render(settings()); const firstSignal = requestApi.mock.calls.find(([path]) => path === '/api/v1/auth/me')?.[1]?.signal;
-    fireEvent.click(screen.getByRole('button', { name: '刷新设备和安全记录' })); expect(firstSignal?.aborted).toBe(true); await act(async () => { next.resolve({ user: { ...account, restrictions: latestRestrictions } }); }); await act(async () => { first.resolve({ user: { ...account, restrictions: { ...oldRestrictions, reason: '迟到旧限制' } } }); });
+    const first = deferred<unknown>(); const next = deferred<unknown>(); let requests = 0; requestApi.mockImplementation((path) => path === '/api/v1/auth/me' ? (++requests === 1 ? first.promise : next.promise) : Promise.resolve({ items: [] })); render(settings()); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' })); const firstSignal = requestApi.mock.calls.find(([path]) => path === '/api/v1/auth/me')?.[1]?.signal;
+    fireEvent.click(screen.getByRole('tab', { name: '登录设备' })); fireEvent.click(screen.getByRole('button', { name: '刷新设备和安全记录' })); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' })); expect(firstSignal?.aborted).toBe(true); await act(async () => { next.resolve({ user: { ...account, restrictions: latestRestrictions } }); }); await act(async () => { first.resolve({ user: { ...account, restrictions: { ...oldRestrictions, reason: '迟到旧限制' } } }); });
     expect(screen.getByText('限制理由：管理员已核实解除')).toBeInTheDocument(); expect(screen.queryByText('限制理由：迟到旧限制')).not.toBeInTheDocument(); expect(requests).toBe(2);
   });
   it('rejects a late response across user changes and clears the old restriction presentation immediately', async () => {
-    const old = deferred<unknown>(); const next = deferred<unknown>(); let requests = 0; requestApi.mockImplementation((path) => path === '/api/v1/auth/me' ? (++requests === 1 ? old.promise : next.promise) : Promise.resolve({ items: [] })); const view = render(settings()); const oldSignal = requestApi.mock.calls.find(([path]) => path === '/api/v1/auth/me')?.[1]?.signal;
-    const other = { ...account, id: 'other-user', restrictions: { ...latestRestrictions, reason: '新账号已知状态' } }; view.rerender(settings(other)); expect(oldSignal?.aborted).toBe(true); expect(screen.queryByText('限制理由：旧限制')).not.toBeInTheDocument();
+    const old = deferred<unknown>(); const next = deferred<unknown>(); let requests = 0; requestApi.mockImplementation((path) => path === '/api/v1/auth/me' ? (++requests === 1 ? old.promise : next.promise) : Promise.resolve({ items: [] })); const view = render(settings()); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' })); const oldSignal = requestApi.mock.calls.find(([path]) => path === '/api/v1/auth/me')?.[1]?.signal;
+    const other = { ...account, id: 'other-user', restrictions: { ...latestRestrictions, reason: '新账号已知状态' } }; view.rerender(settings(other)); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' })); expect(oldSignal?.aborted).toBe(true); expect(screen.queryByText('限制理由：旧限制')).not.toBeInTheDocument();
     await act(async () => { old.resolve({ user: { ...account, restrictions: { ...oldRestrictions, reason: '旧账号敏感限制' } } }); }); expect(screen.queryByText('限制理由：旧账号敏感限制')).not.toBeInTheDocument();
     await act(async () => { next.resolve({ user: { ...other, restrictions: { ...latestRestrictions, reason: '新账号实时状态' } } }); }); expect(screen.getByText('限制理由：新账号实时状态')).toBeInTheDocument();
   });
   it('cancels on unmount and removes the event subscription', async () => {
-    const pending = deferred<unknown>(); requestApi.mockImplementation((path) => path === '/api/v1/auth/me' ? pending.promise : Promise.resolve({ items: [] })); const view = render(settings()); const signal = requestApi.mock.calls.find(([path]) => path === '/api/v1/auth/me')?.[1]?.signal; view.unmount(); expect(signal?.aborted).toBe(true);
+    const pending = deferred<unknown>(); requestApi.mockImplementation((path) => path === '/api/v1/auth/me' ? pending.promise : Promise.resolve({ items: [] })); const view = render(settings()); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' })); const signal = requestApi.mock.calls.find(([path]) => path === '/api/v1/auth/me')?.[1]?.signal; view.unmount(); expect(signal?.aborted).toBe(true);
     await act(async () => { changed(account.id); pending.resolve({ user: { ...account, restrictions: { ...oldRestrictions, reason: '卸载后的限制' } } }); }); expect(requestApi.mock.calls.filter(([path]) => path === '/api/v1/auth/me')).toHaveLength(1); expect(screen.queryByText('限制理由：卸载后的限制')).not.toBeInTheDocument();
   });
   it('labels refresh failure as last-known data and allows explicit retry', async () => {
-    let failing = true; requestApi.mockImplementation(async (path) => { if (path !== '/api/v1/auth/me') return { items: [] }; if (failing) throw new APIError(503, { code: 'UNAVAILABLE', message: '服务暂不可用' }); return { user: { ...account, restrictions: latestRestrictions } }; }); render(settings());
+    let failing = true; requestApi.mockImplementation(async (path) => { if (path !== '/api/v1/auth/me') return { items: [] }; if (failing) throw new APIError(503, { code: 'UNAVAILABLE', message: '服务暂不可用' }); return { user: { ...account, restrictions: latestRestrictions } }; }); render(settings()); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' }));
     expect(await screen.findByText('当前账号限制核对失败：服务暂不可用')).toBeInTheDocument(); expect(screen.getByText('下方如有信息，仅代表上次已知状态。')).toBeInTheDocument(); failing = false; fireEvent.click(screen.getByRole('button', { name: '重新核对账号限制' })); await screen.findByText('限制理由：管理员已核实解除'); expect(screen.queryByText('当前账号限制核对失败：服务暂不可用')).not.toBeInTheDocument();
   });
   it('does not install a successful response belonging to another account', async () => {
-    requestApi.mockImplementation(async (path) => path === '/api/v1/auth/me' ? { user: { ...account, id: 'wrong-account', restrictions: { ...latestRestrictions, reason: '不属于当前账号' } } } : { items: [] }); render(settings()); await screen.findByText('当前账号限制核对失败：返回账号与当前账号不一致，请重新核对。'); expect(screen.queryByText('限制理由：不属于当前账号')).not.toBeInTheDocument(); expect(screen.getByText('限制理由：旧限制')).toBeInTheDocument();
+    requestApi.mockImplementation(async (path) => path === '/api/v1/auth/me' ? { user: { ...account, id: 'wrong-account', restrictions: { ...latestRestrictions, reason: '不属于当前账号' } } } : { items: [] }); render(settings()); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' })); await screen.findByText('当前账号限制核对失败：返回账号与当前账号不一致，请重新核对。'); expect(screen.queryByText('限制理由：不属于当前账号')).not.toBeInTheDocument(); expect(screen.getByText('限制理由：旧限制')).toBeInTheDocument();
   });
 });
 

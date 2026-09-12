@@ -14,3 +14,14 @@
 @media(max-width:720px) { .rich-mode .list-mode .chat-pane { padding-bottom: calc(70px + env(safe-area-inset-bottom)); } }
 
 .timeline-actions { display: flex; flex-direction: column; flex: 0 0 auto; gap: 6px; padding: 6px 0; }.timeline-actions .new-messages-button { position: static; transform: none; margin: 0 auto; max-width: calc(100% - 24px); white-space: normal; }
+
+/* Match the V3 blue palette in rich message interactions. */
+.chat-workspace .composer-chip { background:#e7f3fc; color:#527d9b; font-size:12px; }
+.chat-workspace .composer-chip button { color:#527d9b; }
+.chat-workspace .reaction-list button { border-color:#dbe8f2; background:#f4f9fd; font-size:11px; }
+.chat-workspace .reaction-list button[aria-pressed=true] { background:#e4f2fc; border-color:#82bee7; }
+.chat-workspace .message.is-located { outline-color:#008fed; }
+.chat-workspace .history-context-bar { background:#eff7fd; color:#597e9b; font-size:12px; }
+.chat-workspace .typing-notice { color:#718295; font-size:11px; }
+.chat-workspace .emoji-categories button[aria-pressed=true] { background:#e7f3fc; border-color:#82bee7; }
+.chat-workspace .emoji-choice:hover,.chat-workspace .emoji-choice:focus-visible { background:#e7f3fc; outline-color:#008fed; }

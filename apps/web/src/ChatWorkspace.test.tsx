@@ -534,6 +534,7 @@ describe('M3-M4 logout focus', () => {
     fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true }));
     await waitFor(() => { expect(trigger).toBeEnabled(); expect(trigger).toHaveFocus(); });
     expect(dialog.open).toBe(false); expect(signedOut).not.toHaveBeenCalled(); expect(chat.logout).not.toHaveBeenCalled();
+    const settingsDialog = screen.getByRole('dialog', { name: '设置' }); expect(settingsDialog).toHaveAttribute('open'); expect(settingsDialog).toContainElement(trigger);
     expect(screen.getByText('偏好保存到账号，用于聊天中的在线状态、阅读回执和消息提醒。')).toBeInTheDocument();
   });
   it.each(['new modal', 'another control', 'changed identity', 'unmounted'] as const)('does not steal focus after cancellation with %s', async (scenario) => {
@@ -570,8 +571,8 @@ describe('M7-UI workspace rich drafts and location', () => {
     const saved: Draft = { key: 'draft', userId: user.id, conversationId: 'dm-a', text: '失败保留', updatedAt: 1, replyToMessageId: 'reply-a', mentionedUserIds: ['u2'], mentionAll: false }; chat.getDraft.mockResolvedValue(saved); chat.histories['dm-a'] = [message('reply-a')]; chat.queue.mockRejectedValueOnce(new Error('保存失败'));
     showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await screen.findByText('保存失败'); expect(screen.getByLabelText('消息内容')).toHaveValue('失败保留'); expect(screen.getByLabelText('移除引用')).toBeInTheDocument(); expect(screen.getByLabelText('移除提及 u2')).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: '发送' })); await waitFor(() => expect(chat.queue).toHaveBeenCalledTimes(2)); expect(chat.queue.mock.calls[1][2]).toMatchObject({ replyToMessageId: 'reply-a', mentionedUserIds: ['u2'] });
   });
-  it('opens search from the list and loads target context without a second latest-history selection', async () => {
-    chat.jump.mockImplementation(async () => publish({ selectedId: 'dm-a', messages: [message('located', '50', '定位正文')], locatedMessageId: 'located', historyAfter: '50' })); showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '搜索消息 / 我的收藏' })); await screen.findByRole('heading', { name: '消息搜索与收藏' });
+  it('opens bookmarks from navigation and loads target context without a second latest-history selection', async () => {
+    chat.jump.mockImplementation(async () => publish({ selectedId: 'dm-a', messages: [message('located', '50', '定位正文')], locatedMessageId: 'located', historyAfter: '50' })); showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '收藏' })); await screen.findByRole('heading', { name: '我的收藏' }); await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).startsWith('/api/v1/bookmarks?'))).toBe(true));
     await act(async () => window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: 'other', messageId: 'wrong' } }))); expect(chat.jump).not.toHaveBeenCalled();
     await act(async () => window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: user.id, messageId: 'located' } }))); await screen.findByText('已定位到目标消息'); expect(chat.jump).toHaveBeenCalledWith('located'); expect(chat.select).not.toHaveBeenCalled(); expect(screen.getByText('定位正文').closest('li')).toHaveClass('is-located'); expect(chat.read).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '加载较新的消息' })); await waitFor(() => expect(chat.newer).toHaveBeenCalledOnce());
   });
@@ -635,7 +636,7 @@ describe('M7-UI explicit latest position', () => {
 describe('M7-FIX-UI workspace mutation wiring', () => {
   it('passes captured core tokens through message and bookmark callbacks without assembling stale bookmark bodies', async () => {
     const token = Object.freeze({ generation: 2, contentRevision: 8 }); chat.beginUpdate.mockReturnValue(token); const original = { ...message(), capabilities: { canInteract: true, canRecall: false, canModerate: false } }; chat.histories['dm-a'] = [original]; const pending = deferred<{ ok: boolean; status: number; json: () => Promise<unknown> }>();
-    const fetchMock = vi.mocked(fetch); fetchMock.mockImplementationOnce(() => pending.promise as Promise<Response>); showWorkspace(); await openConversation(); fireEvent.click(screen.getByRole('button', { name: '收藏' })); const tombstone = { ...original, status: 'recalled' as const, text: '', reactions: [] }; act(() => publish({ messages: [tombstone] })); await act(async () => pending.resolve({ ok: true, status: 200, json: async () => ({ data: { bookmarked: true } }) })); expect(chat.beginUpdate).toHaveBeenCalledOnce(); expect(chat.beginUpdate.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]); expect(chat.bookmark).toHaveBeenCalledExactlyOnceWith(original.id, true, token); expect(chat.apply).not.toHaveBeenCalled(); expect(screen.getByText('这条消息已撤回')).toBeInTheDocument();
+    const fetchMock = vi.mocked(fetch); fetchMock.mockImplementation((url) => String(url).endsWith('/bookmark') ? pending.promise as Promise<Response> : response({ admin: null }) as Promise<Response>); showWorkspace(); await openConversation(); fireEvent.click(within(screen.getByLabelText('消息记录')).getByRole('button', { name: '收藏' })); const tombstone = { ...original, status: 'recalled' as const, text: '', reactions: [] }; act(() => publish({ messages: [tombstone] })); await act(async () => pending.resolve({ ok: true, status: 200, json: async () => ({ data: { bookmarked: true } }) })); expect(chat.beginUpdate).toHaveBeenCalledOnce(); const bookmarkRequest = fetchMock.mock.calls.findIndex(([url]) => String(url).endsWith('/bookmark')); expect(bookmarkRequest).toBeGreaterThanOrEqual(0); expect(chat.beginUpdate.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[bookmarkRequest]); expect(chat.bookmark).toHaveBeenCalledExactlyOnceWith(original.id, true, token); expect(chat.apply).not.toHaveBeenCalled(); expect(screen.getByText('这条消息已撤回')).toBeInTheDocument();
     act(() => publish({ messages: [original] })); fetchMock.mockImplementationOnce(() => response({ message: original }) as Promise<Response>); fireEvent.click(screen.getByRole('button', { name: '👍' })); await waitFor(() => expect(chat.apply).toHaveBeenCalledExactlyOnceWith(original, token)); expect(chat.beginUpdate).toHaveBeenCalledTimes(2);
   });
 });
@@ -695,7 +696,7 @@ describe('V3 task shell integration', () => {
 describe('V3 deletion and IME integration', () => {
   it('passes all three local counts into deletion and resumes task state if reauthentication fails', async () => {
     enableTasks(); chat.summary.mockResolvedValue({ pending: 1, drafts: 2, taskDrafts: 3 }); vi.stubGlobal('fetch', vi.fn((url: string) => url === '/api/v1/account/deletion-preview' ? response({ coolingDays: 7, ownedGroups: [], lastAdministrator: false, sharedMessagesRetained: true }) : url === '/api/v1/auth/reauth' ? Promise.resolve({ ok: false, status: 403, json: async () => ({ error: { code: 'REAUTH_FAILED', message: '再次验证失败' } }) }) : response({ items: [], nextCursor: null })));
-    showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '设置' })); fireEvent.click(await screen.findByRole('button', { name: '查看注销影响' })); const dialog = await screen.findByRole('dialog', { name: '注销账号' }); await within(dialog).findByText('当前账号本机有 1 条待发消息、2 份聊天草稿、3 份任务草稿。'); expect(taskUI.stop).not.toHaveBeenCalled(); fireEvent.change(within(dialog).getByLabelText('当前密码'), { target: { value: 'private-test-password' } }); fireEvent.change(within(dialog).getByLabelText(`输入登录名 ${user.username} 确认注销`), { target: { value: user.username } }); fireEvent.change(within(dialog).getByLabelText('本机内容处理'), { target: { value: 'delete' } }); fireEvent.click(within(dialog).getByRole('button', { name: '验证身份并注销账号' })); await within(dialog).findByText('再次验证失败'); expect(taskUI.stop).toHaveBeenCalledTimes(1); expect(chat.prepareDeletion).toHaveBeenCalledTimes(1); expect(chat.resumeDeletion).toHaveBeenCalledTimes(1); expect(taskUI.start).toHaveBeenCalledTimes(2); expect(chat.finishDeletion).not.toHaveBeenCalled();
+    showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '设置' })); fireEvent.click(await screen.findByRole('tab', { name: '注销账号' })); fireEvent.click(await screen.findByRole('button', { name: '查看注销影响' })); const dialog = await screen.findByRole('dialog', { name: '注销账号' }); await within(dialog).findByText('当前账号本机有 1 条待发消息、2 份聊天草稿、3 份任务草稿。'); expect(taskUI.stop).not.toHaveBeenCalled(); fireEvent.change(within(dialog).getByLabelText('当前密码'), { target: { value: 'private-test-password' } }); fireEvent.change(within(dialog).getByLabelText(`输入登录名 ${user.username} 确认注销`), { target: { value: user.username } }); fireEvent.change(within(dialog).getByLabelText('本机内容处理'), { target: { value: 'delete' } }); fireEvent.click(within(dialog).getByRole('button', { name: '验证身份并注销账号' })); await within(dialog).findByText('再次验证失败'); expect(taskUI.stop).toHaveBeenCalledTimes(1); expect(chat.prepareDeletion).toHaveBeenCalledTimes(1); expect(chat.resumeDeletion).toHaveBeenCalledTimes(1); expect(taskUI.start).toHaveBeenCalledTimes(2); expect(chat.finishDeletion).not.toHaveBeenCalled();
   });
   it('keeps IME enter and task buttons separate from the chat send action', () => {
     const send = vi.fn(); const create = vi.fn(); render(<Composer value="正在输入" onChange={vi.fn()} onSend={send} onCreateTask={create} />); const input = screen.getByLabelText('消息内容'); fireEvent.compositionStart(input); fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: true }); expect(send).not.toHaveBeenCalled(); expect(screen.getByRole('button', { name: '新建待办' })).toBeDisabled(); fireEvent.compositionEnd(input); fireEvent.click(screen.getByRole('button', { name: '新建待办' })); expect(create).toHaveBeenCalledTimes(1); expect(send).not.toHaveBeenCalled(); fireEvent.keyDown(input, { key: 'Enter', shiftKey: true }); expect(send).not.toHaveBeenCalled(); fireEvent.keyDown(input, { key: 'Enter' }); expect(send).toHaveBeenCalledTimes(1);
@@ -721,5 +722,105 @@ describe('V3 source preview authority repair', () => {
   it('rejects a pending source read after access is revoked and retains local input', async () => {
     vi.mocked(fetch).mockImplementation(() => response(location('BEFORE-REVOKE-SOURCE')) as Promise<Response>); const dialog = await opening(); await within(dialog).findByText('BEFORE-REVOKE-SOURCE'); fireEvent.change(screen.getByLabelText(/待办标题/), { target: { value: '不会丢失的本人输入' } });
     const pending = deferred<Awaited<ReturnType<typeof response>>>(); vi.mocked(fetch).mockImplementationOnce(() => pending.promise as Promise<Response>); emit('message.updated'); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); emit('access.revoked'); await act(async () => pending.resolve(await response(location('LATE-REVOKED-SOURCE')))); expect(within(dialog).queryByText('LATE-REVOKED-SOURCE')).not.toBeInTheDocument(); expect(screen.getByLabelText(/待办标题/)).toHaveValue('不会丢失的本人输入'); expect(screen.getByRole('checkbox', { name: /我已核对消息来源/ })).toBeDisabled(); expect(taskUI.create).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('profile and settings overlays preserve the current conversation', () => {
+  it('opens profile from the avatar and nickname without replacing the conversation or draft', async () => {
+    chat.histories['dm-a'] = [message()];
+    showWorkspace(); await openConversation();
+    const editor = screen.getByLabelText('消息内容');
+    fireEvent.change(editor, { target: { value: '资料打开前尚未发送的消息' } });
+    const trigger = screen.getByRole('button', { name: '个人资料' });
+    expect(trigger).toHaveTextContent(user.nickname);
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: '个人资料' });
+    expect(within(dialog).getByLabelText(/^昵称/)).toHaveValue(user.nickname);
+    expect(within(dialog).getByRole('button', { name: '保存资料' })).toBeInTheDocument();
+    expect(screen.getByLabelText('消息内容')).toBe(editor);
+    expect(editor).toHaveValue('资料打开前尚未发送的消息');
+    expect(screen.getByText('一条真实形状的测试消息')).toBeInTheDocument();
+    expect(chat.select).not.toHaveBeenCalledWith(null);
+    expect(chat.queue).not.toHaveBeenCalled();
+  });
+
+  it('closes profile with the close control and restores focus to its entry without losing the draft', async () => {
+    showWorkspace(); await openConversation();
+    const editor = screen.getByLabelText('消息内容');
+    fireEvent.change(editor, { target: { value: '关闭资料后继续输入' } });
+    const trigger = screen.getByRole('button', { name: '个人资料' });
+    trigger.focus(); fireEvent.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: '个人资料' });
+    const close = within(dialog).getByRole('button', { name: '关闭对话框' });
+    close.focus(); fireEvent.click(close);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '个人资料' })).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+    expect(screen.getByLabelText('消息内容')).toBe(editor);
+    expect(editor).toHaveValue('关闭资料后继续输入');
+  });
+
+  it('offers account settings in a dialog without duplicating the profile editor', async () => {
+    showWorkspace(); await openConversation();
+    const editor = screen.getByLabelText('消息内容');
+    fireEvent.change(editor, { target: { value: '打开设置不离开聊天' } });
+    fireEvent.click(screen.getByRole('button', { name: '设置' }));
+    const dialog = await screen.findByRole('dialog', { name: '设置' });
+    expect(within(dialog).getByRole('button', { name: '退出登录' })).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(/^昵称/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: '保存资料' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: '个人资料' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('消息内容')).toBe(editor);
+    expect(editor).toHaveValue('打开设置不离开聊天');
+    expect(chat.select).not.toHaveBeenCalledWith(null);
+    expect(chat.queue).not.toHaveBeenCalled();
+  });
+
+  it('dismisses settings with Escape and returns focus to the settings entry', async () => {
+    showWorkspace(); await openConversation();
+    const editor = screen.getByLabelText('消息内容');
+    fireEvent.change(editor, { target: { value: '取消设置也保留输入' } });
+    const trigger = screen.getByRole('button', { name: '设置' });
+    trigger.focus(); fireEvent.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: '设置' });
+    within(dialog).getByRole('button', { name: '关闭对话框' }).focus();
+    fireEvent(dialog, new Event('cancel', { bubbles: false, cancelable: true }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '设置' })).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus();
+    expect(screen.getByLabelText('消息内容')).toBe(editor);
+    expect(editor).toHaveValue('取消设置也保留输入');
+    expect(chat.logout).not.toHaveBeenCalled();
+  });
+});
+
+describe('bookmarks navigation protects conversation drafts', () => {
+  it('waits for the current draft to commit before opening bookmarks and preserves it on return', async () => {
+    showWorkspace(); await openConversation();
+    const text = '进入收藏前尚未发送的草稿';
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: text } });
+    const saving = deferred<void>(); chat.saveDraft.mockImplementation(() => saving.promise);
+    fireEvent.click(screen.getByRole('button', { name: '收藏' }));
+    await waitFor(() => expect(chat.saveDraft).toHaveBeenCalledWith('dm-a', text, expect.anything()));
+    expect(screen.queryByRole('heading', { name: '我的收藏' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('消息内容')).toHaveValue(text);
+    chat.getDraft.mockResolvedValue({ key: 'saved-before-bookmarks', userId: user.id, conversationId: 'dm-a', text, updatedAt: 1 });
+    await act(async () => saving.resolve());
+    await screen.findByRole('heading', { name: '我的收藏' });
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).startsWith('/api/v1/bookmarks?'))).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: '返回聊天' }));
+    await waitFor(() => expect(screen.getByLabelText('消息内容')).toHaveValue(text));
+    expect(chat.queue).not.toHaveBeenCalled();
+  });
+
+  it('keeps the conversation and draft visible if saving fails before bookmarks navigation', async () => {
+    showWorkspace(); await openConversation();
+    fireEvent.change(screen.getByLabelText('消息内容'), { target: { value: '不能丢失的收藏导航草稿' } });
+    chat.saveDraft.mockRejectedValue(new Error('收藏跳转前草稿保存失败'));
+    fireEvent.click(screen.getByRole('button', { name: '收藏' }));
+    await screen.findByText('草稿保存失败，暂未切换页面。收藏跳转前草稿保存失败');
+    expect(screen.queryByRole('heading', { name: '我的收藏' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('消息内容')).toHaveValue('不能丢失的收藏导航草稿');
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).startsWith('/api/v1/bookmarks?'))).toBe(false);
+    expect(chat.queue).not.toHaveBeenCalled();
   });
 });

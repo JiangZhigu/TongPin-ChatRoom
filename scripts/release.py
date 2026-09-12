@@ -19,7 +19,8 @@ MANIFEST = 'release-manifest.json'
 ROOT_FILES = {'.gitattributes', '.gitignore', '.dockerignore', '.python-version', '.env.example',
               'Dockerfile', 'compose.yaml', 'README.md', 'LICENSE', 'pyproject.toml', 'uv.lock',
               'package.json', 'package-lock.json', 'tsconfig.base.json', 'THIRD_PARTY_NOTICES.md',
-              'tongpin.cmd', 'tongpin.ps1', 'tongpin.sh'}
+              'tongpin.cmd', 'tongpin.ps1', 'tongpin.sh', 'install.cmd', 'install.sh',
+              'INSTALL-PYTHON.zh-CN.md'}
 PREFIXES = ('src/', 'scripts/', 'apps/web/', 'tests/', 'docs/', 'implementation/', '.github/workflows/',
             'vendor/unicode/', 'packages/contracts/src/')
 MAX_BYTES = 1024 * 1024 * 1024

@@ -1,0 +1,20 @@
+.group-task-panel{height:100%;display:flex;flex-direction:column;min-height:0;color:#243343;background:#fcfdff;font-size:12px}
+.group-task-panel>header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:24px 21px 0}
+.group-task-panel h2{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600}
+.group-task-panel .text-button{font-size:11px;padding:0;color:#0878ba}
+.group-task-subtitle{padding:7px 21px 0;color:#8b98a8;font-size:11px}
+.group-task-progress{padding:19px 21px 13px;color:#8b98a8;font-size:11px}
+.group-task-progress>div{display:flex;justify-content:space-between;gap:10px}
+.group-task-progress progress{display:block;width:100%;height:4px;margin-top:9px;border:0;border-radius:3px;overflow:hidden;accent-color:#78bde9;background:#e9f0f5}
+.group-task-progress progress::-webkit-progress-bar{background:#e9f0f5}.group-task-progress progress::-webkit-progress-value{background:#78bde9;border-radius:3px}
+.group-task-items{flex:1;min-height:0;overflow:auto;padding:0 21px}
+.group-task-item{display:flex;align-items:flex-start;gap:9px;padding:18px 0;border-bottom:1px solid #e7edf3}
+.group-task-check{display:grid;place-items:center;width:17px;height:17px;flex-shrink:0;padding:0;margin-top:3px;border:1px solid #c4d0dc;background:transparent;border-radius:50%;color:#008fed}
+.group-task-check.doing{border-color:#008fed;background:#eaf6ff}.group-task-check.doing::after{content:'';width:6px;height:6px;border-radius:50%;background:#008fed}
+.group-task-open{min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:0;background:transparent;text-align:left;color:inherit}
+.group-task-open strong{font-weight:500;font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+.group-task-meta{display:flex;gap:5px;align-items:center;flex-wrap:wrap;color:#8b98a8;font-size:10px}.group-task-meta time.overdue{color:#cd5159}
+.group-task-avatar{display:grid;place-items:center;background:#e1f2ff;color:#2688c6;width:18px;height:18px;border-radius:5px;font-size:10px}
+.group-task-item:nth-child(2n) .group-task-avatar{background:#f3e4e2;color:#aa7473}.group-task-item:nth-child(3n) .group-task-avatar{background:#dfede7;color:#5b8b7e}
+.group-task-panel>footer{padding:17px 21px;border-top:1px solid #e7edf3}.group-task-panel>footer>.secondary-button{width:100%;min-height:36px;display:flex;align-items:center;justify-content:center;gap:7px;background:#fff;border:1px solid #e7edf3;font-size:12px}
+.group-task-panel>footer>p{margin-top:10px;font-size:10px;line-height:1.7;color:#8b98a8}.group-task-empty{padding:22px 0;color:#718295;line-height:1.8;font-size:12px}

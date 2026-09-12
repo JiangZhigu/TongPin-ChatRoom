@@ -116,7 +116,7 @@ const savedTask = (page) => taskWorkspace(page).getByRole('button', { name: fixt
 async function openTasks(page) {
   await openNavigation(page, '待办');
   const workspace = taskWorkspace(page);
-  await expect(workspace.getByRole('heading', { name: '把交流变成可跟进的事', exact: true })).toBeVisible();
+  await expect(workspace.getByRole('heading', { name: '我的待办', exact: true })).toBeVisible();
   await expect(workspace.getByRole('button', { name: '新建待办', exact: true })).toBeEnabled();
   return workspace;
 }

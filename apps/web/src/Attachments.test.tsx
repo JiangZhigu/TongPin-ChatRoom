@@ -7,7 +7,7 @@ import { Composer } from './components/Composer';
 import { MessageTimeline } from './components/MessageTimeline';
 import { FilesPage } from './FilesPage';
 import { AvatarEditor } from './AvatarEditor';
-import { AccountSettings } from './AccountSettings';
+import { ProfileSettings } from './ProfileSettings';
 import { GroupManagementPanel } from './GroupManagementPanel';
 import type { Attachment, Conversation, LocalAttachment } from './lib/chat-types';
 import type { UploadRecord } from './lib/files-types';
@@ -123,7 +123,7 @@ describe('M6-UI avatar identity and ready binding', () => {
   });
   it('uses the account avatar PUT contract and updates the displayed authenticated user on removal', async () => {
     const changed = vi.fn(); calls.api.mockImplementation(async (path) => path === '/api/v1/me/avatar' ? { user: { ...user, avatarUrl: null } } : { items: [] });
-    render(<AccountSettings user={user} onUserChange={changed} onSignedOut={vi.fn()} />); fireEvent.click(screen.getByRole('button', { name: '移除头像' }));
+    render(<ProfileSettings user={user} onUserChange={changed} />); fireEvent.click(screen.getByRole('button', { name: '移除头像' }));
     await waitFor(() => expect(calls.api).toHaveBeenCalledWith('/api/v1/me/avatar', expect.objectContaining({ method: 'PUT', body: { attachmentId: null } }))); expect(changed).toHaveBeenCalledWith(expect.objectContaining({ id: user.id, avatarUrl: null }));
   });
   it('binds group avatars with the current member actor/access and expected group version', async () => {

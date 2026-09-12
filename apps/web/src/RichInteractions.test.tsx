@@ -42,7 +42,7 @@ describe('M7-UI notification consent and deletion shutdown', () => {
     const permission = vi.fn(async () => { Object.defineProperty(FakeNotification, 'permission', { value: 'denied', configurable: true }); return 'denied'; });
     class FakeNotification { static permission = 'default'; static requestPermission = permission; }
     vi.stubGlobal('Notification', FakeNotification); request.mockResolvedValue({ items: [] }); render(<AccountSettings user={user} onUserChange={vi.fn()} onSignedOut={vi.fn()} />);
-    expect(permission).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '开启浏览器通知' })); await screen.findByText(/浏览器已拒绝通知权限/); expect(permission).toHaveBeenCalledOnce(); expect(screen.getByRole('button', { name: '开启浏览器通知' })).toBeDisabled();
+    expect(permission).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('tab', { name: '浏览器通知' })); fireEvent.click(screen.getByRole('button', { name: '开启浏览器通知' })); await screen.findByText(/浏览器已拒绝通知权限/); expect(permission).toHaveBeenCalledOnce(); expect(screen.getByRole('button', { name: '开启浏览器通知' })).toBeDisabled();
   });
   it('pauses before reauth, resumes on server failure, and does not repeat server deletion after local cleanup fails', async () => {
     request.mockResolvedValueOnce({ coolingDays: 30, ownedGroups: [], lastAdministrator: false, sharedMessagesRetained: true }).mockRejectedValueOnce(new APIError(422, { message: '验证失败' })).mockResolvedValueOnce({ reauthToken: 'proof' }).mockResolvedValueOnce({ deleted: true, recoverBefore: 100 });
@@ -81,5 +81,34 @@ describe('M7-FIX-UI message update tokens', () => {
     const token = Object.freeze({ generation: 10, contentRevision: 20 }); const order: string[] = []; const begin = vi.fn<() => MessageUpdateToken>(() => { order.push('begin'); return token; }); const update = vi.fn(); const bookmark = vi.fn(); let finish!: (data: unknown) => void;
     request.mockImplementation(() => { order.push('request'); return new Promise((resolve) => { finish = resolve; }); }); const view = render(<MessageActions message={{ ...message, bookmarked: previous }} userId={user.id} onBeginUpdate={begin} onBookmarked={bookmark} onUpdated={update} onReply={vi.fn()} />); fireEvent.click(screen.getByRole('button', { name: previous ? '取消收藏' : '收藏' })); view.rerender(<MessageActions message={{ ...message, status: 'moderated', text: '' }} userId={user.id} onBeginUpdate={begin} onBookmarked={bookmark} onUpdated={update} onReply={vi.fn()} />);
     await act(async () => finish({ bookmarked: !previous })); expect(order).toEqual(['begin', 'request']); expect(bookmark).toHaveBeenCalledExactlyOnceWith(message.id, !previous, token); expect(update).not.toHaveBeenCalled(); expect(request.mock.calls[0][1].method).toBe(previous ? 'DELETE' : 'PUT');
+  });
+});
+
+
+describe('direct bookmarks page entry', () => {
+  it('loads bookmarks immediately, paginates the bookmark cursor and jumps to the saved message', async () => {
+    request.mockResolvedValueOnce({ items: [{ id: 'm1', available: true, message, conversation: { id: 'c1', title: '收藏来源群', kind: 'group' } }], nextCursor: 'bookmark-page-2' }).mockResolvedValueOnce({ items: [], nextCursor: null });
+    const jump = vi.fn(async () => undefined);
+    render(<MessageSearchPage initialMode="bookmarks" conversations={[]} onJump={jump} onClose={vi.fn()} />);
+    expect(screen.getByRole('heading', { name: '我的收藏' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('消息关键词')).not.toBeInTheDocument();
+    await screen.findByText('可搜索的消息');
+    expect(request.mock.calls[0][0]).toBe('/api/v1/bookmarks?limit=50');
+    fireEvent.click(screen.getByRole('button', { name: '加载更多结果' }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(request.mock.calls[1][0]).toBe('/api/v1/bookmarks?limit=50&after=bookmark-page-2');
+    await waitFor(() => expect(screen.getByRole('button', { name: '定位消息' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '定位消息' }));
+    await waitFor(() => expect(jump).toHaveBeenCalledWith('m1'));
+  });
+
+  it('aborts the initial bookmarks request on unmount and ignores its late content', async () => {
+    let resolve!: (page: unknown) => void; request.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const view = render(<MessageSearchPage initialMode="bookmarks" conversations={[]} onJump={vi.fn()} onClose={vi.fn()} />);
+    const signal = request.mock.calls[0][1].signal as AbortSignal;
+    view.unmount(); expect(signal.aborted).toBe(true);
+    await act(async () => resolve({ items: [{ id: 'm1', available: true, message, conversation: { id: 'c1', title: '收藏来源群', kind: 'group' } }], nextCursor: null }));
+    expect(screen.queryByText('可搜索的消息')).not.toBeInTheDocument();
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });

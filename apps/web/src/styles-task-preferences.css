@@ -1,0 +1,34 @@
+.modal.task-preferences-dialog { width: min(590px, calc(100vw - 36px)); max-height: min(790px, calc(100dvh - 48px)); }
+.task-preferences-dialog .modal-body { padding: 0 26px 22px; }
+.task-preferences-tabs { display: flex; gap: 20px; padding: 0; border-bottom: 1px solid #e7edf3; }
+.task-preferences-tabs button { padding: 15px 0 12px; border-bottom: 2px solid transparent; background: none; font-size: 12px; color: #8192a5; }
+.task-preferences-tabs button[aria-selected=true] { color: #0878ba; border-bottom-color: #008fed; }
+.task-preferences-content .task-settings-card { padding: 0; margin: 20px 0 0; border: 0; border-radius: 0; }
+.task-preferences-content .task-settings-card h3 { font-size: 14px; margin: 0 0 7px; }
+.task-preferences-content .task-settings-card > p { font-size: 11px; line-height: 1.7; margin: 8px 0 14px; }
+.task-preferences-content [hidden] { display: none; }
+.task-preferences-content .task-form-fields { display: block; margin: 4px 0 16px; }
+.task-preference-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 67px; padding: 14px 0; border-bottom: 1px solid #edf1f5; }
+.task-preference-row strong { display: block; font-size: 13px; font-weight: 500; color: #243343; }
+.task-preference-row small { display: block; margin-top: 4px; font-size: 11px; line-height: 1.6; color: #8192a5; }
+.task-preference-row > input[type=checkbox] { width: 17px; height: 17px; margin: 0 2px 0 0; flex-shrink: 0; accent-color: #008fed; }
+.task-preference-timezone .form-field { width: 165px; flex-shrink: 0; }
+.task-preference-timezone .form-field > label { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); }
+.task-preference-timezone input { min-height: 35px; padding: 7px 9px; border: 1px solid #e7edf3; border-radius: 8px; font-size: 12px; }
+.task-preferences-save { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 7px; }
+.task-preferences-save > span { font-size: 11px; color: #8192a5; }
+.task-preferences-save .primary-button { min-height: 36px; padding: 8px 15px; font-size: 12px; border-radius: 9px; }
+.task-preferences-dialog .task-label-list { max-height: 370px; overflow-y: auto; }
+.task-preferences-dialog .task-settings-card .form-field { display: grid; gap: 8px; font-size: 12px; color: #718295; }
+.task-preferences-dialog .task-settings-card form > .primary-button { margin-top: 18px; }
+.task-preferences-dialog .task-label-list .task-actions { gap: 9px; }
+@media (max-width: 600px) {
+  .modal.task-preferences-dialog { width: calc(100vw - 28px); max-height: calc(100dvh - 40px); }
+  .task-preferences-dialog .modal-body { padding: 0 18px 20px; }
+  .task-preferences-tabs { gap: 17px; }
+  .task-preference-row { gap: 12px; min-height: 66px; }
+  .task-preference-timezone { flex-wrap: wrap; }
+  .task-preference-timezone .form-field { width: 100%; }
+  .task-preference-timezone input { font-size: 16px; }
+  .task-preferences-save > span { max-width: 130px; line-height: 1.6; }
+}

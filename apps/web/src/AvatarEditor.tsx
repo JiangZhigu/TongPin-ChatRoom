@@ -4,8 +4,9 @@ import type { UploadPurpose } from './lib/files-types';
 import { IMAGE_EXTENSIONS, prepareLocalFiles, uploadLocalAttachment } from './lib/files';
 import { attachmentError, Avatar, LocalAttachmentList } from './AttachmentViews';
 
-export function AvatarEditor({ actorContext, label, avatarUrl, purpose, conversationId, accessKey, disabled = false, onSave }: { actorContext: string; label: string; avatarUrl?: string | null; purpose: Extract<UploadPurpose, 'user_avatar' | 'group_avatar'>; conversationId?: string; accessKey?: string; disabled?: boolean; onSave: (attachmentId: string | null, signal: AbortSignal) => Promise<void> }) {
+export function AvatarEditor({ actorContext, label, avatarUrl, purpose, conversationId, accessKey, disabled = false, onSave, onBusyChange }: { onBusyChange?: (busy: boolean) => void; actorContext: string; label: string; avatarUrl?: string | null; purpose: Extract<UploadPurpose, 'user_avatar' | 'group_avatar'>; conversationId?: string; accessKey?: string; disabled?: boolean; onSave: (attachmentId: string | null, signal: AbortSignal) => Promise<void> }) {
   const [file, setFile] = useState<LocalAttachment | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [notice, setNotice] = useState('');
+  useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   const input = useRef<HTMLInputElement>(null); const active = useRef(false); const request = useRef<AbortController | null>(null); const latestFile = useRef<LocalAttachment | null>(null);
   useEffect(() => { active.current = true; return () => { active.current = false; request.current?.abort(); latestFile.current = null; }; }, [actorContext, conversationId]);
   function choose(files: FileList | null) {

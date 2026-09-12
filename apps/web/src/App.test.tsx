@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { App } from './App';
 import { ConversationList } from './components/ConversationList';
@@ -23,6 +23,7 @@ vi.mock('./lib/chat-client', () => ({
     private listeners = new Set<() => void>();
     getSnapshot = () => this.snapshot;
     subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
+    subscribeTaskEvents = () => () => undefined;
     start = async () => { this.snapshot = { ...this.snapshot, phase: 'online' }; this.listeners.forEach((listener) => listener()); };
     stop = () => undefined;
     updateUser = () => undefined;
@@ -31,6 +32,11 @@ vi.mock('./lib/chat-client', () => ({
   },
 }));
 
+beforeEach(() => {
+  // jsdom models visibility only; browser checks cover native top-layer focus.
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } });
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } });
+});
 afterEach(() => { cleanup(); dismissInvitation(); vi.unstubAllGlobals(); setCsrfToken(''); window.history.replaceState({}, '', '/'); });
 function healthyResponse(url: string) {
   const data = url === '/health/ready' ? { status: 'ready', version: '0.1.0', features: { accounts: false } } : { accountsEnabled: false, registrationMode: 'closed' };
@@ -96,19 +102,20 @@ const dataReply = (data: unknown) => Promise.resolve({ ok: true, status: 200, js
 const failureReply = (code = 'AUTH_REQUIRED') => Promise.resolve({ ok: false, status: 401, json: async () => ({ error: { code, message: code === 'REAUTH_FAILED' ? '当前密码不正确' : '登录会话已失效' } }) });
 const captchaReply = () => dataReply({ captchaId: 'expiry-captcha', image: 'data:image/png;base64,', expiresAt: Date.now() + 120000 });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((finish) => { resolve = finish; }); return { promise, resolve }; }
-async function openAccountSettings() {
-  // Only this mounted instance's start() publishes online; a previous instance's
-  // calls or an initial synthetic online snapshot cannot satisfy this readiness.
+async function openAccountPanel(name: '设置' | '个人资料') {
+  // Only this mounted instance's start() publishes online; an old instance cannot satisfy readiness.
   await screen.findByText('已连接', { exact: true });
   expect(screen.getByText(expiryUser.nickname, { exact: true })).toBeInTheDocument();
-  // Navigation saves the outgoing draft asynchronously before committing the page.
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '设置' })); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name })); });
+  return screen.findByRole('dialog', { name });
 }
+const openAccountSettings = () => openAccountPanel('设置');
+const openProfileSettings = () => openAccountPanel('个人资料');
 
 describe('M7 current-account restrictions', () => {
   it('shows server-supplied restriction reasons as read-only account information', async () => {
     vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply(bootstrapData({ ...expiryUser, restrictions: { uploadDisabled: true, groupCreationDisabled: false, reason: '附件违规审核期间', mutedUntil: 1999999999999, muteReason: '已核实连续骚扰' } })) : dataReply({ items: [] })));
-    render(<App />); await openAccountSettings(); await screen.findByRole('heading', { name: '账号使用限制' });
+    render(<App />); await openAccountSettings(); fireEvent.click(screen.getByRole('tab', { name: '账号使用限制' })); await screen.findByRole('heading', { name: '账号使用限制' });
     expect(screen.getByText('限制理由：附件违规审核期间')).toBeInTheDocument(); expect(screen.getByText('禁言理由：已核实连续骚扰')).toBeInTheDocument(); expect(screen.getByText('上传：已限制')).toBeInTheDocument(); expect(screen.getByText('创建群聊：未限制')).toBeInTheDocument(); expect(screen.queryByRole('button', { name: '解除限制' })).not.toBeInTheDocument();
   });
 });
@@ -241,8 +248,9 @@ describe('M2 auth expiry', () => {
       return dataReply({ items: [] });
     }));
     render(<App />);
-    await openAccountSettings();
-    expect(await screen.findByRole('heading', { name: '账号设置' })).toBeInTheDocument();
+    const accountDialog = operation === 'write' ? await openProfileSettings() : await openAccountSettings();
+    expect(accountDialog).toBeInTheDocument();
+    if (operation === 'read') fireEvent.click(within(accountDialog).getByRole('tab', { name: '登录设备' }));
     if (operation === 'write') {
       fireEvent.change(await screen.findByLabelText('昵称'), { target: { value: '未提交的资料' } });
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: '保存资料' })); });
@@ -257,7 +265,7 @@ describe('M2 auth expiry', () => {
     expect(screen.queryByRole('heading', { name: '欢迎回来' })).not.toBeInTheDocument();
     await act(async () => { expired.resolve(await failureReply()); });
     expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: '账号设置' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: operation === 'write' ? '个人资料' : '设置' })).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue('未提交的资料')).not.toBeInTheDocument();
     expect(screen.queryByText(expiryUser.nickname)).not.toBeInTheDocument();
     expect(bootstrapCalls).toBe(2);
@@ -290,12 +298,15 @@ describe('M2 auth expiry', () => {
       return dataReply({ items: [] });
     }));
     render(<App />); await openAccountSettings();
+    fireEvent.click(screen.getByRole('tab', { name: '账号恢复码' }));
     fireEvent.click(await screen.findByRole('button', { name: '验证身份并重新生成' }));
-    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'wrong in-memory password' } });
-    fireEvent.click(screen.getByRole('button', { name: '确认并继续' }));
+    const reauthDialog = await screen.findByRole('dialog', { name: '再次验证身份' });
+    fireEvent.change(within(reauthDialog).getByLabelText('当前密码'), { target: { value: 'wrong in-memory password' } });
+    fireEvent.click(within(reauthDialog).getByRole('button', { name: '确认并继续' }));
     expect(await screen.findByText('当前密码不正确')).toBeInTheDocument();
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByLabelText('当前密码')).toHaveValue('wrong in-memory password');
+    expect(reauthDialog).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: '设置' })).toBeInTheDocument();
+    expect(within(reauthDialog).getByLabelText('当前密码')).toHaveValue('wrong in-memory password');
     expect(screen.queryByRole('heading', { name: '欢迎回来' })).not.toBeInTheDocument(); expect(bootstrapCalls).toBe(1);
   });
   it('ignores old bootstrap success and coalesces repeated expiry notifications while refreshing', async () => {
@@ -326,14 +337,14 @@ describe('M2 auth expiry', () => {
       if (url.endsWith('/bootstrap')) return dataReply(bootstrapData(bootstrapCalls++ === 0 ? expiryUser : null));
       if (url.endsWith('/captcha')) return captchaReply();
       if (url.endsWith('/profile') && options.method === 'PATCH') { profileStarted = true; return profile.promise; }
-      // Settings now verifies identity on mount. Expire only after the pending write exists.
+      // Expire the authenticated session only after the profile PATCH is pending.
       if (url.endsWith('/auth/me')) return profileStarted ? failureReply() : dataReply({ user: expiryUser });
       return dataReply({ items: [] });
     }));
-    render(<App />); await openAccountSettings();
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '保存资料' })); });
+    render(<App />); const profileDialog = await openProfileSettings();
+    await act(async () => { fireEvent.click(within(profileDialog).getByRole('button', { name: '保存资料' })); });
     expect(profileStarted).toBe(true);
-    expect(screen.getByRole('heading', { name: '账号设置' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: '个人资料' })).toBeInTheDocument();
     expect(bootstrapCalls).toBe(1);
     await act(async () => { await api('/api/v1/auth/me').catch(() => undefined); });
     expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { api, APIError } from '../lib/api';
 import { TaskClient } from '../lib/tasks-client';
@@ -172,5 +172,43 @@ describe('V3 review authority repair', () => {
     const f = fixture(); f.mock.drafts.mockResolvedValue([editDraft]); f.mock.reviewDraft.mockResolvedValue({ draft: editDraft, latest: task, expired: false }); const open = vi.fn(); render(<TaskDrafts client={f.client} onReview={open} />);
     fireEvent.click(await screen.findByRole('button', { name: '联网核对身份、权限与版本' })); await screen.findByRole('region', { name: '草稿与最新版本核对' }); act(() => f.set({ invalid: { t1: true }, listRevision: 1 })); const latest = { ...task, title: '更新后的服务器标题', etag: '"v2"', version: 2 }; act(() => f.set({ entities: { t1: latest }, invalid: {} })); expect(screen.queryByRole('button', { name: '保留我的输入，采用最新版本继续核对' })).not.toBeInTheDocument();
     f.mock.reviewDraft.mockResolvedValue({ draft: editDraft, latest, expired: false }); fireEvent.click(screen.getByRole('button', { name: '联网核对身份、权限与版本' })); await screen.findByText('最新值：更新后的服务器标题'); fireEvent.click(screen.getByRole('button', { name: '保留我的输入，采用最新版本继续核对' })); expect(open).toHaveBeenCalledExactlyOnceWith(editDraft, latest); expect(f.mock.deleteDraft).not.toHaveBeenCalled();
+  });
+});
+
+describe('task preference dialog', () => {
+  it('opens preferences over the current list, preserves unsent filters and returns focus on close', async () => {
+    const f = fixture();
+    render(<TaskWorkspace client={f.client} userId="u1" conversations={[group]} contacts={[]} onOpenSource={vi.fn()} initialMeta={meta} />);
+    await screen.findByText(task.title);
+    const keyword = screen.getByLabelText('关键词'); fireEvent.change(keyword, { target: { value: '尚未提交的筛选' } });
+    const trigger = screen.getByRole('button', { name: '偏好与分类' }); trigger.focus(); fireEvent.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: '我的待办偏好' });
+    expect(within(dialog).getAllByRole('checkbox')).toHaveLength(4);
+    expect(screen.getByText(task.title)).toBeInTheDocument();
+    expect(screen.getByLabelText('关键词')).toBe(keyword);
+    expect(keyword).toHaveValue('尚未提交的筛选');
+    fireEvent.click(within(dialog).getByRole('tab', { name: '清单与标签' }));
+    expect(within(dialog).getByRole('button', { name: '创建个人清单' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('checkbox')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭对话框' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '我的待办偏好' })).not.toBeInTheDocument());
+    expect(trigger).toHaveFocus(); expect(keyword).toHaveValue('尚未提交的筛选');
+    expect(screen.getByText(task.title)).toBeInTheDocument();
+  });
+
+  it('keeps the preference dialog open while saving and submits all four notification choices', async () => {
+    const f = fixture(); const saving = deferred<typeof meta.preferences>(); f.mock.preferences.mockReturnValueOnce(saving.promise);
+    render(<TaskWorkspace client={f.client} userId="u1" conversations={[group]} contacts={[]} onOpenSource={vi.fn()} initialMeta={meta} />);
+    await screen.findByText(task.title); fireEvent.click(screen.getByRole('button', { name: '偏好与分类' }));
+    const dialog = await screen.findByRole('dialog', { name: '我的待办偏好' });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: '评论通知' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存待办偏好' }));
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: '关闭对话框' })).not.toBeInTheDocument());
+    fireEvent(dialog, new Event('cancel', { cancelable: true }));
+    expect(dialog).toHaveAttribute('open');
+    expect(f.mock.preferences).toHaveBeenCalledWith({ ...meta.preferences, comments: false }, expect.any(String));
+    await act(async () => saving.resolve({ ...meta.preferences, comments: false }));
+    await within(dialog).findByText('待办通知偏好已保存。');
+    expect(within(dialog).getByRole('button', { name: '关闭对话框' })).toBeEnabled();
   });
 });

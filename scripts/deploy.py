@@ -101,14 +101,16 @@ def doctor():
     commands = {name: shutil.which(name) for name in ('uv', 'node', 'npm', 'docker', 'systemctl', 'launchctl', 'apt-get', 'dnf', 'yum', 'zypper', 'pacman', 'apk', 'brew', 'winget')}
     return {'platform': platform.platform(), 'python': platform.python_version(), 'sqlite': sqlite3.sqlite_version,
             'linux': os_release, 'commands': commands, 'project': str(ROOT),
-            'required': {'python': '3.12.13', 'node': '24.15.x (source builds)', 'npm': '11.12.x', 'uv': '0.11.27 or compatible'},
-            'next': 'Use the detected package manager or approved official binaries for exact runtimes; distro packages may be older. With an existing bootstrap Python and uv, install --download-python permits project-local Python download. Without systemd/launchd, use the foreground run entry under an approved supervisor. No sudo, global package, Docker or service installation is performed here.'}
+            'required': {'bootstrapPython': '3.12 or newer', 'python': '3.12.13',
+                         'node': '24.15.x (source builds only)', 'npm': '11.12.x (source builds only)',
+                         'uv': '0.11.27 or compatible (automatically prepared when missing)'},
+            'next': 'For a prebuilt release, run install.cmd on Windows or sh install.sh on Linux/macOS; only bootstrap Python 3.12 or newer must be installed manually. The installer prepares missing uv and permits project-local Python downloads, then installs locked backend dependencies. Node/npm are needed only to build frontend source. Without systemd/launchd, use the foreground run entry under an approved supervisor. No sudo, global package, Docker or service installation is performed here.'}
 
 
 def install(options):
     uv = os.environ.get('TONGPIN_UV') or shutil.which('uv')
-    if not uv:
-        raise ValueError('uv is missing; install uv or set TONGPIN_UV to an existing executable')
+    if not uv and not getattr(options, 'bootstrap_tools', False):
+        raise ValueError('uv is missing; use install --bootstrap-tools to prepare project-local uv, or set TONGPIN_UV to an existing executable')
     release = safe_path(ROOT)
     env = config_env(options.env_file, release)
     # uv can redirect both the project and the exact-sync environment through
@@ -118,6 +120,10 @@ def install(options):
     uv_cache = safe_path(cache / 'uv')
     npm_cache = safe_path(cache / 'npm')
     python_install = safe_path(release / '.codex/python')
+    if not uv:
+        from bootstrap_uv import ensure_uv
+        print('Preparing project-local uv; the first installation requires a download.', file=sys.stderr)
+        uv = ensure_uv(release)
     for key in ('UV_PROJECT', 'UV_WORKING_DIR', 'UV_WORKING_DIRECTORY'):
         env.pop(key, None)
     cache.mkdir(parents=True, exist_ok=True)
@@ -334,6 +340,7 @@ def parser():
     install_parser = sub.add_parser('install', help='Sync this release .venv; no database writes or global installs')
     install_parser.add_argument('--dev', action='store_true')
     install_parser.add_argument('--build', action='store_true', help='Install locked Node dependencies and build frontend')
+    install_parser.add_argument('--bootstrap-tools', action='store_true', help='Download hash-verified project-local uv if it is not already available')
     install_parser.add_argument('--download-python', action='store_true', help='Permit uv to download Python into this project .codex/python')
     check = sub.add_parser('precheck', help='Read-only production readiness check; returns nonzero for missing operator configuration')
     check.add_argument('--release')
