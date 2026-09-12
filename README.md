@@ -1,69 +1,231 @@
+<div align="center">
+
 # 同频 · TongPin ChatRoom
 
-同频是可以自行托管的聊天与待办应用，采用 Python 3.12 + Flask、Socket.IO、SQLite 和 React。账号、好友私聊、群聊、离线待发、图片文件、消息互动、个人/群待办，以及全站超级管理员后台均已接入真实持久化服务。交付进度、测试缺口与版本见 [STATUS](implementation/STATUS.md)；开发环境不代表已公开运营。
+**好的对话，从同频开始。**
 
-## 本地运行
+一个可自行托管的聊天与待办应用，让好友交流、群组协作和任务管理在同一处发生。
 
-准备 Python **3.12.13**、uv **0.11.27**；从源码构建还需要 Node.js **24.15.0或更高的24.x**、npm **11.12.1或更高的11.x**。安装限定在项目虚拟环境、Node依赖和缓存，数据保留在专用目录。
+![Python](https://img.shields.io/badge/Python-3.12.13-3776AB?logo=python&logoColor=white)
+![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)
+[![License](https://img.shields.io/badge/License-Apache--2.0-2583C5)](LICENSE)
 
-Windows PowerShell：
+[项目介绍](#项目介绍) · [功能一览](#功能一览) · [技术简介](#技术简介) · [安装使用](#安装使用) · [开发指南](#开发指南) · [文档导航](#文档导航)
+
+</div>
+
+---
+
+![同频实际登录界面：浅蓝品牌区域与账号登录表单](docs/images/tongpin-login.png)
+
+<p align="center"><sub>当前界面的实际截图 · 浅灰浅蓝视觉风格 · 中文交互</sub></p>
+
+## 项目介绍
+
+**同频（TongPin）** 将即时通讯与待办协作放在同一个应用中：你可以与好友私聊，在群组中分享图片和文件，把讨论转成任务，再通过列表、看板和提醒跟进进度。
+
+项目采用 **Python 后端 + React 前端 + SQLite 持久化**，账号、聊天记录、任务和管理操作均接入实际后端服务。前端构建后由后端统一提供，适合希望自行掌握部署位置和数据存储的个人、小组与自托管使用者，也可用于学习实时通信、权限管理和前后端协作。
+
+- **聊天与待办相连**：消息可转为待办，个人任务与群任务分别管理。
+- **数据由自己托管**：账号、消息、附件和任务保存在部署主机的指定目录。
+- **断网时保留输入**：通过浏览器本机草稿与待发队列保留未完成内容，联网后按当前身份和权限处理。
+- **提供站点管理能力**：超级管理员可管理账号、群组、内容、运营策略、审计与备份。
+
+当前版本为 **0.1.0**。阶段交付与验证范围见 [实施状态](implementation/STATUS.md)；历史测试记录与当前安装包的验证范围应分别阅读。
+
+## 功能一览
+
+| 模块 | 主要能力 |
+| :--- | :--- |
+| 💬 即时聊天 | 好友申请与屏蔽、私聊、群聊、群角色与邀请审核、历史同步、发送与已读状态 |
+| ✨ 消息互动 | 表情、回复、提及、反应、撤回、收藏、搜索定位、举报与通知 |
+| 📎 图片与文件 | 文件选择、粘贴与拖拽上传、图片预览、受权限控制的下载、上传状态与配额提示 |
+| ✅ 待办协作 | 个人与群任务、负责人、优先级、检查项、截止日期与时区、列表与看板、评论与提醒 |
+| 🔄 聊天转任务 | 从消息创建待办、查看来源、分享实时任务卡片或静态副本、复核离线任务草稿 |
+| 👤 账号与设置 | 个人资料、头像、设备会话、隐私与通知设置、恢复码、注销冷静期 |
+| 🛠️ 管理后台 | 账号与群组治理、内容与文件审阅、监控告警、配置版本、公告举报、审计、受控导出与备份 |
+
+更完整的操作说明见 [用户指南](docs/USER_GUIDE.zh-CN.md) 和 [超级管理员指南](docs/ADMIN_GUIDE.zh-CN.md)。
+
+## 技术简介
+
+| 层次 | 技术 | 在项目中的作用 |
+| :--- | :--- | :--- |
+| 前端界面 | React 19、TypeScript、Vite 8、Lucide | 页面与组件、类型检查、前端构建、界面图标 |
+| HTTP 服务 | Python 3.12.13、Flask | 账号、聊天、任务与管理接口 |
+| 实时通信 | python-socketio、Socket.IO Client | 消息与状态事件、实时同步 |
+| 服务运行 | ASGI、Uvicorn | 承载 HTTP 与 Socket.IO 服务 |
+| 服务端存储 | SQLite、WAL、SQL 迁移 | 账号、消息、任务、策略与审计数据持久化 |
+| 浏览器存储 | IndexedDB | 按账号隔离的本机草稿与离线待发 |
+| 身份与安全 | Argon2、TOTP、会话与权限校验 | 密码保护、管理员第二因素、敏感操作验证 |
+| 工程工具 | uv、npm、Ruff、pytest、Vitest、Playwright | 依赖锁定、代码检查、自动化测试与浏览器验证 |
+
+```mermaid
+flowchart LR
+    Browser["React + TypeScript"] -->|HTTP / Socket.IO| Server["Uvicorn / ASGI<br/>Flask + Socket.IO"]
+    Browser -. 本机草稿与待发 .-> Local["IndexedDB"]
+    Server --> Services["业务服务与权限校验"]
+    Services --> Database["SQLite / WAL"]
+    Services --> Files["私有附件与备份目录"]
+```
+
+构建后的页面与接口使用同一个服务地址。当前运行方式为 **单个 ASGI 进程、单个 SQLite 数据目录**，数据目录设有独占锁；不要让多个 worker 或多个应用副本共用同一份数据库。
+
+## 安装使用
+
+### 选择安装方式
+
+| 方式 | 适合谁 | 需要手动准备 |
+| :--- | :--- | :--- |
+| **已构建前端的发布 ZIP** | 希望直接运行应用 | **Python 3.12 或更新版本** |
+| **从源码安装** | 需要修改或重新构建前端 | Python 3.12+、Node.js 24.x、npm 11.x |
+
+两种方式的项目运行时均锁定为 **Python 3.12.13**，后端依赖由 `uv.lock` 固定。下面的安装命令会自动准备缺失的 uv，并允许复用或下载项目指定的 Python；首次安装需要联网。
+
+### 方式一：使用发布包
+
+将已经包含前端的 ZIP 解压到一个有写入权限的独立目录。**部署时无需安装 Node.js、npm 或手动安装 uv。** 若拿到的是仓库源码，请使用下一节的源码安装方式。
+
+**Windows**
+
+双击解压目录中的 `install.cmd`，等待安装完成。随后在该目录打开 PowerShell：
 
 ```powershell
-.\tongpin.cmd doctor
-.\tongpin.cmd install --dev --build
+# 首次部署：创建超级管理员
+.\tongpin.cmd manage init-admin
+
+# 启动应用
+.\tongpin.cmd run
+```
+
+**Linux / macOS**
+
+在解压目录打开终端，执行：
+
+```sh
+# 安装运行环境与后端依赖
+sh ./install.sh
+
+# 首次部署：创建超级管理员
+sh ./tongpin.sh manage init-admin
+
+# 启动应用
+sh ./tongpin.sh run
+```
+
+使用 `sh` 调用不依赖 ZIP 是否保留脚本的可执行权限。更详细的准备条件与故障处理见 [只需 Python 的安装说明](INSTALL-PYTHON.zh-CN.md)。
+
+> **平台验证说明：** 同一份发布包提供 Windows、Linux 和 macOS 入口。2026-09-12 的 Python 安装包已在 Windows x64 上验证全新解压、无 Node/npm/uv 环境安装、服务启动和实际页面；该安装包尚未完成 Linux/macOS 原生安装验证。仓库历史三平台 CI 的范围见阶段交付记录。
+
+### 方式二：从源码安装
+
+准备以下工具，并确认能在终端中调用：
+
+- **Python 3.12 或更新版本**：用于启动安装器，项目实际使用 3.12.13。
+- **Node.js 24.x**：最低版本为 24.15.0。
+- **npm 11.x**：最低版本为 11.12.1。
+
+获取源码：
+
+```sh
+git clone https://github.com/JiangZhigu/TongPin-ChatRoom.git
+cd TongPin-ChatRoom
+```
+
+**Windows PowerShell**
+
+```powershell
+.\tongpin.cmd install --bootstrap-tools --download-python --dev --build
 .\tongpin.cmd manage init-admin
 .\tongpin.cmd run
 ```
 
-macOS / Linux：
+**Linux / macOS**
 
 ```sh
-sh ./tongpin.sh doctor
-sh ./tongpin.sh install --dev --build
+sh ./tongpin.sh install --bootstrap-tools --download-python --dev --build
 sh ./tongpin.sh manage init-admin
 sh ./tongpin.sh run
 ```
 
-首位超管通过本地主机交互式命令创建，没有默认账号或密码。初始化要求添加验证器并输入有效动态码，随后只显示一次两套恢复码。启动后打开 [本机入口](http://127.0.0.1:8765)，全站管理入口为 `/admin`。新站默认开放自主注册，可从登录页切换或直接进入 `/register`；超管仍可切换开放、仅站点邀请码或关闭注册，已保存的策略不因升级被覆盖。正常停止按Ctrl+C并等待完成。
+`--dev` 安装开发检查所需的依赖，`--build` 安装锁定的前端依赖并构建页面。安装工具、下载的 Python、缓存及虚拟环境均使用项目目录；已有符合要求的工具或 Python 可以复用。
 
-正常登录只需用户名和密码。同一来源对同一用户名连续5次验证失败后，服务端才要求图形验证码；成功登录清零，连续15分钟没有密码失败也会解除挑战。刷新页面、清除浏览器状态或改变用户名大小写不能绕过已经触发的验证码。注册和找回账号始终要求验证码，超管登录仍需独立第二因素。
+### 第一次使用
 
-发布ZIP自带前端时可使用 `install` 省去Node构建。`install --download-python` 允许uv把锁定Python下载到项目内，但仍需已有Python3.12+与uv启动安装入口。脚本从自身目录定位项目，不依赖调用者当前目录。
+1. **初始化管理员。** 在服务未运行时执行 `manage init-admin`，按提示设置用户名、显示名、密码和验证器动态码，保存只显示一次的恢复码。项目没有默认管理员账号或密码，已有管理员时无需重复初始化。
+2. **打开应用。** 启动后访问 [http://127.0.0.1:8765](http://127.0.0.1:8765)，管理后台入口为 [http://127.0.0.1:8765/admin](http://127.0.0.1:8765/admin)。
+3. **创建普通账号。** 新站默认允许自主注册，可从登录页切换到“注册”。管理员可以调整为开放、仅邀请码或关闭注册；已有站点保留原有策略。
+4. **开始聊天与协作。** 添加好友并建立会话，或创建群组；在待办中管理任务，也可以从消息创建待办。Enter 发送消息，Shift+Enter 换行。
+5. **停止或再次启动。** 停止时按 Ctrl+C 并等待退出。以后直接执行 `tongpin.cmd run` 或 `sh ./tongpin.sh run`，无需重复安装。
 
-配置可通过环境变量或根 .env 提供，示例见 [.env.example](.env.example)。项目内启动桥接优先使用根 .venv，从其他工作目录调用脚本时仍以项目根解析数据和资源。
+如果 Windows 执行策略阻止 PowerShell 入口，可改用直接 Python 命令，示例见 [安装说明](INSTALL-PYTHON.zh-CN.md#windows)。
 
-## 主要功能
+## 配置与数据
 
-- 账号与安全：验证码、强密码、恢复码、设备会话、二次验证、超管TOTP、注销冷静期与受审计维护恢复。
-- 消息与协作：好友申请/屏蔽、私聊、群角色与邀请审核、历史同步、离线重试、图片/文件、表情、回复、提及、反应、撤回、收藏、搜索和通知。
-- 待办：个人/群任务、负责人、检查项、截止日期/时区、列表/看板、评论、提醒、来源、实时卡片、静态副本和本人确认的离线草稿恢复。
-- 全站后台：监控/告警、账号/会话/关系/群组、内容/文件治理、配置版本、公告/举报、批量任务、审计、受控导出、备份与隔离恢复演练。
+本机试用可以直接使用默认配置。需要调整时，参考 [.env.example](.env.example) 创建根目录的 `.env`，或通过环境变量、`--env-file` 提供配置；**已有环境变量优先于配置文件**。
 
-站点超管可按受审计流程审阅私聊、群聊和附件；本产品不提供端到端加密。个人待办遵循独立权限，超管不能在普通查询里任意浏览个人任务。群消息按本次加入后的范围读取；群待办当前摘要对现成员可见，评论/活动与来源仍受各自权限限制。
+| 常用配置 | 默认值 / 用途 |
+| :--- | :--- |
+| `TONGPIN_ENV` | `development`；可选 `test`、`production` |
+| `TONGPIN_HOST` | `127.0.0.1`；开发与测试模式仅绑定本机 |
+| `TONGPIN_PORT` | `8765` |
+| `TONGPIN_DATA_DIR` | `var`；数据库、附件等持久数据的根目录 |
+| `TONGPIN_ORIGINS` | 允许访问的准确来源；生产环境要求 HTTPS |
+| `TONGPIN_SECRET` | 生产环境由运营者提供的外部密钥 |
 
-## 开发、检查与数据
+默认数据库为 `var/data/tongpin.sqlite3`。附件、备份、导出和日志位于数据目录的非公开子目录；发布 ZIP 不包含用户数据。浏览器本机草稿保存在当前浏览器中，清理浏览器数据或更换设备会影响这些草稿。
+
+升级前备份持久数据，保留原有密钥，将新版本放入独立目录并按升级流程切换。配置项及重启要求见 [配置参考](docs/CONFIGURATION.zh-CN.md)，备份、恢复、升级与回滚见 [运维指南](docs/OPERATIONS.zh-CN.md)。
+
+### 部署与隐私边界
+
+- **服务端可管理的数据。** 站点超级管理员可以通过受审计流程审阅私聊、群聊和附件，本项目不提供端到端加密。个人待办有独立访问权限，不因超级管理员身份而在普通查询中任意开放。
+- **离线不等于已发送。** 本机待发和任务草稿需要在联网后重新核对身份、权限与服务端状态；离线任务草稿需要本人确认后提交。
+- **文件扫描需配置。** 项目提供本地 ClamAV 扫描器适配；扫描服务未配置或不可用时，一般文件按策略隔离，不代表安装后已自动启用病毒扫描。
+- **公网部署需完成生产配置。** 配置 HTTPS、准确来源、外部密钥、专用持久目录和运营资料，并执行生产预检。本机启动成功不代表公网部署完成。
+
+## 开发指南
+
+完成源码安装后，在项目根目录使用以下命令：
+
+| 命令 | 作用 |
+| :--- | :--- |
+| `npm run dev` | 同时启动前端开发服务和后端 |
+| `npm run build` | 构建前端并生成构建凭据 |
+| `npm run start` | 启动已安装环境中的应用 |
+| `npm run check` | 执行 Ruff、后端测试、TypeScript 检查和前端测试 |
+
+开发模式的前端地址是 `http://localhost:5173`，后端地址是 `http://127.0.0.1:8765`；构建后的页面由后端同源提供。启动开发模式前，先停止使用同一数据目录的现有实例。
+
+项目主要目录：
 
 ```text
-npm run dev
-npm run build
-npm run check
+TongPin-ChatRoom/
+├── apps/web/          # React 前端、页面组件与前端测试
+├── src/tongpin/       # Python 后端、业务服务、接口与数据库迁移
+├── scripts/           # 安装、启动、构建、检查及发布工具
+├── tests/             # 后端与部署相关测试
+├── docs/              # 安装、配置、使用与运维文档
+├── implementation/    # 接口约定、阶段交付与验证记录
+├── var/               # 默认运行数据，首次运行时生成
+├── uv.lock            # Python 依赖锁定文件
+└── package-lock.json  # 前端依赖锁定文件
 ```
 
-开发模式前端为 `http://localhost:5173`，后端为 `http://127.0.0.1:8765`；构建后由后端同源提供界面。检查使用项目 `.codex` 内隔离合成数据。开发默认库为 `var/data/tongpin.sqlite3`，附件/备份/导出/日志位于非公开目录。常驻服务使用一个ASGI进程、一个SQLite数据目录和进程内有界缓存，不要对同一个库启动多个worker或多副本。
+## 文档导航
 
-生产模式要求准确HTTPS来源、外部密钥、正式运营资料、非开发条款和持久目录，并执行只读发布预检。
+| 你想了解 | 阅读文档 |
+| :--- | :--- |
+| 只安装 Python，直接使用发布包 | [发布包安装说明](INSTALL-PYTHON.zh-CN.md) |
+| 安装入口、平台差异与命令参数 | [安装与平台入口](docs/INSTALL.zh-CN.md) |
+| 环境变量、站点策略与生产预检 | [配置参考](docs/CONFIGURATION.zh-CN.md) |
+| 聊天、群组、文件、待办与账号操作 | [用户指南](docs/USER_GUIDE.zh-CN.md) |
+| 管理账号、审计、内容治理与后台操作 | [超级管理员指南](docs/ADMIN_GUIDE.zh-CN.md) |
+| 部署、备份、监控、升级与回滚 | [运维指南](docs/OPERATIONS.zh-CN.md) |
+| 当前 HTTP / Socket.IO 接口 | [接口约定](implementation/API_CURRENT.zh-CN.md) |
+| 已实现范围、阶段验证与交付状态 | [实施状态](implementation/STATUS.md) |
 
-2026-09-12，[三平台CI与Docker全部通过](https://github.com/JiangZhigu/TongPin-ChatRoom/actions/runs/34637137650)：Windows Server 2025、macOS 26.6.2 arm64、Ubuntu 24.04.5各完成41项后端平台检查、435项前端测试和真实浏览器消息/待办持久化；Docker完成非root、只读根目录及持久挂载下真实HTTP/WebSocket检查。本机另完成212项后端全量与600秒100连接负载，6,005条消息全部持久化，ACK p95为217.14ms。具体版本、失败修复记录与测量边界见 [M8回归](implementation/M8_DELIVERY.zh-CN.md) 和 [M9交付准备](implementation/M9_DELIVERY.zh-CN.md)。
+## 许可证
 
-本地交付包为UX前候选，另附SHA256和交付回执。最终独立Astra完整体验及其缺陷闭环仍待完成；当前证据不代表实机手机、全部Linux发行版或生产上线验收。
-
-- [安装、依赖与平台入口](docs/INSTALL.zh-CN.md)
-- [配置参考](docs/CONFIGURATION.zh-CN.md)
-- [用户说明](docs/USER_GUIDE.zh-CN.md)
-- [超级管理员说明](docs/ADMIN_GUIDE.zh-CN.md)
-- [部署、备份、监控、升级与回滚](docs/OPERATIONS.zh-CN.md)
-- [当前接口](implementation/API_CURRENT.zh-CN.md)
-
-发布包先在本地生成和校验，不自动上传公开Release、购买服务或部署生产环境。
-
-许可证：[Apache-2.0](LICENSE)。
+本项目使用 [Apache License 2.0](LICENSE)。第三方组件及相关说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
