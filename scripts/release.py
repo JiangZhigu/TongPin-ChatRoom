@@ -13,6 +13,7 @@ import zipfile
 from pathlib import PurePosixPath
 
 from build_receipt import verify
+from demo_receipt import verify_demo
 from deploy import ROOT, digest, safe_path
 
 MANIFEST = 'release-manifest.json'
@@ -21,7 +22,7 @@ ROOT_FILES = {'.gitattributes', '.gitignore', '.dockerignore', '.python-version'
               'package.json', 'package-lock.json', 'tsconfig.base.json', 'THIRD_PARTY_NOTICES.md',
               'tongpin.cmd', 'tongpin.ps1', 'tongpin.sh', 'install.cmd', 'install.sh',
               'INSTALL-PYTHON.zh-CN.md'}
-PREFIXES = ('src/', 'scripts/', 'apps/web/', 'tests/', 'docs/', 'implementation/', '.github/workflows/',
+PREFIXES = ('src/', 'scripts/', 'apps/web/', 'demo/', 'tests/', 'docs/', 'implementation/', '.github/workflows/',
             'vendor/unicode/', 'packages/contracts/src/')
 MAX_BYTES = 1024 * 1024 * 1024
 
@@ -39,6 +40,7 @@ def permitted(name):
 
 def package(options):
     verify()
+    verify_demo()
     changed = git('diff', '--name-only', '-z').split('\0') + git('diff', '--cached', '--name-only', '-z').split('\0')
     if any(permitted(name) for name in changed if name):
         raise ValueError('Commit reviewed tracked changes before packaging')
@@ -60,7 +62,8 @@ def package(options):
         raise ValueError('Output exists; choose a new bundle path')
     target.parent.mkdir(parents=True, exist_ok=True)
     manifest = {'format': 1, 'commit': git('rev-parse', 'HEAD').strip(), 'files': rows,
-                'dataIncluded': False, 'dependenciesIncluded': False, 'frontendIncluded': True}
+                'dataIncluded': False, 'dependenciesIncluded': False, 'frontendIncluded': True,
+                'demoIncluded': True, 'demoEntry': 'demo/index.html'}
     # Exclusive creation avoids replacing an existing archive after a race.
     with zipfile.ZipFile(target, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for row in rows:

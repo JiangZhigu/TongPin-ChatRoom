@@ -1,0 +1,37 @@
+import type { Page, UserSummary } from './chat-types';
+
+export type TaskStatus = 'todo' | 'doing' | 'done';
+export type TaskPriority = 'low' | 'normal' | 'high';
+export type TaskCapabilities = { edit: boolean; progress: boolean; assign: boolean; claim: boolean; release: boolean; checkStructure: boolean; checkToggle: boolean; remove: boolean; restore: boolean; comment: boolean; share: boolean; copyToGroup: boolean; writeReason: string | null };
+export type CheckItem = { id: string; text: string; done: boolean; position: number };
+export type Task = {
+  id: string; scope: 'personal' | 'group'; groupId: string | null; groupName: string | null;
+  ownerId: string | null; creator: UserSummary; assignee: UserSummary | null;
+  title: string; description: string; priority: TaskPriority; status: TaskStatus;
+  dueOn: string | null; dueTimezone: string; overdue: boolean; completedAt: number | null;
+  createdAt: number; updatedAt: number; deletedAt: number | null; version: number; etag: string;
+  checkItems: CheckItem[]; source: { available: boolean; messageId?: string; conversationId?: string; text?: string } | null;
+  capabilities: TaskCapabilities; followed: boolean; bookmarked: boolean; listId: string | null; tagIds: string[];
+  reminder: Reminder; viewerId: string;
+};
+export type TaskFields = { title: string; description: string; priority: TaskPriority; dueOn: string | null; dueTimezone: string; assigneeId: string | null; listId?: string | null; tagIds?: string[] };
+export type TaskCreate = TaskFields & { scope: 'personal' | 'group'; groupId?: string | null; sourceMessageId?: string | null; snapshotMessageId?: string | null };
+export type TaskPatch = Partial<TaskFields> & { status?: TaskStatus; confirmIncomplete?: boolean };
+export type TaskQuery = { view?: 'mine' | 'personal' | 'group' | 'created' | 'followed' | 'bookmarked'; groupId?: string; status?: 'open' | 'all' | TaskStatus; priority?: TaskPriority | ''; assignee?: 'me' | 'unassigned' | 'all'; due?: 'today' | 'overdue' | ''; q?: string; deleted?: 'only'; listId?: string; tagId?: string; after?: string; limit?: number };
+export type TaskPage = Page<Task> & { total: number; actorId: string };
+export type TaskActivity = { id: string; kind: string; actor: UserSummary | null; createdAt: number; text: string };
+export type TaskComment = { id: string; text: string; author: UserSummary; createdAt: number; removed: boolean; canDelete: boolean };
+export type Reminder = { rule: 'none' | 'day_before' | 'due_day'; time: string };
+export type TaskPreferences = { assignments: boolean; comments: boolean; completed: boolean; due: boolean; timezone: string };
+export type TaskLabel = { id: string; name: string; kind: 'list' | 'tag' };
+export type TaskMeta = { actorId: string; enabled: boolean; enhanced: boolean; canCreatePersonal: boolean; writeReason: string | null; preferences: TaskPreferences; labels: TaskLabel[]; limits: { personal: number; group: number; checkItems: number; draftDays: number; draftCount: number } };
+export type GroupTaskSettings = { groupId: string; createPolicy: 'members' | 'managers'; etag: string; canManage: boolean; canCreate: boolean; writeReason: string | null; count: number; quota: number };
+export type TaskShare = { destinationConversationId: string; mode: 'live' | 'snapshot'; includeDescription: boolean };
+export type TaskSnapshot = Pick<Task, 'title' | 'priority' | 'dueOn' | 'dueTimezone'> & { description?: string };
+export type TaskCard = { kind: 'unavailable' } | { kind: 'live'; task: Task } | { kind: 'snapshot'; snapshot: TaskSnapshot };
+export type TaskCopy = TaskFields & { groupId: string; acknowledgeShared: true };
+export type TaskCommandResult = { task: Task; duplicate: boolean };
+export type TaskShareResult = { messageId: string; conversationId: string; duplicate: boolean };
+export type TaskReport = { id: string; status: string; createdAt: number };
+export type TaskDraft = { id: string; userId: string; taskId: string | null; kind: 'create' | 'edit'; payload: TaskCreate | TaskPatch; baseEtag: string | null; createdAt: number; updatedAt: number; expiresAt: number };
+export type TaskState = { revision: number; listRevision: number; entities: Readonly<Record<string, Task>>; invalid: Readonly<Record<string, boolean>>; online: boolean; enabled: boolean; enhanced: boolean; error: string | null };

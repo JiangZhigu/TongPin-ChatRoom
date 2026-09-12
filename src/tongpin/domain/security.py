@@ -57,12 +57,12 @@ def validate_username(value):
 
 
 def validate_password(value):
-    if not 15 <= len(value) <= 128 or any(unicodedata.category(c) in {"Cc", "Cs"} for c in value):
+    if not 8 <= len(value) <= 128 or any(unicodedata.category(c) in {"Cc", "Cs"} for c in value):
         raise APIError(
             "VALIDATION_ERROR",
             "密码长度或字符不符合要求。",
             422,
-            {"password": "密码应为15–128个字符，不能包含控制字符。"},
+            {"password": "密码应为8–128个字符，不能包含控制字符。"},
         )
     compact = value.casefold().replace(" ", "")
     weak = {

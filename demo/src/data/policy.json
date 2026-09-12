@@ -1,0 +1,317 @@
+{
+  "source": "src/tongpin/admin/settings.py POLICY_FIELDS; src/tongpin/config.py DEFAULT_POLICY",
+  "fields": [
+    {
+      "key": "task_personal_quota",
+      "label": "每人个人待办上限",
+      "group": "待办",
+      "type": "integer",
+      "help": "包含回收中的待办；缩小只限制新建。部署上限较小时按较小值执行。",
+      "min": 1,
+      "max": 5000
+    },
+    {
+      "key": "task_group_quota",
+      "label": "每群待办上限",
+      "group": "待办",
+      "type": "integer",
+      "help": "包含回收中的待办；缩小不删除已有待办。部署上限较小时按较小值执行。",
+      "min": 1,
+      "max": 10000
+    },
+    {
+      "key": "registration_mode",
+      "label": "注册准入",
+      "group": "账号与准入",
+      "type": "enum",
+      "help": "",
+      "options": [
+        {
+          "value": "closed",
+          "label": "关闭注册"
+        },
+        {
+          "value": "invite-only",
+          "label": "仅凭站点邀请码"
+        },
+        {
+          "value": "open",
+          "label": "开放注册"
+        }
+      ]
+    },
+    {
+      "key": "group_limit",
+      "label": "每群成员上限",
+      "group": "群聊与消息",
+      "type": "integer",
+      "help": "缩小不移出既有成员，只限制后续入群。",
+      "min": 2,
+      "max": 200
+    },
+    {
+      "key": "owned_group_limit",
+      "label": "每人活跃自建群上限",
+      "group": "群聊与消息",
+      "type": "integer",
+      "help": "既有群保留；新建或接收群主时检查。",
+      "min": 1,
+      "max": 20
+    },
+    {
+      "key": "message_codepoints",
+      "label": "消息字符上限",
+      "group": "群聊与消息",
+      "type": "integer",
+      "help": "",
+      "min": 1,
+      "max": 4000
+    },
+    {
+      "key": "message_bytes",
+      "label": "消息UTF-8字节上限",
+      "group": "群聊与消息",
+      "type": "integer",
+      "help": "",
+      "min": 4,
+      "max": 16384
+    },
+    {
+      "key": "recall_seconds",
+      "label": "本人撤回期限（秒）",
+      "group": "群聊与消息",
+      "type": "integer",
+      "help": "",
+      "min": 0,
+      "max": 120
+    },
+    {
+      "key": "image_limit_bytes",
+      "label": "图片大小上限（字节）",
+      "group": "文件与空间",
+      "type": "integer",
+      "help": "",
+      "min": 1024,
+      "max": 10485760
+    },
+    {
+      "key": "file_limit_bytes",
+      "label": "文件大小上限（字节）",
+      "group": "文件与空间",
+      "type": "integer",
+      "help": "",
+      "min": 1024,
+      "max": 26214400
+    },
+    {
+      "key": "attachment_count",
+      "label": "每条消息附件上限",
+      "group": "文件与空间",
+      "type": "integer",
+      "help": "",
+      "min": 1,
+      "max": 6
+    },
+    {
+      "key": "message_attachment_bytes",
+      "label": "每条消息附件合计上限（字节）",
+      "group": "文件与空间",
+      "type": "integer",
+      "help": "",
+      "min": 1024,
+      "max": 52428800
+    },
+    {
+      "key": "user_quota_bytes",
+      "label": "默认账号配额（字节）",
+      "group": "文件与空间",
+      "type": "integer",
+      "help": "账号单独配额优先；缩小不删除已有文件。",
+      "min": 1024,
+      "max": 1099511627776
+    },
+    {
+      "key": "disk_high_watermark",
+      "label": "磁盘使用高水位（%）",
+      "group": "文件与空间",
+      "type": "integer",
+      "help": "",
+      "min": 50,
+      "max": 95
+    },
+    {
+      "key": "deleted_content_days",
+      "label": "被处置内容保留（天）",
+      "group": "数据保留",
+      "type": "integer",
+      "help": "缩小会改变管理读取/恢复期限；到期正文由后续清理任务删除。",
+      "min": 1,
+      "max": 365
+    },
+    {
+      "key": "audit_days",
+      "label": "审计保留（天）",
+      "group": "数据保留",
+      "type": "integer",
+      "help": "",
+      "min": 30,
+      "max": 3650
+    },
+    {
+      "key": "log_days",
+      "label": "运行日志保留（天）",
+      "group": "数据保留",
+      "type": "integer",
+      "help": "",
+      "min": 1,
+      "max": 365
+    },
+    {
+      "key": "events_days",
+      "label": "同步事件保留（天）",
+      "group": "数据保留",
+      "type": "integer",
+      "help": "",
+      "min": 7,
+      "max": 365
+    },
+    {
+      "key": "export_hours",
+      "label": "导出可下载期限（小时）",
+      "group": "数据保留",
+      "type": "integer",
+      "help": "",
+      "min": 1,
+      "max": 24
+    },
+    {
+      "key": "deletion_cooling_days",
+      "label": "注销冷静期（天）",
+      "group": "数据保留",
+      "type": "integer",
+      "help": "仅新提交的注销采用新期限，已给用户的日期不追溯缩短。",
+      "min": 1,
+      "max": 90
+    },
+    {
+      "key": "registration_per_hour",
+      "label": "每来源每小时注册尝试上限",
+      "group": "限流与通知",
+      "type": "integer",
+      "help": "",
+      "min": 1,
+      "max": 100
+    },
+    {
+      "key": "login_ip_per_15m",
+      "label": "每来源15分钟登录尝试上限",
+      "group": "限流与通知",
+      "type": "integer",
+      "help": "",
+      "min": 5,
+      "max": 500
+    },
+    {
+      "key": "login_user_per_15m",
+      "label": "每账号15分钟登录尝试上限",
+      "group": "限流与通知",
+      "type": "integer",
+      "help": "",
+      "min": 3,
+      "max": 50
+    },
+    {
+      "key": "message_per_minute",
+      "label": "每账号每分钟发送尝试上限",
+      "group": "限流与通知",
+      "type": "integer",
+      "help": "",
+      "min": 1,
+      "max": 600
+    },
+    {
+      "key": "group_create_per_hour",
+      "label": "每账号每小时建群尝试上限",
+      "group": "限流与通知",
+      "type": "integer",
+      "help": "",
+      "min": 1,
+      "max": 60
+    },
+    {
+      "key": "online_notifications",
+      "label": "允许好友上线提醒",
+      "group": "限流与通知",
+      "type": "boolean",
+      "help": "仍需逐好友启用，并遵守隐身、勿扰与屏蔽设置。"
+    },
+    {
+      "key": "maintenance",
+      "label": "开启维护模式",
+      "group": "运行与运营信息",
+      "type": "boolean",
+      "help": "暂停普通用户新消息、建群与群管理、注册和上传；允许读取及管理员退出维护。"
+    },
+    {
+      "key": "operator_name",
+      "label": "运营者名称",
+      "group": "运行与运营信息",
+      "type": "string",
+      "help": "",
+      "min": 0,
+      "max": 100
+    },
+    {
+      "key": "operator_contact",
+      "label": "运营联系信息",
+      "group": "运行与运营信息",
+      "type": "string",
+      "help": "",
+      "min": 0,
+      "max": 200
+    },
+    {
+      "key": "terms_version",
+      "label": "注册条款版本",
+      "group": "运行与运营信息",
+      "type": "string",
+      "help": "条款改变后需新的注册确认，现有账号不会自动代表接受新条款。",
+      "min": 1,
+      "max": 80
+    }
+  ],
+  "defaults": {
+    "registration_mode": "open",
+    "group_limit": 200,
+    "owned_group_limit": 20,
+    "image_limit_bytes": 10485760,
+    "file_limit_bytes": 26214400,
+    "attachment_count": 6,
+    "message_attachment_bytes": 52428800,
+    "user_quota_bytes": 1073741824,
+    "disk_high_watermark": 90,
+    "message_codepoints": 4000,
+    "message_bytes": 16384,
+    "recall_seconds": 120,
+    "deleted_content_days": 30,
+    "audit_days": 180,
+    "log_days": 30,
+    "events_days": 30,
+    "export_hours": 24,
+    "deletion_cooling_days": 30,
+    "maintenance": false,
+    "strict_files": true,
+    "operator_name": "",
+    "operator_contact": "",
+    "terms_version": "development-1",
+    "site_name": "同频",
+    "registration_per_hour": 20,
+    "login_ip_per_15m": 100,
+    "login_user_per_15m": 15,
+    "message_per_minute": 120,
+    "group_create_per_hour": 30,
+    "online_notifications": true,
+    "task_personal_quota": 5000,
+    "task_group_quota": 10000
+  }
+}

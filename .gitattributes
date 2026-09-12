@@ -10,3 +10,5 @@ Dockerfile text eol=lf
 vendor/unicode/** text eol=lf
 apps/web/src/data/emoji.json text eol=lf
 src/tongpin/data/emoji.json text eol=lf
+# The standalone demo receipt hashes exact source and bundle bytes.
+demo/** -text

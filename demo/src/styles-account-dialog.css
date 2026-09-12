@@ -1,0 +1,77 @@
+.modal.account-dialog{width:min(560px,calc(100% - 32px));max-height:min(790px,calc(100dvh - 64px));border:1px solid #e7edf3;border-radius:17px;box-shadow:0 24px 80px #22354e26;padding:0;color:#243343;background:#fff}
+.account-dialog[open]{display:flex;flex-direction:column;overflow:hidden}
+.account-dialog::backdrop{background:#293f5940;backdrop-filter:blur(5px)}
+.account-dialog>.modal-header{padding:19px 23px;min-height:74px;border-bottom:1px solid #e7edf3;flex-shrink:0;position:static}
+.account-dialog>.modal-header h2{display:flex;align-items:center;gap:11px;font-size:19px;line-height:1.6;font-weight:600}
+.account-dialog>.modal-header .icon-button{min-width:32px;min-height:32px;color:#718295}
+.account-dialog>.modal-body{padding:22px 24px;min-height:0;overflow:auto;overscroll-behavior:contain}
+.account-dialog>.modal-footer{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:17px 24px;border-top:1px solid #e7edf3;background:#fcfdff;flex-shrink:0}
+.modal.account-dialog .primary-button,.modal.account-dialog .secondary-button{width:fit-content;max-width:100%;min-height:36px;font-size:13px;padding:7px 13px;box-shadow:none}
+.account-dialog .account-settings{max-width:none;margin:0;padding:0}
+.account-dialog .settings-heading{margin:0 0 8px;display:flex;justify-content:flex-end}
+.account-dialog .settings-card{padding:21px 0;margin:0;border:0;border-bottom:1px solid #e7edf3;border-radius:0;background:transparent;box-shadow:none}
+.account-dialog .settings-card:last-of-type{border-bottom:0}
+.account-dialog .settings-card h2{font-size:15px;margin:0 0 10px}
+.account-dialog .settings-card>p{font-size:12px;line-height:1.8;margin:8px 0;color:#718295}
+.account-dialog .preference-row{padding:15px 0;border-bottom:1px solid #e7edf3;gap:20px}
+.account-dialog .preference-row strong{font-size:13px;font-weight:500}.account-dialog .preference-row small{font-size:12px;line-height:1.7;margin-top:4px;color:#8b98a8}
+.account-dialog input[type=checkbox]{accent-color:#008fed;width:16px;height:16px;flex-shrink:0}
+.account-dialog .avatar-editor{padding:0 0 22px;margin:0 0 20px;border:0;border-bottom:1px solid #e7edf3;background:transparent;border-radius:0}
+.account-dialog .avatar-editor>.avatar{width:58px;height:58px;font-size:23px;border-radius:18px}.account-dialog .avatar-editor .field-hint{font-size:11px}
+.account-dialog .profile-settings .bio-field textarea{min-height:92px;resize:vertical;display:block;margin-top:7px}
+.account-dialog .profile-settings fieldset>.primary-button{display:flex;margin:20px 0 0 auto}
+.account-profile-entry{display:flex;align-items:center;gap:9px;flex:1;min-width:0;border:0;background:transparent;padding:4px;border-radius:9px;text-align:left;color:#243343}
+.account-profile-entry:hover{background:#e7f3fc}.account-profile-copy{min-width:0;flex:1}.account-profile-copy>strong,.account-profile-copy>small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.account-profile-marker{display:flex;align-items:center;gap:4px;color:#718295;font-size:10px;white-space:nowrap}
+@media(max-width:600px){.modal.account-dialog{width:calc(100% - 24px);max-height:calc(100dvh - 36px);border-radius:15px}.account-dialog>.modal-header{padding:16px 18px;min-height:65px}.account-dialog>.modal-body{padding:16px 18px}.account-dialog>.modal-footer{padding:14px 18px}.account-dialog .avatar-editor{flex-wrap:wrap}.account-dialog .input-wrap input,.account-dialog textarea,.account-dialog select{font-size:16px}.account-dialog .primary-button,.account-dialog .secondary-button{min-height:40px}}
+
+/* The settings workspace has its own dimensions; profile and task dialogs keep theirs. */
+.modal.account-dialog.account-settings-dialog { width:min(860px,calc(100% - 40px)); height:min(740px,calc(100dvh - 64px)); max-height:calc(100dvh - 64px); }
+.account-settings-dialog>.modal-body { flex:1; min-height:0; overflow:hidden; padding:0; display:flex; }
+.account-settings.account-settings-workspace { display:flex; flex-direction:column; width:100%; min-width:0; min-height:0; max-width:none; height:100%; margin:0; padding:0; }
+.account-settings-workspace>.settings-heading { flex-shrink:0; display:flex; justify-content:space-between; align-items:center; gap:16px; margin:0; padding:12px 22px; border-bottom:1px solid #e7edf3; }
+.account-settings-workspace>.settings-heading>.secondary-button { margin-left:auto; flex-shrink:0; color:#718295; background:#f8fafc; border-color:#e7edf3; font-size:12px; min-height:34px; }
+.account-settings-workspace>.settings-heading h1 { font-size:20px; }
+.account-settings-workspace>.settings-heading p { font-size:12px; color:#718295; }
+.settings-navigation-layout { display:flex; flex:1; min-height:0; min-width:0; overflow:hidden; }
+.settings-navigation { width:224px; flex:0 0 224px; padding:14px 12px; overflow-y:auto; overscroll-behavior:contain; background:#f8fafc; border-right:1px solid #e7edf3; }
+.settings-nav-group { margin:0 0 12px; }
+.settings-nav-group:last-child { margin-bottom:0; }
+.settings-nav-group>h2 { margin:0 11px 5px; font-size:11px; font-weight:500; color:#8b98a8; line-height:1.6; }
+.settings-nav-group>[role=tab] { display:block; position:relative; width:100%; min-height:34px; margin:1px 0; padding:6px 12px; background:transparent; color:#647a8f; text-align:left; border:0; border-radius:8px; font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.settings-nav-group>[role=tab]:hover:not(:disabled) { background:#edf3f8; }
+.settings-nav-group>[role=tab][aria-selected=true] { background:#e7f3fc; color:#008fed; font-weight:600; }
+.settings-nav-group>[role=tab][aria-selected=true]::before { content:''; position:absolute; left:0; top:12px; bottom:12px; width:3px; min-height:14px; background:#008fed; border-radius:3px; }
+.settings-nav-group>[role=tab]:focus-visible { outline:2px solid #008fed; outline-offset:2px; }
+.settings-nav-group>[role=tab]:disabled { opacity:.5; cursor:wait; }
+.settings-active-content { flex:1; min-width:0; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:25px 28px 32px; background:#fff; }
+.settings-content-panel { min-width:0; outline-offset:4px; }
+.settings-content-panel[hidden] { display:none!important; }
+.account-settings-workspace .settings-content-panel>.settings-card { padding:0; margin:0; border:0; background:transparent; border-radius:0; box-shadow:none; }
+.account-settings-workspace .settings-content-panel h2 { font-size:17px; font-weight:600; line-height:1.65; margin:0 0 14px; }
+.account-settings-workspace .settings-content-panel .card-heading { align-items:flex-start; margin-bottom:12px; }
+.account-settings-workspace .settings-content-panel .card-heading h2 { margin-bottom:0; }
+.account-settings-workspace .settings-content-panel p { overflow-wrap:anywhere; }
+.account-settings-workspace .settings-content-panel .security-list { margin-top:18px; }
+.account-settings-workspace .settings-content-panel .security-list li { flex-wrap:wrap; }
+.account-settings-workspace .settings-content-panel .security-list li>div { min-width:0; flex:1; }
+.account-settings-workspace .settings-content-panel .security-list strong,.account-settings-workspace .settings-content-panel .security-list small { overflow-wrap:anywhere; }
+.account-settings-workspace .settings-active-content>.form-error,.account-settings-workspace .settings-active-content>.success-note { margin-top:0; }
+.settings-mobile-picker { display:none; }
+@media(min-width:601px) { .account-settings-workspace:not(.account-settings-dialog .account-settings-workspace) { min-height:560px; } }
+@media(max-width:600px) {
+ .modal.account-dialog.account-settings-dialog { width:calc(100% - 24px); height:calc(100dvh - 36px); max-height:calc(100dvh - 36px); }
+ .account-settings-dialog>.modal-body { padding:0; }
+ .account-settings-workspace>.settings-heading { padding:9px 16px; gap:9px; }
+ .account-settings-workspace>.settings-heading h1 { font-size:18px; }
+ .settings-navigation-layout { flex-direction:column; }
+ .settings-navigation { width:100%; flex:0 0 auto; padding:12px 16px; border-right:0; border-bottom:1px solid #e7edf3; overflow:visible; }
+ .settings-tablist { display:none; }
+ .settings-mobile-picker { display:flex; align-items:center; gap:12px; font-size:11px; color:#718295; }
+ .settings-mobile-picker select { flex:1; min-width:0; width:100%; min-height:38px; padding:7px 9px; border:1px solid #dce7f0; border-radius:8px; color:#243343; background:#fff; font-size:13px; }
+ .settings-active-content { padding:20px 17px 26px; }
+ .account-settings-workspace .settings-content-panel h2 { font-size:16px; }
+ .account-settings-workspace .preference-row { gap:12px; }
+ .account-settings-workspace .settings-content-panel .form-field input,.account-settings-workspace .settings-content-panel textarea { font-size:16px; }
+ .account-settings-workspace .settings-content-panel .recovery-code-grid { grid-template-columns:1fr; }
+ .account-settings-workspace .settings-content-panel .admin-enrollment-secret code { overflow-wrap:anywhere; }
+}

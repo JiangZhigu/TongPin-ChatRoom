@@ -181,7 +181,7 @@ class SettingsAdmin:
                 "environment": self.runtime.settings.environment,
                 "readOnly": [
                     f"待办部署上限：每人{self.runtime.settings.task_personal_quota}条、每群{self.runtime.settings.task_group_quota}条；实际按部署上限与本页配额中较小值执行。",
-                    "用户名4–24位、密码15–128字符、CAPTCHA及单次再认证属于安全硬限制。",
+                    "用户名4–24位、密码8–128字符、CAPTCHA及单次再认证属于安全硬限制。",
                     "已有设备会话到期日与客户端离线100条/7天/50MiB上限不在这里追溯改写。",
                     "部署密钥、监听地址、并发数、扫描器连接及生产严格扫描由启动器配置，不能在后台降低。",
                     "本页历史回滚只回滚列出的站点策略项；监控阈值在运行监控中单独变更。",

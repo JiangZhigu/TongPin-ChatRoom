@@ -1,0 +1,527 @@
+{
+  "source": "Current working frontend, including uncommitted UX-R04 correction",
+  "baseCommit": "27156ef835fe733e960fe5822e5121b7c9614330",
+  "sourceModified": false,
+  "files": [
+    {
+      "source": "apps/web/src/AccountDeletion.tsx",
+      "demo": "src/AccountDeletion.tsx",
+      "sha256": "7ba1d4f34c2a3e1fe89c825809c37ab08c268b2e8c5c4fdf37f3a436c3eba1ef"
+    },
+    {
+      "source": "apps/web/src/AccountSettings.tsx",
+      "demo": "src/AccountSettings.tsx",
+      "sha256": "c0d68ae81d70dc12e272f01ff3f95f29a6b96d5cf351f0ede6629ffce65bd93f"
+    },
+    {
+      "source": "apps/web/src/admin/AdminActionDialog.tsx",
+      "demo": "src/admin/AdminActionDialog.tsx",
+      "sha256": "0cf37b217aa5b9337608b89e76def9254cb7dc938e7e703e8c873a2f8904d7d9"
+    },
+    {
+      "source": "apps/web/src/admin/AdministratorsPage.tsx",
+      "demo": "src/admin/AdministratorsPage.tsx",
+      "sha256": "02f0c7be7f86173807f645f94653641f90c8a9f2956c0d030a0cd7104114ab83"
+    },
+    {
+      "source": "apps/web/src/admin/AdminShared.tsx",
+      "demo": "src/admin/AdminShared.tsx",
+      "sha256": "aaf9ba98a5640c9fcef879bf9bf2a01c897c8b0c4865a115790622ba15c3377f"
+    },
+    {
+      "source": "apps/web/src/admin/AdminShell.tsx",
+      "demo": "src/admin/AdminShell.tsx",
+      "sha256": "c83eae6423d1e0176760d86c652fd7190c747f806f6eb731ff1aed306eb6a27f"
+    },
+    {
+      "source": "apps/web/src/admin/AnnouncementsPage.tsx",
+      "demo": "src/admin/AnnouncementsPage.tsx",
+      "sha256": "b2d23b98541c68d6a4b897d5de35f6678ce6a80504e243f4f89d52420624254e"
+    },
+    {
+      "source": "apps/web/src/admin/AuditPage.tsx",
+      "demo": "src/admin/AuditPage.tsx",
+      "sha256": "caa35fa3695a520189f5b5e6b15704c731b151012b1deed788393174102a0cde"
+    },
+    {
+      "source": "apps/web/src/admin/ContentPage.tsx",
+      "demo": "src/admin/ContentPage.tsx",
+      "sha256": "21d06595ba94ad026fbdb358b3cb111f5157ce78f22674cbcec6ef8b4ce0622e"
+    },
+    {
+      "source": "apps/web/src/admin/FilesPage.tsx",
+      "demo": "src/admin/FilesPage.tsx",
+      "sha256": "7bbd2b6de46c97843e7449dce31b0b02d341eb1aa0c17b67ac32c33f8073c53d"
+    },
+    {
+      "source": "apps/web/src/admin/GroupsPage.tsx",
+      "demo": "src/admin/GroupsPage.tsx",
+      "sha256": "f88a606e6a717a4b41a3772c9ca794dfa540df2b8a3e4b1dd416cc25b74cb16b"
+    },
+    {
+      "source": "apps/web/src/admin/MonitoringPage.tsx",
+      "demo": "src/admin/MonitoringPage.tsx",
+      "sha256": "d8ff20eb77fc9ecd649608e89abb128b7844e95be0c3956ff06892e5059361e2"
+    },
+    {
+      "source": "apps/web/src/admin/OperationsPage.tsx",
+      "demo": "src/admin/OperationsPage.tsx",
+      "sha256": "0160107803c7fac9181941cee2f06c022a195579714bb6fd45f6e1ee4fc1aa3f"
+    },
+    {
+      "source": "apps/web/src/admin/OverviewPage.tsx",
+      "demo": "src/admin/OverviewPage.tsx",
+      "sha256": "bd933144d2b6252c6b8b7b8a880ae936f95d2612f69e2d6a07d4606ab63d6b55"
+    },
+    {
+      "source": "apps/web/src/admin/RelationsPage.tsx",
+      "demo": "src/admin/RelationsPage.tsx",
+      "sha256": "377dc6dde74c5d8065d4594800c7c688e27877385c8e63d193389338a88d8974"
+    },
+    {
+      "source": "apps/web/src/admin/ReportsPage.tsx",
+      "demo": "src/admin/ReportsPage.tsx",
+      "sha256": "2b3a8990916a802d02eb86fda721f8eb5e6dc5dca73359b48cecf03068170cd6"
+    },
+    {
+      "source": "apps/web/src/admin/SensitiveRead.tsx",
+      "demo": "src/admin/SensitiveRead.tsx",
+      "sha256": "343f4275e9a4ea4bd6ce56eeb1a4edaa8c5c1b04909c632861c634f1f29d9e05"
+    },
+    {
+      "source": "apps/web/src/admin/SessionsPage.tsx",
+      "demo": "src/admin/SessionsPage.tsx",
+      "sha256": "cb1dc31abc036d80885ee0d19c00253f19bba77124c3928dcad5cb86bff7c736"
+    },
+    {
+      "source": "apps/web/src/admin/SettingsPage.tsx",
+      "demo": "src/admin/SettingsPage.tsx",
+      "sha256": "66cbb637578818ac51a5a176077b66694e3fe7ec0441caf1bc22e59f8ef1d296"
+    },
+    {
+      "source": "apps/web/src/admin/TasksPage.tsx",
+      "demo": "src/admin/TasksPage.tsx",
+      "sha256": "cac2ce9b24755a34a663df667bfcc68a43d08ae68a0961c270b9833768193f3d"
+    },
+    {
+      "source": "apps/web/src/admin/UsersPage.tsx",
+      "demo": "src/admin/UsersPage.tsx",
+      "sha256": "bdc210a390fb8858220deb26b4b6e29b183cacd07de448d8804acca4d8360f8b"
+    },
+    {
+      "source": "apps/web/src/AdminEnrollmentPanel.tsx",
+      "demo": "src/AdminEnrollmentPanel.tsx",
+      "sha256": "b243c77d01be283b85853d4ccdf27ab925625d22c00bc844142d390eb4ab5060"
+    },
+    {
+      "source": "apps/web/src/App.tsx",
+      "demo": "src/App.tsx",
+      "sha256": "2ad0bfd0a390e1403f72038a5ccc2c0f2be7976adecff68c4d8c473b4c7aff06"
+    },
+    {
+      "source": "apps/web/src/AttachmentViews.tsx",
+      "demo": "src/AttachmentViews.tsx",
+      "sha256": "69ae321b823d737ea4302626ffa7fb31afea10ef71ff6da010de026cce2997a7"
+    },
+    {
+      "source": "apps/web/src/auth-types.ts",
+      "demo": "src/auth-types.ts",
+      "sha256": "8f5cd0c4732b7eb2fd908c25ed7912c7f105d30ebab894f3592f24c8c4d16f5d"
+    },
+    {
+      "source": "apps/web/src/AuthPage.tsx",
+      "demo": "src/AuthPage.tsx",
+      "sha256": "8b2046e2869d83ca4da26ac9701ae2a63be1d193f294f84ee28c0b4d4ee2a568"
+    },
+    {
+      "source": "apps/web/src/AvatarEditor.tsx",
+      "demo": "src/AvatarEditor.tsx",
+      "sha256": "8931d486c485dbca92ba8ac179e218a2df4f34dd86463574e749c5084486a10a"
+    },
+    {
+      "source": "apps/web/src/ChatWorkspace.tsx",
+      "demo": "src/ChatWorkspace.tsx",
+      "sha256": "06f56535d9f5be20bd01c9efb0c3f45b1a3fa8093ac5d97671db05b97e8270c8"
+    },
+    {
+      "source": "apps/web/src/components/AdminEntry.tsx",
+      "demo": "src/components/AdminEntry.tsx",
+      "sha256": "0cea2002075345fe226437a38a857a644d31cae96f6384747aa09495bbccfc64"
+    },
+    {
+      "source": "apps/web/src/components/AppShell.tsx",
+      "demo": "src/components/AppShell.tsx",
+      "sha256": "d329776d23cbfd62e54fd28f88b6413465df9856640925e62d57fb86cd693c3e"
+    },
+    {
+      "source": "apps/web/src/components/Brand.tsx",
+      "demo": "src/components/Brand.tsx",
+      "sha256": "62c0e73be9304aff82d20e33749838ab77c9134a4902ea247ba5d480463a29eb"
+    },
+    {
+      "source": "apps/web/src/components/ChatHeader.tsx",
+      "demo": "src/components/ChatHeader.tsx",
+      "sha256": "3fd6a0dc4b6c10ac58a24910f4aba701b62ebd0401ad14c37a79c9e3a3e6dfd3"
+    },
+    {
+      "source": "apps/web/src/components/Composer.tsx",
+      "demo": "src/components/Composer.tsx",
+      "sha256": "7ba7ebc85e9ade0151dc49c9ac7675b4eb10febe6fa0ed8b9a7ede54e5a69780"
+    },
+    {
+      "source": "apps/web/src/components/ConversationList.tsx",
+      "demo": "src/components/ConversationList.tsx",
+      "sha256": "c496a31df3b552ffcd954ad71cb59b2ff07bb09eaa8eb5ad3d32d2ccc8517d6b"
+    },
+    {
+      "source": "apps/web/src/components/EmojiPicker.tsx",
+      "demo": "src/components/EmojiPicker.tsx",
+      "sha256": "f721ea7281463b54754df0ae9b9cd6d82cf784bfd0e981d197306cbdec4db755"
+    },
+    {
+      "source": "apps/web/src/components/EmptyState.tsx",
+      "demo": "src/components/EmptyState.tsx",
+      "sha256": "165c6dfe59bbfaffde3d219ee2e8370721e0f54d1ad1a72c21da18070d27715b"
+    },
+    {
+      "source": "apps/web/src/components/FormField.tsx",
+      "demo": "src/components/FormField.tsx",
+      "sha256": "1118b41e2eec732ae51e4935b166094d3ea21075a2519cd48362ac3a883cd27c"
+    },
+    {
+      "source": "apps/web/src/components/GroupTaskPanel.tsx",
+      "demo": "src/components/GroupTaskPanel.tsx",
+      "sha256": "635d4e99faac4713ca20de2944add191bc6ffa15e4700bd2ee4f817d9a43bef4"
+    },
+    {
+      "source": "apps/web/src/components/index.ts",
+      "demo": "src/components/index.ts",
+      "sha256": "5bf8db169a56521bfd8d17c16d8f3eac655438d79b8d474344d28947a9fc792c"
+    },
+    {
+      "source": "apps/web/src/components/MessageTimeline.tsx",
+      "demo": "src/components/MessageTimeline.tsx",
+      "sha256": "8772586b6aa996f046283aa29c8ba462fd68a88c53f5d7df048276f01479abad"
+    },
+    {
+      "source": "apps/web/src/components/Modal.tsx",
+      "demo": "src/components/Modal.tsx",
+      "sha256": "5e6b36ee64fa8ffa481a999ef0c562dd879cd44714ea46610833fed6d4195cfa"
+    },
+    {
+      "source": "apps/web/src/components/NavigationRail.tsx",
+      "demo": "src/components/NavigationRail.tsx",
+      "sha256": "d33a24b6a68693fa1ab88974be0466c729ae652020fd2bf58fcb9ab758551445"
+    },
+    {
+      "source": "apps/web/src/components/RecoveryCodesPanel.tsx",
+      "demo": "src/components/RecoveryCodesPanel.tsx",
+      "sha256": "deffbd4e2cb00805bfb70ba91cb2a1713f062958b4f7925a6ccdc4737f777803"
+    },
+    {
+      "source": "apps/web/src/ContactsPage.tsx",
+      "demo": "src/ContactsPage.tsx",
+      "sha256": "20070ab98902d355a2bed599ab2a49bdfdb54b52a1b0e71eba87c9bb0eabd81c"
+    },
+    {
+      "source": "apps/web/src/CreateGroupDialog.tsx",
+      "demo": "src/CreateGroupDialog.tsx",
+      "sha256": "bca58561ce09905d2e2b8a46e45bbf04b8e0066f03d8de773bdbdd182d7c2a67"
+    },
+    {
+      "source": "apps/web/src/data/emoji.json",
+      "demo": "src/data/emoji.json",
+      "sha256": "b999c4df3fee7bb1a885d5c3b25b7ac8b3f2d3416cb42c035048bc8af5b29e0e"
+    },
+    {
+      "source": "apps/web/src/FilesPage.tsx",
+      "demo": "src/FilesPage.tsx",
+      "sha256": "8efd9a507692002ae3272f6e0f5d70b9c81660fe86ad39c17f177c4646f77539"
+    },
+    {
+      "source": "apps/web/src/GroupInbox.tsx",
+      "demo": "src/GroupInbox.tsx",
+      "sha256": "db6dc392266c67d1fb9eaa05553be93aae3e0a15d4033c5d5a58ec2ce17c928f"
+    },
+    {
+      "source": "apps/web/src/GroupInviteEntry.tsx",
+      "demo": "src/GroupInviteEntry.tsx",
+      "sha256": "65a1b7877be531f49dd0c8218d0fd8c634fb2883d26791a75769dca6ed2a8ac7"
+    },
+    {
+      "source": "apps/web/src/GroupManagementPanel.tsx",
+      "demo": "src/GroupManagementPanel.tsx",
+      "sha256": "c53f08fbd42b56e29cfd914d7020f03e3223dd3ad1180227150d5c62727d00ba"
+    },
+    {
+      "source": "apps/web/src/lib/admin-s2-types.ts",
+      "demo": "src/lib/admin-s2-types.ts",
+      "sha256": "4bdbb6e632afb0008edc6fd7617c5ba296a5f11827d2aaa5cca6ff451003d70c"
+    },
+    {
+      "source": "apps/web/src/lib/admin-s3-types.ts",
+      "demo": "src/lib/admin-s3-types.ts",
+      "sha256": "ceb94408f4471cde2e77b0eff14861f9a20249f72ff795b1f648b5b27a136aa4"
+    },
+    {
+      "source": "apps/web/src/lib/admin-tasks-types.ts",
+      "demo": "src/lib/admin-tasks-types.ts",
+      "sha256": "d78cd733b358d353e4bdeb2a1702633637f12571844a0bb84c00a12a746f387c"
+    },
+    {
+      "source": "apps/web/src/lib/admin-types.ts",
+      "demo": "src/lib/admin-types.ts",
+      "sha256": "b907a3497103bd12e60e358d28a3378ae861636b081f774cd71aa0b5ec65a834"
+    },
+    {
+      "source": "apps/web/src/lib/api.ts",
+      "demo": "src/lib/api.ts",
+      "sha256": "4dcdb97e6dccac562bbefc9f3147b36a1918389d651f84426b7681630bca5d8f"
+    },
+    {
+      "source": "apps/web/src/lib/browser-notifications.ts",
+      "demo": "src/lib/browser-notifications.ts",
+      "sha256": "a6c015065101f62c42389b7284a6f890b5c03dc4470075d149779dfc4e149249"
+    },
+    {
+      "source": "apps/web/src/lib/chat-client.ts",
+      "demo": "src/lib/chat-client.ts",
+      "sha256": "033e1bb06053f5a2b932795a0d92d0663ac4a58809601af01746c4eb1daee82d"
+    },
+    {
+      "source": "apps/web/src/lib/chat-types.ts",
+      "demo": "src/lib/chat-types.ts",
+      "sha256": "6d6abb2eeea15104c7fc5b84b79f207ea36522077b2d53240178b6e76b03a20e"
+    },
+    {
+      "source": "apps/web/src/lib/emoji.ts",
+      "demo": "src/lib/emoji.ts",
+      "sha256": "6b59f9ed089779172e9c71984818e4a5c1371b88c5f3d2f6bd6efa6299d3a3c8"
+    },
+    {
+      "source": "apps/web/src/lib/files-types.ts",
+      "demo": "src/lib/files-types.ts",
+      "sha256": "0b3b9b6cab3efd52a033aff98c97d76be1d131e989c84c6d64ea6872689ed043"
+    },
+    {
+      "source": "apps/web/src/lib/files.ts",
+      "demo": "src/lib/files.ts",
+      "sha256": "e72891a62b4d94f9e9238de22a7aff0dd4f093bf2cad98aaa0e412ad2bba0e7c"
+    },
+    {
+      "source": "apps/web/src/lib/group-types.ts",
+      "demo": "src/lib/group-types.ts",
+      "sha256": "cf10f701ae5fd41de9149e9cbecb9b2ab299af0f255e94a0789082817ee1d5a0"
+    },
+    {
+      "source": "apps/web/src/lib/interactions-types.ts",
+      "demo": "src/lib/interactions-types.ts",
+      "sha256": "a44686d1459ac5a190ad78a51c49c6dcc032670ca00bae2b0ae7b806a34037ab"
+    },
+    {
+      "source": "apps/web/src/lib/invitation.ts",
+      "demo": "src/lib/invitation.ts",
+      "sha256": "2b36628d22662c16589fe9a04e123857ba5cceda9ffb76121822e72d98c12c28"
+    },
+    {
+      "source": "apps/web/src/lib/outbox-presentation.ts",
+      "demo": "src/lib/outbox-presentation.ts",
+      "sha256": "849754295b7d377005da47564168c95f7efff44d6aa3deebe5c924605d516ff8"
+    },
+    {
+      "source": "apps/web/src/lib/outbox.ts",
+      "demo": "src/lib/outbox.ts",
+      "sha256": "cd78f92678ad335f4f527fa5d78564fc11564f2f0412e2ce7be664922ca0f351"
+    },
+    {
+      "source": "apps/web/src/lib/task-drafts.ts",
+      "demo": "src/lib/task-drafts.ts",
+      "sha256": "477a4da8e9c5d7aa083ff04fa791af7a9c68d188c9eccc4b39a4d8b7abc93b0e"
+    },
+    {
+      "source": "apps/web/src/lib/tasks-client.ts",
+      "demo": "src/lib/tasks-client.ts",
+      "sha256": "0b4f019dceed5ccc7a448e12bfc955e9788a51f9113d505b0c5137aba13a6bfe"
+    },
+    {
+      "source": "apps/web/src/lib/tasks-types.ts",
+      "demo": "src/lib/tasks-types.ts",
+      "sha256": "0d8d43378a827bc89ee3152e4bc93fc408d0ad5bb96ad32a865cc5cb6315c508"
+    },
+    {
+      "source": "apps/web/src/MessageActions.tsx",
+      "demo": "src/MessageActions.tsx",
+      "sha256": "16a11d4a4a61f53b07ec366696c57620129b11f6293829f9d7ecaf1d59b6c1fe"
+    },
+    {
+      "source": "apps/web/src/MessageSearchPage.tsx",
+      "demo": "src/MessageSearchPage.tsx",
+      "sha256": "02986b31ed704e0189c794f4cdd54f95f52e99ff7e992ea7926bb50dc914ca02"
+    },
+    {
+      "source": "apps/web/src/NotificationsPage.tsx",
+      "demo": "src/NotificationsPage.tsx",
+      "sha256": "bc9ef21e1a52fca67b0f12b4bc4203b4734235d45de54f826d9844ade4e0b98c"
+    },
+    {
+      "source": "apps/web/src/OfflineQueuePage.tsx",
+      "demo": "src/OfflineQueuePage.tsx",
+      "sha256": "8df71690c87b11990da98de69be8d4de75f012c2f6de7db4f83c784a168d3490"
+    },
+    {
+      "source": "apps/web/src/OfflineRecoveryPage.tsx",
+      "demo": "src/OfflineRecoveryPage.tsx",
+      "sha256": "ae9ae3fb250d2b9d029e4aa3d2986d68dfee153ec25eec0a889e45800b371787"
+    },
+    {
+      "source": "apps/web/src/ProfileSettings.tsx",
+      "demo": "src/ProfileSettings.tsx",
+      "sha256": "d4b85a69b78221699b93bfe71ff455ab404f928d61d9fc3036ac23801ca67c47"
+    },
+    {
+      "source": "apps/web/src/ReportDialog.tsx",
+      "demo": "src/ReportDialog.tsx",
+      "sha256": "4d3b3d723af3ab917504ff0b80ffa429d24368a6e76d12e2ecd822f204dc3cea"
+    },
+    {
+      "source": "apps/web/src/ReportsPage.tsx",
+      "demo": "src/ReportsPage.tsx",
+      "sha256": "1965a578993dd91e45717f9b54d9fc893e8a52391b3b646afe31b7906b8523d3"
+    },
+    {
+      "source": "apps/web/src/styles-account-dialog.css",
+      "demo": "src/styles-account-dialog.css",
+      "sha256": "8c89c1a6149a585d5a7b15b3e2cc5bd1d6f5119ab073f92c0f36c8ab35abbc87"
+    },
+    {
+      "source": "apps/web/src/styles-admin.css",
+      "demo": "src/styles-admin.css",
+      "sha256": "36f74a9a2ca9252baf83ff3c51b1ceda258b7b07b351755a98f5f04bf67524b5"
+    },
+    {
+      "source": "apps/web/src/styles-auth.css",
+      "demo": "src/styles-auth.css",
+      "sha256": "007586668f15285930e9bb5d51d808936d50591121ff37ec7f772ef64891ede5"
+    },
+    {
+      "source": "apps/web/src/styles-chat.css",
+      "demo": "src/styles-chat.css",
+      "sha256": "b9d1112a71d38416cf30af53b998779264613a776318d8e3303bd28c51f413db"
+    },
+    {
+      "source": "apps/web/src/styles-files.css",
+      "demo": "src/styles-files.css",
+      "sha256": "638fc8bb47576a7d6a0a6b5a3dd6d324531f06232f00257b7502df9efeeab644"
+    },
+    {
+      "source": "apps/web/src/styles-group-task-panel.css",
+      "demo": "src/styles-group-task-panel.css",
+      "sha256": "ddd15466fa8adcef448218d809c0193753781f5a97668b281adb13df2f8234b2"
+    },
+    {
+      "source": "apps/web/src/styles-groups.css",
+      "demo": "src/styles-groups.css",
+      "sha256": "86019b529056e403fa35d797d1178d0b185e9daa4beb52890836ec3147d4d036"
+    },
+    {
+      "source": "apps/web/src/styles-message-search.css",
+      "demo": "src/styles-message-search.css",
+      "sha256": "b5d26f37989a5bb9622712188e45e9b9c5c96df775ddafd9cd57ee914ea2f6bd"
+    },
+    {
+      "source": "apps/web/src/styles-rich.css",
+      "demo": "src/styles-rich.css",
+      "sha256": "5d1780aebf9c8d7c6ce34abf748e026b5b5a3538dfd6455c849414f2d8be36a9"
+    },
+    {
+      "source": "apps/web/src/styles-shell.css",
+      "demo": "src/styles-shell.css",
+      "sha256": "1f05ab6fe44eeda55cf9f46ef839de8db298e673e447de15258efcd303c9af01"
+    },
+    {
+      "source": "apps/web/src/styles-task-card.css",
+      "demo": "src/styles-task-card.css",
+      "sha256": "596cab166f31d9ea8e73fee17cf47eb78a008b8c6daa34d531fdf8af456aa2d0"
+    },
+    {
+      "source": "apps/web/src/styles-task-preferences.css",
+      "demo": "src/styles-task-preferences.css",
+      "sha256": "5d1f7aab514ecb813513768a9b712c18a82a65b38eb207826786bc2bcbdcc7df"
+    },
+    {
+      "source": "apps/web/src/styles-tasks.css",
+      "demo": "src/styles-tasks.css",
+      "sha256": "6399f8550a9762273b817824c86f483f8a0c3fc72cc0a99720bc33e759931ef5"
+    },
+    {
+      "source": "apps/web/src/styles.css",
+      "demo": "src/styles.css",
+      "sha256": "e5df18f97aef2b36bc19995c457a17e0fbe5a38a1b3b717d35cc699d60ab684a"
+    },
+    {
+      "source": "apps/web/src/tasks/index.ts",
+      "demo": "src/tasks/index.ts",
+      "sha256": "b5631598624d070714877257ebfbc28a4b93e7cc1db138719b463a7ee88fb9d6"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskActionDialog.tsx",
+      "demo": "src/tasks/TaskActionDialog.tsx",
+      "sha256": "838b382f161e7ef87cc071a843657fb4d7083d92eee553026ddbc7e7b41ffbf0"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskActivityPanel.tsx",
+      "demo": "src/tasks/TaskActivityPanel.tsx",
+      "sha256": "cf93442b4865c545cefe2e307a2fbb9163a17b3852ba52976c3ce48b3f4db6bf"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskCardView.tsx",
+      "demo": "src/tasks/TaskCardView.tsx",
+      "sha256": "b24d48c2e97a6ce8e044779cae0e7fba7503ad5c9701ef5a5f9e7711a8be9233"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskDetail.tsx",
+      "demo": "src/tasks/TaskDetail.tsx",
+      "sha256": "d9d44ef86e8aa0f90100e11beba5b70e54538f89ea6ed55debc43c10b1ffc038"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskDrafts.tsx",
+      "demo": "src/tasks/TaskDrafts.tsx",
+      "sha256": "ed4da37e81aa96623619ddf77a9b60f43ef8aea6dc0d90001f05731b87318519"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskFieldsEditor.tsx",
+      "demo": "src/tasks/TaskFieldsEditor.tsx",
+      "sha256": "3a0bfd42a22eaa7fa159527eacbad8399b75af2a46e5182e68048c5ef402fa74"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskForm.tsx",
+      "demo": "src/tasks/TaskForm.tsx",
+      "sha256": "00747f3851ead702474c3a395b7183a17f0c1be4d9b9af465f01bdd75bee37de"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskSettings.tsx",
+      "demo": "src/tasks/TaskSettings.tsx",
+      "sha256": "45091ac7bf5c5a49c0b6b1053a9ad89e2a951a481c0e2de635d9708aa5377c37"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskShared.tsx",
+      "demo": "src/tasks/TaskShared.tsx",
+      "sha256": "2d810e87a130f9cc8570017d166d9c875e1680bfb567365130adce84d384012b"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskShareDialog.tsx",
+      "demo": "src/tasks/TaskShareDialog.tsx",
+      "sha256": "dadc379ecc52a500abfcdbd0ca9c666152e54251d072cb41f52d5cac37e1239a"
+    },
+    {
+      "source": "apps/web/src/tasks/TaskWorkspace.tsx",
+      "demo": "src/tasks/TaskWorkspace.tsx",
+      "sha256": "0660a3fff4fa19e4dbce816329eb9f2d97166550baf16126abd904ece432ec8c"
+    },
+    {
+      "source": "apps/web/src/vite-env.d.ts",
+      "demo": "src/vite-env.d.ts",
+      "sha256": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5"
+    }
+  ]
+}

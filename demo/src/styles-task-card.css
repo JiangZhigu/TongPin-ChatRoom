@@ -1,0 +1,32 @@
+/* V3 message card: isolated from task workspace row and detail styles. */
+.task-message-card.v3-task-card { width:min(355px,100%); margin:0; padding:0; overflow:hidden; text-align:left; border:1px solid #dce8f2; border-radius:12px; background:#fff; box-shadow:0 2px 4px #20374803; }
+.v3-task-card .task-card-banner { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 14px; border-bottom:1px solid #e8f0f7; background:#f3f9fd; color:#6d8faa; font-size:11px; }
+.v3-task-card .task-card-banner>span:first-child { display:flex; align-items:center; gap:7px; }
+.v3-task-card .task-card-banner>span:last-child { font-size:10px; white-space:nowrap; }
+.v3-task-card .task-card-content { padding:14px; }
+.task-message-card.v3-task-card h3 { margin:0 0 11px; font-size:14px; font-weight:600; line-height:1.7; color:#243343; overflow-wrap:anywhere; }
+.v3-task-card .task-card-facts { display:flex; align-items:center; gap:12px; flex-wrap:wrap; color:#8a9dae; font-size:11px; margin-bottom:12px; }
+.v3-task-card .task-card-assignee { display:inline-flex; align-items:center; gap:8px; min-width:0; overflow-wrap:anywhere; }
+.v3-task-card .task-card-assignee .avatar { width:24px; height:24px; border-radius:8px; font-size:11px; }
+.v3-task-card .task-card-facts time { color:#187dae; }
+.v3-task-card .task-card-facts time.overdue { color:#cd5159; }
+.v3-task-card .task-card-status { display:inline-flex; padding:2px 7px; border-radius:5px; color:#6d8093; background:#eef2f6; }
+.v3-task-card .task-card-status.doing { color:#187dae; background:#e6f3fd; }
+.v3-task-card .task-card-status.done { color:#268463; background:#e8f6ef; }
+.v3-task-card .task-card-progress { height:4px; border-radius:4px; background:#edf2f6; overflow:hidden; margin:9px 0; }
+.v3-task-card .task-card-progress>span { display:block; height:100%; border-radius:4px; background:#74b8e5; }
+.v3-task-card .task-card-progress-label { display:flex; justify-content:space-between; gap:10px; font-size:11px; color:#8297aa; }
+.v3-task-card .task-card-footer { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 14px; border-top:1px solid #e7edf3; color:#8c9ead; font-size:11px; }
+.v3-task-card .task-card-footer>span { min-width:0; line-height:1.6; }
+.v3-task-card .task-card-footer .secondary-button { min-height:28px; padding:3px 9px; flex-shrink:0; border:1px solid #e7edf3; border-radius:9px; color:#7994aa; background:#fff; font-size:11px; }
+.task-message-card.v3-task-card .task-description { white-space:pre-wrap; font-size:12px; margin:10px 0 0; color:#718295; }
+.message-content:has(.v3-task-card) { width:355px; }
+@media(max-width:760px) {
+ .task-message-card.v3-task-card { width:294px; max-width:100%; }
+ .v3-task-card .task-card-content { padding:13px; }
+ .task-message-card.v3-task-card h3 { font-size:13px; }
+ .v3-task-card .task-card-banner,.v3-task-card .task-card-footer { padding:9px 12px; font-size:10px; }
+ .v3-task-card .task-card-facts { gap:9px; font-size:10px; }
+ .v3-task-card .task-card-progress-label { font-size:10px; }
+ .message-content:has(.v3-task-card) { width:294px; }
+}

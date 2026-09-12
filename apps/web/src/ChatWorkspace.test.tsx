@@ -844,3 +844,20 @@ describe('bookmarks navigation protects conversation drafts', () => {
     expect(chat.queue).not.toHaveBeenCalled();
   });
 });
+describe('UX-R04 workspace group event binding', () => {
+  it('refreshes the open real group panel from the client event and unsubscribes on close', async () => {
+    chat.state!.conversations = [{ ...conversation(), kind: 'group', peer: null, title: '实时群', role: 'member', memberCount: 3 }];
+    let version = 1;
+    const fetchGroup = vi.fn((url: string) => url === '/api/v1/groups/dm-a' ? response({ conversation: { ...chat.state!.conversations[0], description: version === 1 ? '原简介' : '远端已更新简介' }, version, settings: { announcement: '', announcementPinned: false, reviewRequired: true, inviteRole: 'managers', everyoneMuted: false, slowSeconds: 0 }, capabilities: { canEdit: false, canInvite: false, canReview: false, canAssignRoles: false, canTransfer: false, canDissolve: false, canLeave: true }, transfer: null }) : response({ items: [], nextCursor: null }));
+    vi.stubGlobal('fetch', fetchGroup);
+    const mounted = showWorkspace(); await openConversation('实时群'); const before = chat.taskEvents.size;
+    fireEvent.click(screen.getByRole('button', { name: '群详情与管理' }));
+    await screen.findByText('原简介'); expect(chat.taskEvents.size).toBe(before + 1);
+    version = 2;
+    act(() => { for (const listener of chat.taskEvents) listener({ type: 'conversation.updated', entityRef: 'dm-a', conversationId: 'dm-a' }); });
+    await screen.findByText('远端已更新简介');
+    expect(fetchGroup.mock.calls.filter(([url]) => url === '/api/v1/groups/dm-a')).toHaveLength(2);
+    fireEvent(screen.getByRole('dialog', { name: '群详情与管理' }), new Event('cancel', { cancelable: true }));
+    expect(chat.taskEvents.size).toBe(before); mounted.unmount(); expect(chat.taskEvents.size).toBe(0);
+  });
+});

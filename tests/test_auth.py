@@ -372,6 +372,53 @@ def test_password_no_trimming_no_truncation_unicode():
             validate_password(password)
 
 
+@pytest.mark.parametrize("password", ["Abc9!xyz", "山林河流晨光🌿𠮷", "Abc9!xyz" * 16])
+def test_password_accepts_eight_through_128_codepoints(password):
+    assert validate_password(password) == password
+
+
+@pytest.mark.parametrize("password", ["Abc9!xy", "山林河流晨光🌿", "Abc9!xyz" * 16 + "Z"])
+def test_password_rejects_outside_eight_through_128_codepoints(password):
+    with pytest.raises(APIError) as error:
+        validate_password(password)
+    assert error.value.code == "VALIDATION_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_eight_character_password_register_change_and_recover(client, running_app):
+    registration_mode(running_app.runtime, "open")
+    short, initial, changed, recovered = "Abc9!xy", "Abc9!xyz", "Def8?uvw", "Ghi7#rst"
+    assert (await register(client, password=short)).status_code == 422
+    registration = await register(client, password=initial)
+    assert registration.status_code == 201, registration.text
+    code = registration.json()["data"]["recoveryCodes"][0]
+    reauth = await client.post(
+        "/api/v1/auth/reauth", json={"password": initial, "action": "change_password"}
+    )
+    assert reauth.status_code == 200, reauth.text
+    token = reauth.json()["data"]["reauthToken"]
+    rejected = await client.post(
+        "/api/v1/account/password", json={"password": short, "reauthToken": token}
+    )
+    assert rejected.status_code == 422, rejected.text
+    response = await client.post(
+        "/api/v1/account/password", json={"password": changed, "reauthToken": token}
+    )
+    assert response.status_code == 200, response.text
+    assert (await client.get("/api/v1/auth/me")).status_code == 401
+    assert (await login(client, password=changed)).status_code == 200
+    for password, status in [(short, 422), (recovered, 200)]:
+        response = await client.post(
+            "/api/v1/auth/recover",
+            json={
+                "username": "friend_one", "password": password, "recoveryCode": code,
+                **(await captcha(client)),
+            },
+        )
+        assert response.status_code == status, response.text
+    assert (await login(client, password=recovered)).status_code == 200
+
+
 @pytest.mark.asyncio
 async def test_ws_ticket_cookie_binding_single_use_and_revoked_session(client, running_app):
     registration_mode(running_app.runtime, "open")

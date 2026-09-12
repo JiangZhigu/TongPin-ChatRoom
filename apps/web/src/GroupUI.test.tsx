@@ -22,7 +22,10 @@ const reply = (data: unknown) => Promise.resolve({ ok: true, status: 200, json: 
 const reject = (code: string) => Promise.resolve({ ok: false, status: 409, json: async () => ({ error: { code, message: code } }) });
 const body = (options?: RequestInit) => JSON.parse(String(options?.body || '{}'));
 let current: GroupDetail; let fetched: ReturnType<typeof vi.fn<(url: string, options?: RequestInit) => Promise<unknown>>>; let updates: { url: string; body: Record<string, unknown> }[];
-function manage() { return render(<GroupManagementPanel conversationId="group-1" userId="owner" friends={[friend]} hasMoreFriends={false} onLoadMoreFriends={async () => {}} onClose={vi.fn()} onRefresh={async () => {}} onLeft={async () => {}} />); }
+const groupEvents = new Set<(event: { type: string; conversationId?: string | null }) => void>();
+const subscribeGroupEvents = (listener: (event: { type: string; conversationId?: string | null }) => void) => { groupEvents.add(listener); return () => { groupEvents.delete(listener); }; };
+function remoteUpdate() { act(() => { for (const listener of groupEvents) listener({ type: "conversation.updated", conversationId: "group-1" }); }); }
+function manage() { return render(<GroupManagementPanel subscribeGroupEvents={subscribeGroupEvents} conversationId="group-1" userId="owner" friends={[friend]} hasMoreFriends={false} onLoadMoreFriends={async () => {}} onClose={vi.fn()} onRefresh={async () => {}} onLeft={async () => {}} />); }
 beforeEach(() => {
   current = group(); updates = []; setCsrfToken('ui-group-csrf');
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } });
@@ -80,7 +83,7 @@ describe('M5-UI group creation and management', () => {
   it('saves the draft before leaving and never sends leave if that preservation fails', async () => {
     current.conversation.role = 'member'; current.capabilities.canLeave = true; current.capabilities.canDissolve = false;
     const beforeLeave = vi.fn(async () => { throw new Error('草稿保存失败，请先处理本机存储'); }); const left = vi.fn(async () => {});
-    render(<GroupManagementPanel conversationId="group-1" userId="owner" friends={[]} hasMoreFriends={false} onLoadMoreFriends={async () => {}} onClose={vi.fn()} onRefresh={async () => {}} onLeft={left} onBeforeLeave={beforeLeave} />);
+    render(<GroupManagementPanel subscribeGroupEvents={subscribeGroupEvents} conversationId="group-1" userId="owner" friends={[]} hasMoreFriends={false} onLoadMoreFriends={async () => {}} onClose={vi.fn()} onRefresh={async () => {}} onLeft={left} onBeforeLeave={beforeLeave} />);
     fireEvent.click(await screen.findByRole('button', { name: '退出群聊' })); fireEvent.click(screen.getByRole('checkbox', { name: '我已了解并确认上述后果' })); fireEvent.click(screen.getByRole('button', { name: '确认并继续' }));
     await screen.findByText('草稿保存失败，请先处理本机存储'); expect(beforeLeave).toHaveBeenCalledTimes(1); expect(left).not.toHaveBeenCalled(); expect(updates).toHaveLength(0);
   });
@@ -244,5 +247,87 @@ describe('M8 group inbox event freshness', () => {
   it('keeps the applications tab and rejects a late pre-revocation page', async () => {
     const stream = events(); const old = pending<Awaited<ReturnType<typeof reply>>>(); let revision = 0; fetched.mockImplementation((url: string) => { if (url.endsWith('/group-invites/mine')) return reply({ items: [], nextCursor: null }); if (url.includes('?')) return old.promise; return reply({ items: [{ ...application(), currentMember: revision === 0, groupName: revision === 0 ? '申请首页旧状态' : '申请首页新状态' }], nextCursor: revision === 0 ? 'old-page' : null }); });
     render(<GroupInbox onRefresh={async () => {}} onOpenGroup={async () => {}} subscribeGroupEvents={stream.subscribe} />); fireEvent.click(screen.getByRole('button', { name: '我的入群申请' })); fireEvent.click(await screen.findByRole('button', { name: '加载更多' })); await waitFor(() => expect(fetched.mock.calls.some(([url]) => url.includes('?after=old-page'))).toBe(true)); revision = 1; stream.emit('access.revoked'); await screen.findByText('申请首页新状态'); await act(async () => old.resolve(await reply({ items: [{ ...application(), id: 'late', groupName: 'LATE-OLD-MEMBER', currentMember: true }], nextCursor: null }))); expect(screen.queryByText('LATE-OLD-MEMBER')).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: '我的入群申请' })).toHaveAttribute('aria-pressed', 'true');
+  });
+});
+describe('UX-R04 live group authority', () => {
+  it('preserves a draft and requires review before saving against a newer version', async () => {
+    const mounted = manage(); await screen.findByLabelText('群名称');
+    fireEvent.change(screen.getByLabelText('群名称'), { target: { value: '本地未保存名称' } });
+    current = { ...group(), version: 8, conversation: { ...group().conversation, title: '远端名称', memberCount: 2 } };
+    remoteUpdate();
+    await screen.findByText('最新群名称：远端名称');
+    expect(screen.getByLabelText('群名称')).toHaveValue('本地未保存名称');
+    expect(screen.getByRole('button', { name: '保存群资料与策略' })).toBeDisabled();
+    expect(updates).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '已核对最新资料，继续编辑草稿' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存群资料与策略' }));
+    await waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0].body).toMatchObject({ expectedVersion: 8, name: '本地未保存名称' });
+    mounted.unmount(); expect(groupEvents.size).toBe(0);
+  });
+  it('retains a copyable draft but removes edit authority after demotion', async () => {
+    manage(); await screen.findByLabelText('群名称');
+    fireEvent.change(screen.getByLabelText('群名称'), { target: { value: '保留草稿' } });
+    current = group(); current.version = 8; current.conversation.role = 'member';
+    current.capabilities = { canEdit: false, canInvite: false, canReview: false, canAssignRoles: false, canTransfer: false, canDissolve: false, canLeave: true };
+    remoteUpdate();
+    await screen.findByRole('button', { name: '退出群聊' });
+    expect((screen.getByLabelText('可复制的未保存草稿') as HTMLTextAreaElement).value).toContain('保留草稿');
+    expect(screen.getByRole('button', { name: '保存群资料与策略' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '解散群聊' })).not.toBeInTheDocument();
+    expect(updates).toHaveLength(0);
+  });
+  it('cancels confirmation and never continues a late reauthentication after remote changes', async () => {
+    let finish!: (value: unknown) => void;
+    const baseFetch = fetched.getMockImplementation()!;
+    fetched.mockImplementation((url, options) => url === '/api/v1/auth/reauth' ? new Promise((resolve) => { finish = resolve; }) : baseFetch(url, options));
+    manage(); fireEvent.click(await screen.findByRole('button', { name: '解散群聊' }));
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'example-password' } });
+    fireEvent.click(screen.getByLabelText('我已了解并确认上述后果'));
+    fireEvent.click(screen.getByRole('button', { name: '确认并继续' }));
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    current = { ...group(), version: 8 }; remoteUpdate();
+    await act(async () => { finish(await reply({ reauthToken: 'late-token' })); });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '解散群聊 · 再次验证' })).not.toBeInTheDocument());
+    expect(fetched.mock.calls.some(([url]) => url.endsWith('/dissolve'))).toBe(false);
+  });
+  it('ignores a late older detail response and hides stale member rows during refresh', async () => {
+    manage(); fireEvent.click(await screen.findByRole('button', { name: '成员' })); await screen.findByText('@friend_name');
+    let finish!: (value: unknown) => void; const baseFetch = fetched.getMockImplementation()!;
+    fetched.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    remoteUpdate();
+    expect(screen.queryByText('@friend_name')).not.toBeInTheDocument();
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    current = { ...group(), version: 9, conversation: { ...group().conversation, title: '最新群名称' } };
+    fetched.mockImplementation(baseFetch); remoteUpdate();
+    await screen.findByText('最新群名称');
+    await act(async () => { finish(await reply(group())); });
+    expect(screen.getByText('最新群名称')).toBeInTheDocument();
+    expect(screen.queryByText('定向测试群')).not.toBeInTheDocument();
+  });
+});
+describe('UX-R04 invitation continuity and failed refresh', () => {
+  it('keeps the one-time invitation link across unrelated refreshes and clears a revoked invite', async () => {
+    let revoked = false; const baseFetch = fetched.getMockImplementation()!;
+    fetched.mockImplementation((url, options: RequestInit = {}) => url.endsWith('/invites') ? options.method === 'POST' ? reply({ invite: invite(), token }) : reply({ items: [{ ...invite(), state: revoked ? 'revoked' : 'available' }], nextCursor: null }) : baseFetch(url, options));
+    manage(); fireEvent.click(await screen.findByRole('button', { name: '邀请' }));
+    fireEvent.click(screen.getByRole('button', { name: '创建邀请' }));
+    const link = await screen.findByLabelText('本次生成的邀请链接'); const value = (link as HTMLTextAreaElement).value;
+    await waitFor(() => expect(screen.getByRole('button', { name: '创建邀请' })).toBeEnabled());
+    current = { ...group(), version: 8 }; remoteUpdate();
+    await waitFor(() => expect(screen.getByLabelText('本次生成的邀请链接')).toHaveValue(value));
+    revoked = true; current = { ...group(), version: 9 }; remoteUpdate();
+    await waitFor(() => expect(screen.getByText(/已撤销/)).toBeInTheDocument());
+    expect(screen.queryByLabelText('本次生成的邀请链接')).not.toBeInTheDocument();
+  });
+  it('keeps all actions disabled when remote detail revalidation fails', async () => {
+    manage(); await screen.findByLabelText('群名称');
+    fetched.mockRejectedValueOnce(new Error('远端刷新失败')); remoteUpdate();
+    await screen.findByText('远端刷新失败');
+    expect(screen.getByRole('button', { name: '保存群资料与策略' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '解散群聊' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '解散群聊' }));
+    expect(screen.queryByRole('button', { name: '确认并继续' })).not.toBeInTheDocument();
+    expect(updates).toHaveLength(0);
   });
 });
