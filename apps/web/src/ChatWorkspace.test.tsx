@@ -125,6 +125,7 @@ describe('M6-UI attachment draft lifecycle', () => {
     const pending = { ...queued('', 'failed'), files: [{ ...local(), attachmentId: 'old-upload', phase: 'failed' as const, error: '失权' }] }; chat.state!.outbox = [pending];
     showWorkspace(); fireEvent.click(screen.getByRole('button', { name: /本机待发 1/ })); await screen.findByRole('heading', { name: '本机待发' }); fireEvent.click(screen.getByRole('button', { name: '复制到编辑器' }));
     await waitFor(() => expect(chat.saveDraft).toHaveBeenCalledWith('dm-a', '', expect.objectContaining({ files: [expect.objectContaining({ name: pending.files[0].name, attachmentId: undefined, phase: undefined })] })));
+    expect(screen.getByText(/原失败项仍在本机待发中/)).toBeInTheDocument();
     const saved = chat.saveDraft.mock.calls.at(-1)?.[2] as { files: LocalAttachment[] }; expect(saved.files[0].id).not.toBe(pending.files[0].id); expect(chat.queue).not.toHaveBeenCalled(); expect(chat.cancel).not.toHaveBeenCalled();
   });
   it('preserves attachment drafts against a late scroll timer during revoked conversation cleanup', async () => {
@@ -399,8 +400,22 @@ describe('M3-M4 message and reading UI', () => {
 });
 
 describe('M3-M4 queue and logout UI', () => {
+  it('explains a failed-head wait in chat, leaves the composer usable, and opens recovery', async () => {
+    const failed = { ...queued('失败的旧消息', 'failed'), createdAt: 1 };
+    const next = { ...queued('等待中的新消息'), key: 'next-key', createdAt: 2, payload: { ...queued().payload, clientMessageId: 'next-id' } };
+    chat.state!.outbox = [next, failed]; showWorkspace(); await openConversation();
+    expect(screen.getByText('等待前一条失败消息处理')).toBeInTheDocument();
+    expect(screen.getByLabelText('消息内容')).toBeEnabled();
+    const entry = screen.getByRole('button', { name: '处理本机待发' });
+    fireEvent.click(entry); await screen.findByRole('heading', { name: '本机待发' });
+    await act(async () => publish({ outbox: [next] }));
+    expect(screen.queryByText('等待前一条失败消息处理')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^消息/ }));
+    expect(screen.queryByRole('button', { name: '处理本机待发' })).not.toBeInTheDocument();
+    expect(screen.getByText('已存本机 · 等待投递')).toBeInTheDocument();
+  });
   it('uses the same client ID for retry and clearly limits cancellation to this device', async () => {
-    chat.state!.outbox = [queued('待发消息正文', 'failed')]; showWorkspace(); fireEvent.click(screen.getByRole('button', { name: /^待发/ }));
+    chat.state!.outbox = [{ ...queued('待发消息正文', 'failed'), errorCode: 'NETWORK_ERROR' }]; showWorkspace(); fireEvent.click(screen.getByRole('button', { name: /^待发/ }));
     fireEvent.click(await screen.findByRole('button', { name: '重试' })); await waitFor(() => expect(chat.retry).toHaveBeenCalledWith('same-client-id'));
     fireEvent.click(screen.getByRole('button', { name: '停止本机重试' })); await waitFor(() => expect(chat.cancel).toHaveBeenCalledWith('same-client-id'));
     expect(await screen.findByText('已停止这条消息的本机重试；服务器上已收到的消息不受影响。')).toBeInTheDocument();
