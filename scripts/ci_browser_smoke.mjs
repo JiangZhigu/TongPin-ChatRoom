@@ -73,7 +73,7 @@ async function openPage(role) {
   page.on('response', (response) => {
     const pathname = urlPath(response.url());
     if (pathname.startsWith('/api/v1/auth/') && report.authResponses.length < 100) report.authResponses.push({ role, path: pathname, status: response.status() });
-    if (response.status() >= 500) report.errors.push({ role, kind: 'http', path: pathname, status: response.status() });
+    if (response.status() >= 500) report.errors.push({ role, kind: 'http', path: pathname, status: response.status(), requestId: response.headers()['x-request-id'] || null });
     if (/\.(?:js|css)$/.test(pathname) && !report.assets.some((item) => item.path === pathname)) report.assets.push({ path: pathname, status: response.status() });
   });
   page.on('websocket', (socket) => {

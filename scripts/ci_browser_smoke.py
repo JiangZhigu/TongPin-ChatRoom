@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -135,6 +136,7 @@ def browser_failure(work, fixture, code):
             summary['browserLogTail'] = (work / 'browser-process.log').read_text(encoding='utf-8', errors='replace')[-6000:]
         except OSError:
             summary['browserLogTail'] = '[unavailable]'
+    summary['serverDiagnostics'] = server_diagnostics(work)
     text = json.dumps(summary, ensure_ascii=True)
     for role in ('owner', 'member'):
         for key in ('session', 'csrf'):
@@ -142,6 +144,33 @@ def browser_failure(work, fixture, code):
             if secret:
                 text = text.replace(secret, '[redacted]')
     print(text, flush=True)
+
+
+def server_diagnostics(work):
+    """Extract bounded exception metadata, excluding raw messages and trace lines."""
+    try:
+        with (work / 'server.log').open('rb') as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 65536))
+            lines = stream.read().decode('utf-8', errors='replace').splitlines()
+    except OSError:
+        return {'available': False, 'exceptions': [], 'unhandledTypes': []}
+    records, types = [], []
+    for line in lines:
+        prefix = 'TONGPIN_CI_EXCEPTION '
+        if line.startswith(prefix):
+            try:
+                value = json.loads(line[len(prefix):])
+            except ValueError:
+                continue
+            if isinstance(value, dict):
+                # This is a CI-only, synthetic-data source. Whitelist the fields so
+                # future probe changes cannot add exception messages or locals.
+                records.append({key: value.get(key) for key in ('type', 'requestId', 'route', 'sqliteName', 'frames')})
+        match = re.match(r'^(?:[A-Za-z_]\w*\.)*([A-Z]\w*(?:Error|Exception))(?::|$)', line)
+        if match and match[1] not in types:
+            types.append(match[1])
+    return {'available': True, 'exceptions': records[-12:], 'unhandledTypes': types[-12:]}
 
 
 def main():
@@ -172,7 +201,7 @@ def main():
     process = None
     try:
         with (work / 'server.log').open('w', encoding='utf-8') as stream:
-            process = subprocess.Popen([sys.executable, '-m', 'tongpin'], cwd=ROOT, env=environment, stdout=stream, stderr=stream,
+            process = subprocess.Popen([sys.executable, str(ROOT / 'scripts/ci_server_probe.py')], cwd=ROOT, env=environment, stdout=stream, stderr=stream,
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             for _ in range(200):
                 if process.poll() is not None:
