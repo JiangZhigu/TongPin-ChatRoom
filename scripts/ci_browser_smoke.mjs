@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = await realpath(fileURLToPath(new URL('../', import.meta.url)));
-const report = { schemaVersion: 1, check: 'ci-browser-smoke', status: 'running', startedAt: new Date().toISOString(), steps: [], sockets: [], errors: [], ignoredRequests: [], assets: [], screenshots: [], viewports: [] };
+const report = { schemaVersion: 1, check: 'ci-browser-smoke', status: 'running', startedAt: new Date().toISOString(), steps: [], sockets: [], errors: [], ignoredRequests: [], assets: [], screenshots: [], viewports: [], authResponses: [], diagnostics: [] };
 let output, fixture, browser, expect;
 let closing = false;
 const pages = [];
@@ -72,6 +72,7 @@ async function openPage(role) {
   });
   page.on('response', (response) => {
     const pathname = urlPath(response.url());
+    if (pathname.startsWith('/api/v1/auth/') && report.authResponses.length < 100) report.authResponses.push({ role, path: pathname, status: response.status() });
     if (response.status() >= 500) report.errors.push({ role, kind: 'http', path: pathname, status: response.status() });
     if (/\.(?:js|css)$/.test(pathname) && !report.assets.some((item) => item.path === pathname)) report.assets.push({ path: pathname, status: response.status() });
   });
@@ -93,9 +94,16 @@ async function navigate(entry, reload) {
   try { if (reload) await entry.page.reload({ waitUntil: 'domcontentloaded' }); else await entry.page.goto(fixture.baseUrl, { waitUntil: 'domcontentloaded' }); }
   finally { entry.navigating = false; }
 }
+async function openNavigation(page, label) {
+  const navigation = page.getByRole('navigation', { name: '主导航' });
+  // The accessible button name also includes its changing unread badge.
+  const button = navigation.getByRole('button').filter({ has: page.getByText(label, { exact: true }) });
+  await expect(button).toHaveCount(1);
+  await button.click();
+}
 async function openGroup(entry) {
   const page = entry.page;
-  await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: /^消息(?:\s|$)/ }).click();
+  await openNavigation(page, '消息');
   // Match exact rendered group text independently of unread badges and previews.
   const matching = page.getByRole('complementary', { name: '会话列表' }).locator('button.conversation-item').filter({ has: page.getByText(fixture.group.title, { exact: true }) });
   await expect(matching).toHaveCount(1);
@@ -106,7 +114,7 @@ const message = (page) => page.getByRole('region', { name: '消息记录' }).get
 const taskWorkspace = (page) => page.locator('.task-workspace');
 const savedTask = (page) => taskWorkspace(page).getByRole('button', { name: fixture.taskTitle, exact: true });
 async function openTasks(page) {
-  await page.getByRole('navigation', { name: '主导航' }).getByRole('button', { name: '待办', exact: true }).click();
+  await openNavigation(page, '待办');
   const workspace = taskWorkspace(page);
   await expect(workspace.getByRole('heading', { name: '把交流变成可跟进的事', exact: true })).toBeVisible();
   await expect(workspace.getByRole('button', { name: '新建待办', exact: true })).toBeEnabled();
@@ -116,6 +124,19 @@ async function screenshot(entry, name) {
   const filename = `${name}.png`;
   const buffer = await entry.page.screenshot({ path: path.join(output, filename), fullPage: true, animations: 'disabled' });
   report.screenshots.push({ role: entry.role, file: filename, sha256: createHash('sha256').update(buffer).digest('hex') });
+}
+async function failureState(entry) {
+  const page = entry.page;
+  const diagnostic = { role: entry.role, path: urlPath(page.url()), viewport: page.viewportSize() };
+  report.diagnostics.push(diagnostic);
+  try {
+    diagnostic.headings = (await page.getByRole('heading').allTextContents()).slice(0, 10).map(redact);
+    const navigation = page.locator('nav[aria-label="主导航"]');
+    diagnostic.navigationCount = await navigation.count();
+    diagnostic.navigationVisible = await navigation.isVisible();
+    if (diagnostic.navigationCount === 1) diagnostic.navigationAria = redact(await navigation.ariaSnapshot({ timeout: 2000 }));
+    diagnostic.mainClass = await page.locator('main').first().getAttribute('class', { timeout: 2000 });
+  } catch (error) { diagnostic.collectionError = redact(error.message); }
 }
 async function viewport(entry, surface, width) {
   await entry.page.setViewportSize({ width, height: 900 });
@@ -173,11 +194,13 @@ try {
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.failure = redact(error.message); process.exitCode = 1;
-  if (output) for (const entry of pages) { try { await screenshot(entry, `failure-${entry.role}`); } catch { /* Preserve the original failure. */ } }
+  if (output) for (const entry of pages) { await failureState(entry); try { await screenshot(entry, `failure-${entry.role}`); } catch { /* Preserve the original failure. */ } }
 } finally {
   closing = true;
   if (browser) { try { await browser.close(); } catch (error) { report.errors.push({ kind: 'close', message: redact(error.message) }); report.status = 'failed'; process.exitCode = 1; } }
   report.endedAt = new Date().toISOString();
   if (output) await writeFile(path.join(output, 'observed-browser.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  process.stdout.write(`${JSON.stringify({ status: report.status, report: output ? path.join(output, 'observed-browser.json') : null, failure: report.failure })}\n`);
+  const summary = { status: report.status, report: output ? path.join(output, 'observed-browser.json') : null, failure: report.failure };
+  if (report.status === 'failed') Object.assign(summary, { failedStep: report.steps.find((item) => item.status === 'failed')?.name, diagnostics: report.diagnostics, errors: report.errors, authResponses: report.authResponses, assets: report.assets });
+  process.stdout.write(`${JSON.stringify(summary)}\n`);
 }

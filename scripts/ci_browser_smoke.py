@@ -122,6 +122,28 @@ def stop(process):
     return process.poll() is not None and not any(child.is_running() for child in children)
 
 
+def browser_failure(work, fixture, code):
+    summary = {'browserExitCode': code}
+    try:
+        report = json.loads((work / 'observed-browser.json').read_text(encoding='utf-8'))
+        for key in ('status', 'failure', 'diagnostics', 'errors', 'authResponses', 'assets'):
+            summary[key] = report.get(key)
+        summary['failedStep'] = next((item['name'] for item in report.get('steps', []) if item['status'] == 'failed'), None)
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        summary['reportReadError'] = type(error).__name__
+        try:
+            summary['browserLogTail'] = (work / 'browser-process.log').read_text(encoding='utf-8', errors='replace')[-6000:]
+        except OSError:
+            summary['browserLogTail'] = '[unavailable]'
+    text = json.dumps(summary, ensure_ascii=True)
+    for role in ('owner', 'member'):
+        for key in ('session', 'csrf'):
+            secret = fixture[role].get(key)
+            if secret:
+                text = text.replace(secret, '[redacted]')
+    print(text, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--work-dir', type=Path, help='New isolated directory; refuses an existing target')
@@ -169,15 +191,19 @@ def main():
                 if not node:
                     raise RuntimeError('Node.js is required for the browser check')
                 environment.update(TONGPIN_CI_FIXTURE=str(fixture_path), TONGPIN_CI_OUTPUT=str(work))
-                check_process = subprocess.Popen([node, str(ROOT / 'scripts/ci_browser_smoke.mjs')], cwd=ROOT, env=environment,
-                                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-                try:
-                    code = check_process.wait(timeout=240)
-                    if code:
-                        raise RuntimeError('Browser assertions failed; see observed-browser.json')
-                finally:
-                    if check_process.poll() is None:
-                        stop(check_process)
+                with (work / 'browser-process.log').open('w', encoding='utf-8') as browser_stream:
+                    check_process = subprocess.Popen([node, str(ROOT / 'scripts/ci_browser_smoke.mjs')], cwd=ROOT, env=environment,
+                                                     stdout=browser_stream, stderr=subprocess.STDOUT,
+                                                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                    try:
+                        code = check_process.wait(timeout=240)
+                    finally:
+                        if check_process.poll() is None:
+                            stop(check_process)
+                result['browserExitCode'] = code
+                if code:
+                    browser_failure(work, fixture, code)
+                    raise RuntimeError('Browser assertions failed; see observed-browser.json and browser-process.log')
             with closing(sqlite3.connect(settings.data_root / 'data/tongpin.sqlite3')) as conn:
                 count = conn.execute('SELECT count(*) FROM messages WHERE text=?', (fixture['messageText'],)).fetchone()[0]
                 assert count == 1, 'UI/WS send must persist exactly once'
