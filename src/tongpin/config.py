@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_POLICY = {
-    "registration_mode": "closed",
+    "registration_mode": "open",
     "group_limit": 200,
     "owned_group_limit": 20,
     "image_limit_bytes": 10 * 1024**2,

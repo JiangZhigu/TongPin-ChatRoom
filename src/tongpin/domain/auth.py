@@ -219,7 +219,15 @@ class AuthService:
     def login(self, data, flow, ip, device, old_token=""):
         self.security.rate("login-ip", ip, 100, 900)
         self.security.rate("login-user", data.username.lower(), 15, 900)
-        self.security.consume_captcha(flow, data.captchaId, data.captchaAnswer)
+        with self.security.login_attempt(data.username, ip) as failure_key:
+            return self._login(data, flow, device, old_token, failure_key)
+
+    def _login(self, data, flow, device, old_token, failure_key):
+        captcha_required = self.security.login_requires_captcha(failure_key)
+        if captcha_required and not (data.captchaId and data.captchaAnswer):
+            self.security.require_login_captcha()
+        if captcha_required or data.captchaId or data.captchaAnswer:
+            self.security.consume_captcha(flow, data.captchaId, data.captchaAnswer)
         with self.runtime.db.read() as conn:
             user = conn.execute(
                 "SELECT * FROM users WHERE username=? COLLATE NOCASE", (data.username,)
@@ -228,7 +236,10 @@ class AuthService:
             user["password_hash"] if user else None, data.password
         )
         if not verified or not user or user["status"] != "active":
+            challenge = False
             with self.runtime.db.write() as conn:
+                if not verified:
+                    challenge = self.security.record_login_failure(conn, failure_key)
                 audit(
                     conn,
                     None,
@@ -239,6 +250,8 @@ class AuthService:
                 )
             if verified and user and user['status'] == 'banned':
                 raise APIError('ACCOUNT_BANNED', '账号已被封禁。' + ('原因：' + user['status_reason'] if user['status_reason'] else '请联系运营者核查。'), 403)
+            if challenge:
+                self.security.require_login_captcha()
             raise APIError("LOGIN_FAILED", "登录名、密码或账号状态不正确。", 401)
         if user['must_change_password']:
             raise APIError('PASSWORD_RESET_REQUIRED', '账号需要重置密码。请在找回入口使用管理员交付的一次性重置凭据，或本人尚未使用的恢复码。', 403)
@@ -263,6 +276,7 @@ class AuthService:
                 )
             token, result = self.issue_session(conn, current, data.remember, device, factor=factor)
             audit(conn, user["id"], "account.login", user["id"], device=device)
+            conn.execute("DELETE FROM rate_buckets WHERE key=?", (failure_key,))
         self.runtime.revalidate_connections()
         return token, result
 

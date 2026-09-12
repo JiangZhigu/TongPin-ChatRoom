@@ -127,6 +127,7 @@ def seed_admin(runtime, username="site_admin"):
 
 @pytest.mark.asyncio
 async def test_registration_closed_open_unique_and_no_secret_leak(client, running_app):
+    registration_mode(running_app.runtime, "closed")
     response = await register(client)
     assert response.status_code == 403 and response.json()["error"]["code"] == "REGISTRATION_CLOSED"
     registration_mode(running_app.runtime, "open")

@@ -21,6 +21,7 @@ import deploy
 import release
 import release_precheck
 
+from tongpin.config import DEFAULT_POLICY
 from tongpin.infra.db import Database
 from tongpin.infra.runtime_lock import RuntimeLock
 
@@ -260,7 +261,14 @@ def test_activation_and_code_rollback_keep_current_data_and_refuse_running_insta
         deploy.schema_compatible(old, db.path, allow_new=False)
 
 
-def test_offline_operator_command_is_audited_without_opening_registration(tmp_path):
+@pytest.mark.parametrize('registration_mode', ['closed', 'invite-only', 'open'])
+def test_offline_operator_command_is_audited_and_preserves_registration(tmp_path, registration_mode):
+    database = Database(tmp_path/'data/data/tongpin.sqlite3')
+    database.path.parent.mkdir(parents=True)
+    database.migrate()
+    with database.write() as conn:
+        conn.execute('INSERT INTO policy_versions VALUES(0,?,NULL,?,0)',
+                     (json.dumps(DEFAULT_POLICY | {'registration_mode': registration_mode}), 'isolated initial policy'))
     env = os.environ | {'TONGPIN_ENV': 'test', 'TONGPIN_HOST': '127.0.0.1', 'TONGPIN_PORT': '8765', 'TONGPIN_ORIGINS': 'http://127.0.0.1:8765', 'TONGPIN_DATA_DIR': str(tmp_path/'data'), 'TONGPIN_SECRET': 'isolated-operator-script-secret-'*3}
     result = subprocess.run([sys.executable, str(ROOT/'scripts/manage.py'), 'operator', '--name', '隔离运营者', '--contact', 'local test only', '--terms-version', 'isolated-reviewed-1', '--reason', 'isolated operator preparation'], cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
@@ -268,7 +276,7 @@ def test_offline_operator_command_is_audited_without_opening_registration(tmp_pa
         rows = conn.execute('SELECT version,values_json FROM policy_versions ORDER BY version').fetchall()
         assert [row[0] for row in rows] == [0, 1]
         policy = json.loads(rows[-1][1])
-        assert policy['operator_name'] == '隔离运营者' and policy['registration_mode'] == 'closed'
+        assert policy['operator_name'] == '隔离运营者' and policy['registration_mode'] == registration_mode
         assert conn.execute("SELECT count(*) FROM audit_events WHERE action='settings.local_operator'").fetchone()[0] == 1
 
 

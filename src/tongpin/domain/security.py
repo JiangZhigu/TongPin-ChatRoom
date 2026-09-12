@@ -8,6 +8,8 @@ import json
 import re
 import secrets
 import unicodedata
+from contextlib import contextmanager
+from threading import Lock
 
 import pyotp
 from argon2 import PasswordHasher
@@ -98,6 +100,9 @@ def audit(conn, actor, action, subject=None, reason="", result="success", device
 
 
 class Security:
+    LOGIN_CAPTCHA_THRESHOLD = 5
+    LOGIN_FAILURE_TTL_MS = 15 * 60 * 1000
+
     def __init__(self, runtime):
         self.runtime = runtime
         self.passwords = PasswordHasher(
@@ -106,6 +111,9 @@ class Security:
         self.dummy_hash = self.passwords.hash(secrets.token_urlsafe(32))
         self.captchas = BoundedCache(max_entries=10000, max_bytes=16 * 1024**2, ttl=120)
         self.tickets = BoundedCache(max_entries=10000, max_bytes=4 * 1024**2, ttl=60)
+        # A fixed number of locks bounds memory and serializes the threshold check,
+        # password verification and counter update for one source/account pair.
+        self._login_locks = tuple(Lock() for _ in range(64))
         self.fernet = Fernet(
             base64.urlsafe_b64encode(hashlib.sha256(runtime.secret.encode()).digest())
         )
@@ -123,6 +131,42 @@ class Security:
             return self.passwords.verify(digest or self.dummy_hash, password)
         except (VerificationError, InvalidHashError):
             return False
+
+    @contextmanager
+    def login_attempt(self, username, ip):
+        key = self.digest(json.dumps([ip, username.lower()]), "login-failures")
+        with self._login_locks[int(key[:8], 16) % len(self._login_locks)]:
+            yield key
+
+    def login_requires_captcha(self, key):
+        with self.runtime.db.read() as conn:
+            row = conn.execute(
+                "SELECT attempts,expires_at FROM rate_buckets WHERE key=?", (key,)
+            ).fetchone()
+        return bool(row and row["expires_at"] > now_ms()
+                    and row["attempts"] >= self.LOGIN_CAPTCHA_THRESHOLD)
+
+    def record_login_failure(self, conn, key):
+        now = now_ms()
+        conn.execute("DELETE FROM rate_buckets WHERE expires_at<=?", (now,))
+        row = conn.execute("SELECT attempts FROM rate_buckets WHERE key=?", (key,)).fetchone()
+        if row is None and conn.execute("SELECT COUNT(*) FROM rate_buckets").fetchone()[0] >= 20000:
+            raise APIError("TEMPORARY_UNAVAILABLE", "访问频繁，请稍后重试。", 503)
+        failures = min(self.LOGIN_CAPTCHA_THRESHOLD, (row["attempts"] if row else 0) + 1)
+        conn.execute(
+            "INSERT INTO rate_buckets(key,window_start,attempts,expires_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(key) DO UPDATE SET attempts=excluded.attempts,expires_at=excluded.expires_at",
+            (key, now, failures, now + self.LOGIN_FAILURE_TTL_MS),
+        )
+        return failures >= self.LOGIN_CAPTCHA_THRESHOLD
+
+    @staticmethod
+    def require_login_captcha():
+        raise APIError(
+            "LOGIN_CAPTCHA_REQUIRED",
+            "用户名或密码已连续5次验证失败，请填写图形验证码后重试。",
+            401,
+        )
 
     def rate(self, category, key, maximum, seconds):
         now = now_ms()

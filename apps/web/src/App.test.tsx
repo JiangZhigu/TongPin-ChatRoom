@@ -37,6 +37,21 @@ function healthyResponse(url: string) {
 }
 
 describe('real service entry', () => {
+  it.each(['open', 'closed', 'invite-only'] as const)('opens /register using the current %s policy and can return to login', async (registrationMode) => {
+    window.history.replaceState({}, '', '/register');
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply({ ...bootstrapData(null), registrationMode }) : captchaReply()));
+    render(<App />); expect(await screen.findByRole('heading', { name: '创建你的账号' })).toBeInTheDocument();
+    if (registrationMode === 'closed') {
+      expect(screen.getByText('暂未开放注册')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '返回登录' }));
+    } else {
+      expect(screen.getByLabelText('昵称')).toBeInTheDocument();
+      expect(Boolean(screen.queryByLabelText('站点邀请码'))).toBe(registrationMode === 'invite-only');
+      fireEvent.click(screen.getByRole('button', { name: '登录' }));
+    }
+    expect(screen.getByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('图形验证码')).not.toBeInTheDocument();
+  });
   it('shows disabled account capability after checking both endpoints, without credentials or fake chats', async () => {
     const fetchMock = vi.fn(healthyResponse);
     vi.stubGlobal('fetch', fetchMock);
@@ -122,11 +137,11 @@ describe('M2 bootstrap StrictMode', () => {
     render(<StrictMode><App /></StrictMode>);
     await screen.findByRole('heading', { name: '欢迎回来' });
     if (operation === 'register') fireEvent.click(screen.getByRole('button', { name: '注册' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled());
+    if (operation === 'register') await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled());
     expect(bootstrapCalls).toBe(1);
     fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'strict_mode_user' } });
     fireEvent.change(screen.getByLabelText('密码', { exact: true }), { target: { value: 'a strict mode test password' } });
-    fireEvent.change(screen.getByLabelText('图形验证码'), { target: { value: 'ABCDEF' } });
+    if (operation === 'register') fireEvent.change(screen.getByLabelText('图形验证码'), { target: { value: 'ABCDEF' } });
     if (operation === 'register') {
       fireEvent.change(screen.getByLabelText('昵称'), { target: { value: '严格模式测试' } });
       fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'a strict mode test password' } });
@@ -138,7 +153,7 @@ describe('M2 bootstrap StrictMode', () => {
       expect(await screen.findByRole('heading', { name: '欢迎来到同频' })).toBeInTheDocument();
     }
     expect(submissions).toHaveLength(1);
-    expect(submissions[0]).toMatchObject({ path: `/api/v1/auth/${operation}`, csrfToken: 'anonymous-flow-1-csrf', body: { username: 'strict_mode_user', captchaId: 'expiry-captcha', captchaAnswer: 'ABCDEF' } });
+    expect(submissions[0]).toMatchObject({ path: `/api/v1/auth/${operation}`, csrfToken: 'anonymous-flow-1-csrf', body: { username: 'strict_mode_user', ...(operation === 'register' ? { captchaId: 'expiry-captcha', captchaAnswer: 'ABCDEF' } : {}) } });
     expect(bootstrapCalls).toBe(1);
     expect(screen.queryByText('验证码流程与CSRF不匹配')).not.toBeInTheDocument();
   });

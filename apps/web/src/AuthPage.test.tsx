@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { AuthPage } from './AuthPage';
 import { AccountSettings } from './AccountSettings';
@@ -11,11 +11,71 @@ const user: UserView = { id: 'test-user', username: 'test_user', nickname: '测�
 const bootstrap: BootstrapView = { accountsEnabled: true, registrationMode: 'open', csrfToken: 'test-csrf', user: null, terms: { version: 'test-terms', operatorName: '测试运营', operatorContact: '测试联系方式', development: true, text: '测试条款：管理方可以审阅消息与附件，所有访问均被审计。' } };
 const response = (data: unknown) => Promise.resolve({ ok: true, json: async () => ({ data }) });
 const captcha = () => response({ captchaId: 'test-captcha', image: 'data:image/png;base64,', expiresAt: Date.now() + 120000 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); setCsrfToken(''); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers(); setCsrfToken(''); });
 function fill(label: string, value: string) { fireEvent.change(screen.getByLabelText(label, { exact: true }), { target: { value } }); }
 async function loginFields() { await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled()); fill('用户名', 'test_user'); fill('密码', 'a safe test password'); fill('图形验证码', 'ABCDEF'); }
 
+const rejected = (code: string) => Promise.resolve({ ok: false, status: 401, json: async () => ({ error: { code, message: code } }) });
+
 describe('M2 authentication UI', () => {
+  it('logs in without requesting or submitting a captcha', async () => {
+    const authenticated = vi.fn(); const fetchMock = vi.fn(() => response({ user, csrfToken: 'new', expiresAt: 1 }));
+    vi.stubGlobal('fetch', fetchMock); render(<AuthPage bootstrap={bootstrap} admin={false} onAuthenticated={authenticated} />);
+    fill('用户名', 'test_user'); fill('密码', 'a safe test password');
+    expect(screen.queryByLabelText('图形验证码')).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
+    await waitFor(() => expect(authenticated).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((fetchMock.mock.calls as unknown as [string, RequestInit][])[0][1].body as string)).toEqual({ username: 'test_user', password: 'a safe test password', remember: false });
+  });
+  it('keeps the first four failures captcha-free, then refreshes consumed challenges including second factor', async () => {
+    let logins = 0;
+    const fetchMock = vi.fn((url: string) => url.endsWith('/captcha') ? captcha() : rejected(++logins < 5 ? 'INVALID_CREDENTIALS' : logins === 5 ? 'LOGIN_CAPTCHA_REQUIRED' : 'SECOND_FACTOR_REQUIRED'));
+    vi.stubGlobal('fetch', fetchMock); render(<AuthPage bootstrap={bootstrap} admin={false} onAuthenticated={vi.fn()} />);
+    fill('用户名', 'test_user'); fill('密码', 'a safe test password');
+    for (let i = 1; i <= 4; i++) {
+      fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
+      await waitFor(() => expect(screen.getAllByRole('button', { name: '登录' }).at(-1)).toBeEnabled());
+      expect(logins).toBe(i); expect(screen.queryByLabelText('图形验证码')).not.toBeInTheDocument();
+      expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/captcha'))).toHaveLength(0);
+    }
+    fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
+    await screen.findByText('LOGIN_CAPTCHA_REQUIRED'); await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled());
+    expect(screen.getByText('连续 5 次密码错误后，需要图形验证码才能继续登录。')).toBeInTheDocument();
+    expect(screen.getByLabelText('密码', { exact: true })).toHaveValue('a safe test password');
+    fill('图形验证码', 'ABCDEF'); fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
+    await screen.findByText('SECOND_FACTOR_REQUIRED');
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/captcha'))).toHaveLength(2));
+    expect(screen.getByLabelText('动态码或第二因素恢复码')).toBeInTheDocument(); expect(screen.getByLabelText('图形验证码')).toHaveValue('');
+  });
+  it('does not introduce a captcha for a second-factor-only error', async () => {
+    const fetchMock = vi.fn(() => rejected('SECOND_FACTOR_REQUIRED')); vi.stubGlobal('fetch', fetchMock);
+    render(<AuthPage bootstrap={bootstrap} admin={false} onAuthenticated={vi.fn()} />);
+    fill('用户名', 'test_user'); fill('密码', 'a safe test password'); fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
+    await screen.findByText('SECOND_FACTOR_REQUIRED'); expect(screen.getByLabelText('动态码或第二因素恢复码')).toBeInTheDocument();
+    expect(screen.queryByLabelText('图形验证码')).not.toBeInTheDocument(); expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it.each(['username', 'mode'] as const)('ignores a late challenge image after changing %s', async (change) => {
+    let resolve!: (value: Awaited<ReturnType<typeof captcha>>) => void;
+    const late = new Promise<Awaited<ReturnType<typeof captcha>>>((done) => { resolve = done; });
+    let images = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/captcha') ? ++images === 1 ? late : captcha() : rejected('LOGIN_CAPTCHA_REQUIRED')));
+    render(<AuthPage bootstrap={bootstrap} admin={false} onAuthenticated={vi.fn()} />);
+    fill('用户名', 'test_user'); fill('密码', 'a safe test password'); fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
+    await screen.findByText('LOGIN_CAPTCHA_REQUIRED');
+    if (change === 'username') fill('用户名', 'other_user');
+    else { fireEvent.click(screen.getByRole('button', { name: '注册' })); await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled()); fireEvent.click(screen.getAllByRole('button', { name: '登录' })[0]); }
+    await act(async () => resolve(await captcha()));
+    expect(screen.queryByLabelText('图形验证码')).not.toBeInTheDocument(); expect(screen.getAllByRole('button', { name: '登录' }).at(-1)).toBeEnabled();
+  });
+  it('retains the challenge for username case changes and blocks submission when its image fails', async () => {
+    let logins = 0;
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/captcha') ? Promise.reject(new Error('图片加载失败')) : (logins++, rejected('CAPTCHA_INVALID'))));
+    render(<AuthPage bootstrap={bootstrap} admin={false} onAuthenticated={vi.fn()} />);
+    fill('用户名', 'test_user'); fill('密码', 'a safe test password'); fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
+    await screen.findByText('图片加载失败'); fill('用户名', 'TEST_USER');
+    expect(screen.getByLabelText('图形验证码')).toBeInTheDocument(); expect(screen.getAllByRole('button', { name: '登录' }).at(-1)).toBeDisabled(); expect(logins).toBe(1);
+  });
   it('keeps login and recovery available when registration is closed', async () => {
     vi.stubGlobal('fetch', vi.fn(captcha));
     render(<AuthPage bootstrap={{ ...bootstrap, registrationMode: 'closed' }} admin={false} onAuthenticated={vi.fn()} />);
@@ -26,13 +86,13 @@ describe('M2 authentication UI', () => {
     expect(screen.getByLabelText('账号恢复码')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled());
   });
-  it('submits server terms and invite, then requires recovery-code save confirmation before entering', async () => {
+  it.each(['open', 'invite-only'] as const)('submits %s registration and requires recovery-code save confirmation before entering', async (registrationMode) => {
     const authenticated = vi.fn();
     const fetchMock = vi.fn((url: string, _options?: RequestInit) => url.endsWith('/captcha') ? captcha() : response({ user, csrfToken: 'new-test-csrf', expiresAt: 1, recoveryCodes: ['TEST-CODE-ONE', 'TEST-CODE-TWO'] }));
     vi.stubGlobal('fetch', fetchMock); setCsrfToken('test-csrf');
-    render(<AuthPage bootstrap={{ ...bootstrap, registrationMode: 'invite-only' }} admin={false} onAuthenticated={authenticated} />);
+    render(<AuthPage bootstrap={{ ...bootstrap, registrationMode }} admin={false} onAuthenticated={authenticated} />);
     fireEvent.click(screen.getByRole('button', { name: '注册' }));
-    await loginFields(); fill('昵称', '测试用户'); fill('站点邀请码', 'TEST-INVITE'); fill('确认密码', 'a safe test password');
+    await loginFields(); fill('昵称', '测试用户'); if (registrationMode === 'invite-only') fill('站点邀请码', 'TEST-INVITE'); fill('确认密码', 'a safe test password');
     expect(screen.getByText(bootstrap.terms.text)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建账号' })).toBeDisabled();
     fireEvent.click(screen.getByRole('checkbox', { name: '我已阅读并同意上述服务条款与隐私说明' }));
@@ -42,25 +102,27 @@ describe('M2 authentication UI', () => {
     expect(screen.getByRole('button', { name: '已保存，继续' })).toBeDisabled();
     const request = fetchMock.mock.calls.find(([url]) => url.endsWith('/register'));
     expect(request).toBeDefined();
-    expect(JSON.parse(request![1]!.body as string)).toMatchObject({ termsVersion: 'test-terms', acceptTerms: true, siteInvite: 'TEST-INVITE', password: 'a safe test password' });
+    expect(JSON.parse(request![1]!.body as string)).toMatchObject({ termsVersion: 'test-terms', acceptTerms: true, ...(registrationMode === 'invite-only' ? { siteInvite: 'TEST-INVITE' } : {}), password: 'a safe test password' });
     expect(request![1]!.headers).toMatchObject({ 'X-CSRF-Token': 'test-csrf' });
     fireEvent.click(screen.getByRole('checkbox', { name: '我已将恢复码保存到安全的位置' }));
     fireEvent.click(screen.getByRole('button', { name: '已保存，继续' }));
     expect(authenticated).toHaveBeenCalledTimes(1);
   });
-  it('refreshes consumed captcha and retains in-memory login fields when second factor is required', async () => {
-    const fetchMock = vi.fn((url: string) => url.endsWith('/captcha') ? captcha() : Promise.resolve({ ok: false, status: 401, json: async () => ({ error: { code: 'SECOND_FACTOR_REQUIRED', message: '需要第二因素' } }) }));
-    vi.stubGlobal('fetch', fetchMock);
-    render(<AuthPage bootstrap={bootstrap} admin={false} onAuthenticated={vi.fn()} />);
-    await loginFields(); fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
-    expect(await screen.findByText('需要第二因素')).toBeInTheDocument();
-    expect(screen.getByLabelText('动态码或第二因素恢复码')).toBeInTheDocument();
-    expect(screen.getByLabelText('用户名')).toHaveValue('test_user');
-    expect(screen.getByLabelText('密码', { exact: true })).toHaveValue('a safe test password');
-    expect(screen.getByLabelText('图形验证码')).toHaveValue('');
-    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/captcha')).length).toBe(2);
-  });
-  it('returns to login after account recovery without treating it as authentication', async () => {
+  it('refreshes expired registration captchas and rejects the previous mode response', async () => {
+    vi.useFakeTimers(); let images = 0;
+    let resolve!: (value: Awaited<ReturnType<typeof captcha>>) => void;
+    const late = new Promise<Awaited<ReturnType<typeof captcha>>>((done) => { resolve = done; });
+    const fetchMock = vi.fn(() => ++images === 1 ? late : response({ captchaId: `fresh-${images}`, image: 'data:image/png;base64,fresh', expiresAt: Date.now() + 1000 }));
+    vi.stubGlobal('fetch', fetchMock); render(<AuthPage bootstrap={bootstrap} admin={false} initialMode="register" onAuthenticated={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '忘记密码？使用恢复码找回' }));
+    await act(async () => {});
+    await act(async () => resolve(await response({ captchaId: 'old', image: 'data:image/png;base64,old', expiresAt: Date.now() + 120000 })));
+    expect(screen.getByRole('img')).toHaveAttribute('src', 'data:image/png;base64,fresh');
+    fill('图形验证码', 'ABCDEF');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1001); });
+    expect(fetchMock).toHaveBeenCalledTimes(3); expect(screen.getByLabelText('图形验证码')).toHaveValue('');
+    expect(screen.getByText('验证码已过期，已为你刷新。')).toBeInTheDocument();
+  });  it('returns to login after account recovery without treating it as authentication', async () => {
     const authenticated = vi.fn(); vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/captcha') ? captcha() : response({ recovered: true })));
     render(<AuthPage bootstrap={bootstrap} admin={false} onAuthenticated={authenticated} />);
     fireEvent.click(screen.getByRole('button', { name: '忘记密码？使用恢复码找回' }));

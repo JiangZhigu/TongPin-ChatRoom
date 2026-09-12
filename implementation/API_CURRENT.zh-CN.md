@@ -11,7 +11,7 @@ User: `{id,username,nickname,bio,avatarUrl:string|null,siteRole:'user'|'super_ad
 | GET /auth/bootstrap | 无 | `{accountsEnabled:true,registrationMode:'closed'|'invite-only'|'open',csrfToken,user:User|null,terms:{version,operatorName,operatorContact,development,text}}`；设置匿名流程 Cookie 或读取当前会话 |
 | GET /auth/captcha | 无 | `{captchaId,image:'data:image/png;base64,...',expiresAt}`；每次刷新废除本匿名流程旧图；答案不返回 |
 | POST /auth/register | `{username,nickname,password,captchaId,captchaAnswer,termsVersion,acceptTerms:true,siteInvite?:string}` | `{user,csrfToken,recoveryCodes:string[],expiresAt}`；立即登录、恢复码只返回一次 |
-| POST /auth/login | `{username,password,captchaId,captchaAnswer,remember:boolean,secondFactor?:string,admin?:boolean}` | `{user,csrfToken,expiresAt}`；超管需要 TOTP 或独立第二因素恢复码，缺少时 `SECOND_FACTOR_REQUIRED` |
+| POST /auth/login | `{username,password,captchaId?:string,captchaAnswer?:string,remember?:boolean,secondFactor?:string,admin?:boolean}` | `{user,csrfToken,expiresAt}`；普通登录先不提交验证码，连续失败触发时返回 `LOGIN_CAPTCHA_REQUIRED`；超管仍需要 TOTP 或独立第二因素恢复码，缺少时 `SECOND_FACTOR_REQUIRED` |
 | POST /auth/recover | `{username,recoveryCode,password,captchaId,captchaAnswer,secondFactor?:string}` | `{recovered:true}`；一组恢复码消费一次，撤销旧会话，不自动登录 |
 | GET /auth/me | 无 | `{user,csrfToken,expiresAt}`，未登录401 |
 | POST /auth/logout | `{}` | `{loggedOut:true}` |
@@ -29,7 +29,9 @@ M2交付时启用了账户、安全设置和管理身份入口；目前聊天、
 
 输入规则：username ASCII字母开头4–24位字母/数字/下划线，大小写唯一；昵称1–32码点无空白边缘或控制字符；bio0–200码点；密码15–128码点不 trim/截断，禁止控制字符和明显弱密码。验证码6位，不区分大小写，120秒最多5次，一次消费。错误字段映射用于表单，限流显示重试时间；失效图自动更新并保留非敏感输入，密码不写浏览器持久存储。
 
-条款必须展示服务器返回文本：超管可审阅私聊/群聊/附件且访问审计、保留与注销方式、恢复码丢失后没有自动找回。注册closed时登录/恢复仍可达；invite-only显示站点邀请码，不能用群邀请替代。
+条款必须展示服务器返回文本：超管可审阅私聊/群聊/附件且访问审计、保留与注销方式、恢复码丢失后没有自动找回。新站默认open；后台显式保存的closed/invite-only/open继续生效。注册closed时登录/恢复仍可达；invite-only显示站点邀请码，不能用群邀请替代。
+
+2026-09-12登录规则：按服务端来源IP与小写用户名组成的匿名摘要，在SQLite有界rate_buckets中记录连续凭据失败；不存在的用户名与错误密码采用相同计数规则。前4次失败返回LOGIN_FAILED，第5次失败开始返回401 LOGIN_CAPTCHA_REQUIRED。此后的请求缺少验证码时在密码验证前拒绝；错误/过期验证码返回CAPTCHA_INVALID，不增加密码失败次数。完整登录（含必要第二因素）成功时，在会话创建的同一事务中清零；最后一次密码失败15分钟后过期。固定64个锁槽串行同一来源/用户名的门槛检查与密码结果，防止并发请求同时越过第5次。验证码状态不依赖前端或匿名Cookie；原IP/用户名限流保留。注册和恢复接口的验证码字段仍强制必填。旧客户端主动附带验证码时仍验证并消费，不改变验证码单次消费语义。
 
 M7补充：`account.delete`再认证凭据通常按5分钟有效期消费；注销一经提交，仅原会话与该次已消费凭据可在冷静期内重取原注销回执，不因此恢复登录权限。恢复账号会立即废除该回执。其他请求在会话失效后仍按原鉴权拒绝，注销核对无法确认时返回403 `DELETION_UNCONFIRMED`，客户端保留本机处理选择与内容。
 

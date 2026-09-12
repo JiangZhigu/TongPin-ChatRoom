@@ -35,7 +35,7 @@ def main():
     sub.add_parser('recover-admin', help='Offline host-only interactive recovery of an existing administrator; reasons, new password and verified authenticator required.')
     policy = sub.add_parser(
         "registration",
-        help="Set local registration access. Production remains closed unless explicitly configured.",
+        help="Set local registration access. Production changes to open use audited administrator configuration.",
     )
     policy.add_argument("mode", choices=["closed", "invite-only", "open"])
     policy.add_argument("--reason", required=True)

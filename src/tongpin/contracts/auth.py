@@ -17,9 +17,11 @@ class RegisterInput(CaptchaInput):
     siteInvite: str = Field(default="", max_length=256)
 
 
-class LoginInput(CaptchaInput):
+class LoginInput(InputModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(max_length=128)
+    captchaId: str = Field(default="", max_length=128)
+    captchaAnswer: str = Field(default="", max_length=32)
     remember: bool = False
     secondFactor: str = Field(default="", max_length=100)
     admin: bool = False
