@@ -5,6 +5,7 @@ import '@testing-library/jest-dom/vitest';
 import { App } from './App';
 import { ConversationList } from './components/ConversationList';
 import { Composer } from './components/Composer';
+import { dismissInvitation } from './lib/invitation';
 import { api, setCsrfToken } from './lib/api';
 import type { UserView } from './auth-types';
 import { StrictMode } from 'react';
@@ -30,7 +31,7 @@ vi.mock('./lib/chat-client', () => ({
   },
 }));
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); setCsrfToken(''); window.history.replaceState({}, '', '/'); });
+afterEach(() => { cleanup(); dismissInvitation(); vi.unstubAllGlobals(); setCsrfToken(''); window.history.replaceState({}, '', '/'); });
 function healthyResponse(url: string) {
   const data = url === '/health/ready' ? { status: 'ready', version: '0.1.0', features: { accounts: false } } : { accountsEnabled: false, registrationMode: 'closed' };
   return Promise.resolve({ ok: true, json: async () => ({ data, requestId: 'test-only' }) });
@@ -115,6 +116,7 @@ describe('M7 current-account restrictions', () => {
 describe('M2 bootstrap StrictMode', () => {
   it.each(['login', 'register'] as const)('creates one anonymous flow and submits its CSRF token through the actual %s form', async (operation) => {
     let bootstrapCalls = 0;
+    window.history.replaceState({ entry: 'auth' }, '', '/register?unused=1#section');
     let cookieFlowToken = '';
     const submissions: { path: string; csrfToken: string | null; body: Record<string, unknown> }[] = [];
     vi.stubGlobal('fetch', vi.fn((url: string, options: RequestInit = {}) => {
@@ -135,8 +137,8 @@ describe('M2 bootstrap StrictMode', () => {
       throw new Error(`Unexpected test request: ${url}`);
     }));
     render(<StrictMode><App /></StrictMode>);
-    await screen.findByRole('heading', { name: '欢迎回来' });
-    if (operation === 'register') fireEvent.click(screen.getByRole('button', { name: '注册' }));
+    await screen.findByRole('heading', { name: '创建你的账号' });
+    if (operation === 'login') fireEvent.click(screen.getByRole('button', { name: '登录' }));
     if (operation === 'register') await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled());
     expect(bootstrapCalls).toBe(1);
     fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'strict_mode_user' } });
@@ -148,10 +150,17 @@ describe('M2 bootstrap StrictMode', () => {
       fireEvent.click(screen.getByRole('checkbox', { name: '我已阅读并同意上述服务条款与隐私说明' }));
       fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
       expect(await screen.findByRole('heading', { name: '保存你的恢复码' })).toBeInTheDocument();
+      expect(window.location.pathname + window.location.search + window.location.hash).toBe('/register?unused=1#section');
+      expect(screen.getByRole('button', { name: '已保存，继续' })).toBeDisabled();
+      fireEvent.click(screen.getByRole('checkbox', { name: '我已将恢复码保存到安全的位置' }));
+      fireEvent.click(screen.getByRole('button', { name: '已保存，继续' }));
+      await screen.findByRole('heading', { name: '欢迎来到同频' });
     } else {
       fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
       expect(await screen.findByRole('heading', { name: '欢迎来到同频' })).toBeInTheDocument();
     }
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/#section');
+    expect(window.history.state).toEqual({ entry: 'auth' });
     expect(submissions).toHaveLength(1);
     expect(submissions[0]).toMatchObject({ path: `/api/v1/auth/${operation}`, csrfToken: 'anonymous-flow-1-csrf', body: { username: 'strict_mode_user', ...(operation === 'register' ? { captchaId: 'expiry-captcha', captchaAnswer: 'ABCDEF' } : {}) } });
     expect(bootstrapCalls).toBe(1);
@@ -159,6 +168,62 @@ describe('M2 bootstrap StrictMode', () => {
   });
 });
 
+
+describe('authenticated registration URL', () => {
+  it('leaves an authenticated administrator entry unchanged', async () => {
+    window.history.replaceState({}, '', '/admin?unused=1#section');
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply(bootstrapData(expiryUser)) : failureReply('FORBIDDEN')));
+    render(<App />); await screen.findByRole('heading', { name: '无法进入管理后台' });
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/admin?unused=1#section');
+  });
+  it.each(['/register', '/register/'])('canonicalizes an existing authenticated session at %s', async (path) => {
+    window.history.replaceState({ retained: true }, '', `${path}?unused=1#section`);
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply(bootstrapData(expiryUser)) : dataReply({ items: [] })));
+    render(<StrictMode><App /></StrictMode>); await screen.findByRole('heading', { name: '欢迎来到同频' });
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/#section');
+    expect(window.history.state).toEqual({ retained: true });
+  });
+  it('keeps a consumed group invitation available without restoring its token to the URL', async () => {
+    // jsdom lacks native dialog methods; preserve the real invitation component.
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } });
+    Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } });
+    const token = 'registration_invitation_token_12345678901234567890';
+    window.history.replaceState({}, '', `/register?unused=1#invite=${token}`);
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply(bootstrapData(expiryUser)) : url.endsWith('/group-invites/preview') ? dataReply({ inviteId: 'invite', conversationId: 'group', name: '归一后邀请', description: '继续查看邀请', memberCount: 2, requiresApproval: true, expiresAt: Date.now() + 100000, maxUses: 10, remaining: 10, state: 'available', application: null }) : dataReply({ items: [] })));
+    render(<App />); await screen.findByText('继续查看邀请');
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/');
+    expect(screen.getByRole('button', { name: '确认申请加入' })).toBeInTheDocument();
+  });
+  it('does not canonicalize a recovery completion before a new login', async () => {
+    window.history.replaceState({}, '', '/register?unused=1#section');
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply({ ...bootstrapData(null), registrationMode: 'open' }) : url.endsWith('/captcha') ? captchaReply() : dataReply({ recovered: true })));
+    render(<App />); await screen.findByRole('heading', { name: '创建你的账号' });
+    fireEvent.click(screen.getByRole('button', { name: '忘记密码？使用恢复码找回' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled());
+    for (const [label, value] of [['用户名', 'recover_user'], ['新密码', 'a safe recovery password'], ['确认密码', 'a safe recovery password'], ['账号恢复码', 'TEST-CODE'], ['图形验证码', 'ABCDEF']]) fireEvent.change(screen.getByLabelText(label, { exact: true }), { target: { value } });
+    fireEvent.click(screen.getByRole('button', { name: '重置密码' }));
+    await screen.findByText('密码已重置，旧会话已注销。请使用新密码登录。');
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/register?unused=1#section');
+  });
+  it('ignores a late login success after its form was invalidated', async () => {
+    window.history.replaceState({}, '', '/register?unused=1#section');
+    const login = deferred<Awaited<ReturnType<typeof dataReply>>>(); let loginStarted = false;
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (url.endsWith('/bootstrap')) return dataReply({ ...bootstrapData(null), registrationMode: 'open' });
+      if (url.endsWith('/captcha')) return captchaReply();
+      if (url.endsWith('/auth/login')) { loginStarted = true; return login.promise; }
+      return failureReply();
+    }));
+    render(<App />); await screen.findByRole('heading', { name: '创建你的账号' }); fireEvent.click(screen.getByRole('button', { name: '登录' }));
+    fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'late_user' } }); fireEvent.change(screen.getByLabelText('密码', { exact: true }), { target: { value: 'a safe login password' } });
+    fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!); await waitFor(() => expect(loginStarted).toBe(true));
+    await act(async () => { await api('/api/v1/account/sessions').catch(() => undefined); });
+    await screen.findByRole('heading', { name: '创建你的账号' });
+    await act(async () => login.resolve(await dataReply({ user: expiryUser, csrfToken: 'late', expiresAt: 1 })));
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/register?unused=1#section');
+    expect(screen.queryByRole('heading', { name: '欢迎来到同频' })).not.toBeInTheDocument();
+  });
+});
 describe('M2 auth expiry', () => {
   it.each(['read', 'write', 'logout'] as const)('clears settings identity after AUTH_REQUIRED on %s', async (operation) => {
     let bootstrapCalls = 0;
@@ -234,6 +299,7 @@ describe('M2 auth expiry', () => {
     expect(screen.queryByRole('heading', { name: '欢迎回来' })).not.toBeInTheDocument(); expect(bootstrapCalls).toBe(1);
   });
   it('ignores old bootstrap success and coalesces repeated expiry notifications while refreshing', async () => {
+    window.history.replaceState({}, '', '/register?unused=1#section');
     const initial = deferred<Awaited<ReturnType<typeof dataReply>>>(); const refreshed = deferred<Awaited<ReturnType<typeof dataReply>>>(); let bootstrapCalls = 0;
     vi.stubGlobal('fetch', vi.fn((url: string) => {
       if (url.endsWith('/bootstrap')) return ++bootstrapCalls === 1 ? initial.promise : refreshed.promise;
@@ -248,9 +314,10 @@ describe('M2 auth expiry', () => {
     await waitFor(() => expect(bootstrapCalls).toBe(2));
     expect(screen.getByRole('heading', { name: '正在连接同频' })).toBeInTheDocument();
     expect(screen.queryByText(expiryUser.nickname)).not.toBeInTheDocument();
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe('/register?unused=1#section');
     await act(async () => refreshed.resolve(await dataReply(bootstrapData(null))));
-    expect(await screen.findByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '欢迎回来' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '创建你的账号' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '创建你的账号' })).toBeInTheDocument();
     expect(screen.queryByText(expiryUser.nickname)).not.toBeInTheDocument();
   });
   it('does not let a late profile success restore the expired user', async () => {

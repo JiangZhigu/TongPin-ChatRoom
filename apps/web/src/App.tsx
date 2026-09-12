@@ -61,6 +61,12 @@ export function App() {
   return <AccountApplication admin={pathname === '/admin' || pathname.startsWith('/admin/')} />;
 }
 
+function canonicalizeAuthenticatedRegistration(admin: boolean) {
+  if (!admin && window.location.pathname.replace(/\/+$/, '') === '/register') {
+    window.history.replaceState(window.history.state, '', `/${window.location.hash}`);
+  }
+}
+
 function AccountApplication({ admin }: { admin: boolean }) {
   const [bootstrap, setBootstrap] = useState<BootstrapView | null>(null); const [error, setError] = useState('');
   const [showLocalContent, setShowLocalContent] = useState(false);
@@ -80,13 +86,16 @@ function AccountApplication({ admin }: { admin: boolean }) {
     // Removing bootstrap unmounts all identity-bearing and sensitive forms immediately.
     setBootstrap(null); setError('');
     void fetchBootstrap().then((data) => {
-      if (mounted.current && generation.current === requestGeneration) setBootstrap(data as BootstrapView);
+      if (mounted.current && generation.current === requestGeneration) {
+        if (data.accountsEnabled && data.user) canonicalizeAuthenticatedRegistration(admin);
+        setBootstrap(data as BootstrapView);
+      }
     }).catch((cause) => {
       if (mounted.current && generation.current === requestGeneration) setError(cause instanceof Error ? cause.message : '暂时无法连接服务');
     }).finally(() => {
       if (generation.current === requestGeneration) expiryRefreshPending.current = false;
     });
-  }, []);
+  }, [admin]);
   useEffect(() => {
     mounted.current = true;
     const unsubscribe = onAuthExpired(() => {
@@ -101,7 +110,10 @@ function AccountApplication({ admin }: { admin: boolean }) {
   const viewGeneration = generation.current;
   function signedOut() { if (mounted.current && generation.current === viewGeneration) reloadBootstrap(); }
   function authenticated(result: AuthResult) {
-    if (mounted.current && generation.current === viewGeneration) setBootstrap((current) => current ? { ...current, user: result.user, csrfToken: result.csrfToken } : current);
+    if (mounted.current && generation.current === viewGeneration && bootstrap?.accountsEnabled) {
+      canonicalizeAuthenticatedRegistration(admin);
+      setBootstrap((current) => current ? { ...current, user: result.user, csrfToken: result.csrfToken } : current);
+    }
   }
   function userChanged(updated: UserView) {
     if (mounted.current && generation.current === viewGeneration) setBootstrap((current) => current ? { ...current, user: updated } : current);
