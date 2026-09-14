@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from test_auth import issue_manual_reset
 from test_files import image_bytes, upload
 from test_groups import befriend, create, join
 from test_interactions import ORIGIN, direct, error, send
@@ -26,7 +27,7 @@ def credentials(rt, actor):
             "UPDATE users SET password_hash=? WHERE id=?",
             (rt.auth.security.passwords.hash(PASSWORD), actor.id),
         )
-        codes = rt.auth.security.recovery_codes(conn, actor.id)
+    codes = [issue_manual_reset(rt, actor.id)]
     return rt.auth.load_hash(actor.session["token_hash"]), codes
 
 

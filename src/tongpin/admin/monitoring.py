@@ -370,7 +370,7 @@ class MonitoringAdmin:
                 else:
                     continue
                 admins = conn.execute(
-                    "SELECT id FROM users WHERE site_role='super_admin' AND status='active' AND totp_secret IS NOT NULL AND must_change_password=0 LIMIT 100"
+                    "SELECT id FROM users WHERE site_role='super_admin' AND status='active' AND must_change_password=0 LIMIT 100"
                 ).fetchall()
                 for user in admins:
                     self.runtime.events.notify(conn, user["id"], "admin.alert", aid)

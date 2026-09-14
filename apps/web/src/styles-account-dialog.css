@@ -75,3 +75,7 @@
  .account-settings-workspace .settings-content-panel .recovery-code-grid { grid-template-columns:1fr; }
  .account-settings-workspace .settings-content-panel .admin-enrollment-secret code { overflow-wrap:anywhere; }
 }
+
+.message-sound-volume { display:flex; flex-direction:column; gap:8px; margin:18px 0; font-size:13px; }
+.message-sound-volume input { width:100%; max-width:320px; min-height:24px; margin:0; accent-color:#008fed; }
+.account-settings-workspace .settings-content-panel>.message-sound-settings+.settings-card { margin-top:26px; padding-top:24px; border-top:1px solid #e7edf3; }

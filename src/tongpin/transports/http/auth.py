@@ -281,4 +281,5 @@ def security_events():
 
 @auth_blueprint.get("/api/v1/admin/auth")
 def admin_auth():
-    return success({"user": public_user(principal(admin=True).user), "secondFactorRequired": True})
+    user = public_user(principal(admin=True).user)
+    return success({"user": user, "secondFactorRequired": False})

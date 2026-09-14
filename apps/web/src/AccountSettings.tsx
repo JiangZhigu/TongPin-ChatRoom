@@ -1,5 +1,6 @@
 import { AdminEnrollmentPanel } from './AdminEnrollmentPanel';
 import { AccountDeletion } from './AccountDeletion';
+import { MessageSoundSettings } from './components/MessageSoundSettings';
 import { browserNotificationStatus, enableBrowserNotifications, disableBrowserNotifications } from './lib/browser-notifications';
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { LogOut, RefreshCw, ShieldCheck } from 'lucide-react';
@@ -7,14 +8,13 @@ import { api, APIError } from './lib/api';
 import type { UserView } from './auth-types';
 import { FormField } from './components/FormField';
 import { Modal } from './components/Modal';
-import { RecoveryCodesPanel } from './components/RecoveryCodesPanel';
 import './styles-account-dialog.css';
 
 type SettingsSection = 'privacy' | 'notifications' | 'restrictions' | 'enrollment' | 'sessions' | 'password' | 'recovery' | 'events' | 'reports' | 'deletion';
 
 interface SessionView { id: string; device: string; createdAt: number; lastSeenAt: number; expiresAt: number; current: boolean }
 interface SecurityEventView { id: string; action: string; createdAt: number; device: string; result: string }
-type SensitiveAction = { kind: 'revoke'; session: SessionView } | { kind: 'password'; password: string } | { kind: 'codes' };
+type SensitiveAction = { kind: 'revoke'; session: SessionView } | { kind: 'password'; password: string };
 const formatTime = (time: number) => new Date(time).toLocaleString('zh-CN');
 const messageOf = (cause: unknown) => {
   if (cause instanceof APIError) return [cause.message, ...Object.values(cause.fieldErrors || {}), cause.retryAfterMs ? `请在 ${Math.ceil(cause.retryAfterMs / 1000)} 秒后重试。` : ''].filter(Boolean).join(' ');
@@ -66,8 +66,8 @@ export function AccountSettings({ user, onUserChange, onSignedOut, onLogout, onO
     window.addEventListener('tongpin:account-changed', accountChanged); verifyAccount();
     return () => { active = false; revision++; controller?.abort(); window.removeEventListener('tongpin:account-changed', accountChanged); };
   }, [user.id, reload]);
-  const [reauthPassword, setReauthPassword] = useState(''); const [factor, setFactor] = useState('');
-  const [reauthError, setReauthError] = useState(''); const [codes, setCodes] = useState<string[] | null>(null);
+  const [reauthPassword, setReauthPassword] = useState('');
+  const [reauthError, setReauthError] = useState('');
   useEffect(() => {
     const controller = new AbortController(); setSessions(null); setEvents(null); setSessionsError(''); setEventsError('');
     void api<{ items: SessionView[] }>('/api/v1/account/sessions', { signal: controller.signal }).then((data) => { if (!controller.signal.aborted) setSessions(data.items); }).catch((cause) => { if (!controller.signal.aborted) setSessionsError(messageOf(cause)); });
@@ -85,39 +85,37 @@ export function AccountSettings({ user, onUserChange, onSignedOut, onLogout, onO
     try { if (onLogout) await onLogout(); else await api('/api/v1/auth/logout', { method: 'POST', body: {} }); onSignedOut(); }
     catch (cause) { if (cause instanceof Error && cause.name === 'LogoutCancelled') cancelledLogoutUser.current = user.id; else captureError(cause); } finally { setBusy(false); }
   }
-  function begin(action: SensitiveAction) { setPending(action); setReauthPassword(''); setFactor(''); setReauthError(''); }
+  function begin(action: SensitiveAction) { setPending(action); setReauthPassword(''); setReauthError(''); }
   async function confirmAction(event: FormEvent) {
     event.preventDefault(); if (!pending || busy) return; setBusy(true); setReauthError(''); setNotice('');
-    const action = pending.kind === 'revoke' ? `revoke_session:${pending.session.id}` : pending.kind === 'password' ? 'change_password' : 'recovery_codes';
+    const action = pending.kind === 'revoke' ? `revoke_session:${pending.session.id}` : 'change_password';
     try {
-      const { reauthToken } = await api<{ reauthToken: string }>('/api/v1/auth/reauth', { method: 'POST', body: { password: reauthPassword, action, ...(factor ? { secondFactor: factor } : {}) } });
+      const { reauthToken } = await api<{ reauthToken: string }>('/api/v1/auth/reauth', { method: 'POST', body: { password: reauthPassword, action } });
       if (pending.kind === 'revoke') { await api(`/api/v1/account/sessions/${encodeURIComponent(pending.session.id)}`, { method: 'DELETE', body: { reauthToken } }); if (pending.session.current) onSignedOut(); else { setReload((value) => value + 1); setNotice('该设备会话已撤销。'); } }
       else if (pending.kind === 'password') { await api('/api/v1/account/password', { method: 'POST', body: { password: pending.password, reauthToken } }); onSignedOut(); }
-      else { const data = await api<{ recoveryCodes: string[] }>('/api/v1/account/recovery-codes', { method: 'POST', body: { reauthToken } }); setCodes(data.recoveryCodes); setReload((value) => value + 1); }
-      setPending(null); setReauthPassword(''); setFactor(''); setPassword(''); setConfirmation('');
+      setPending(null); setReauthPassword(''); setPassword(''); setConfirmation('');
     } catch (cause) { setReauthError(messageOf(cause)); }
     finally { setBusy(false); }
   }
-  const interactionBusy = busy || notificationBusy || enrollmentBusy || deletionOpen || !!pending || !!codes;
+  const interactionBusy = busy || notificationBusy || enrollmentBusy || deletionOpen || !!pending;
   useEffect(() => { onBusyChange?.(interactionBusy); return () => onBusyChange?.(false); }, [interactionBusy, onBusyChange]);
-  const recoveryDialog = codes ? <Modal open title="新恢复码已生成" dismissible={false} onClose={() => undefined}><RecoveryCodesPanel codes={codes} onConfirm={() => { setCodes(null); setNotice('新恢复码已生成，旧恢复码已全部失效。'); }} /></Modal> : null;
 
   const panels: Record<SettingsSection, ReactNode> = {
     restrictions: <section className="settings-card"><h2>账号使用限制</h2><p>以下限制由站点管理设置，实际操作以服务器校验为准。</p>{(accountCheck.userId !== user.id || accountCheck.pending) && <p role="status">正在核对当前账号限制…</p>}{accountCheck.userId === user.id && accountCheck.error && <div role="alert" className="form-error"><p>当前账号限制核对失败：{accountCheck.error}</p><p>下方如有信息，仅代表上次已知状态。</p><button className="secondary-button" onClick={() => setReload((value) => value + 1)}>重新核对账号限制</button></div>}{restrictions && <><ul><li>上传：{restrictions.uploadDisabled ? '已限制' : '未限制'}</li><li>创建群聊：{restrictions.groupCreationDisabled ? '已限制' : '未限制'}</li></ul><p>限制理由：{restrictions.reason || '无'}</p><p>全站禁言：{restrictions.mutedUntil === null ? '未禁言' : `至 ${formatTime(restrictions.mutedUntil)}`}</p><p>禁言理由：{restrictions.muteReason || '无'}</p></>}{!restrictions && accountCheck.userId === user.id && !accountCheck.pending && !accountCheck.error && <p>当前账号没有额外限制信息。</p>}</section>,
     privacy: <section className="settings-card"><h2>隐私与通知偏好</h2><p className="field-hint">偏好保存到账号，用于聊天中的在线状态、阅读回执和消息提醒。</p>{([{ key: 'invisible', label: '隐身状态', help: '不向其他用户展示在线状态。' }, { key: 'readReceipts', label: '阅读回执', help: '允许向私聊对方展示真实阅读进度。' }, { key: 'doNotDisturb', label: '消息免打扰', help: '减少消息提醒。' }] as const).map(({ key, label, help }) => <label className="preference-row" key={key}><span><strong>{label}</strong><small>{help}</small></span><input type="checkbox" checked={user.preferences[key]} disabled={busy} onChange={(e) => void changePreference(key, e.target.checked)} /></label>)}</section>,
-    notifications: <section className="settings-card"><h2>浏览器通知</h2><p className="field-hint">只在你点击开启时请求浏览器权限。系统通知不显示消息正文；关闭页面后不保证提醒。账号免打扰仍优先。</p><p role="status">{!notificationStatus.supported ? '当前浏览器不支持系统通知，站内通知仍可用。' : notificationStatus.permission === 'denied' ? '浏览器已拒绝通知权限，请在浏览器网站设置中调整。站内通知不受影响。' : notificationStatus.enabled ? '本账号已开启浏览器通知。' : '本账号尚未开启浏览器通知。'}</p><button className="secondary-button" disabled={notificationBusy || !notificationStatus.supported || notificationStatus.permission === 'denied'} onClick={() => { if (notificationStatus.enabled) { disableBrowserNotifications(user.id); setNotificationStatus(browserNotificationStatus(user.id)); } else { setNotificationBusy(true); void enableBrowserNotifications(user.id).then(setNotificationStatus).catch((cause) => captureError(cause)).finally(() => setNotificationBusy(false)); } }}>{notificationBusy ? '等待浏览器授权…' : notificationStatus.enabled ? '关闭浏览器通知' : '开启浏览器通知'}</button></section>,
+    notifications: <><MessageSoundSettings userId={user.id} /><section className="settings-card"><h2>浏览器通知</h2><p className="field-hint">只在你点击开启时请求浏览器权限。系统通知不显示消息正文；关闭页面后不保证提醒。账号免打扰仍优先。</p><p role="status">{!notificationStatus.supported ? '当前浏览器不支持系统通知，站内通知仍可用。' : notificationStatus.permission === 'denied' ? '浏览器已拒绝通知权限，请在浏览器网站设置中调整。站内通知不受影响。' : notificationStatus.enabled ? '本账号已开启浏览器通知。' : '本账号尚未开启浏览器通知。'}</p><button className="secondary-button" disabled={notificationBusy || !notificationStatus.supported || notificationStatus.permission === 'denied'} onClick={() => { if (notificationStatus.enabled) { disableBrowserNotifications(user.id); setNotificationStatus(browserNotificationStatus(user.id)); } else { setNotificationBusy(true); void enableBrowserNotifications(user.id).then(setNotificationStatus).catch((cause) => captureError(cause)).finally(() => setNotificationBusy(false)); } }}>{notificationBusy ? '等待浏览器授权…' : notificationStatus.enabled ? '关闭浏览器通知' : '开启浏览器通知'}</button></section></>,
     reports: onOpenReports && <section className="settings-card"><h2>举报与反馈</h2><p>查看你提交的举报和管理员处理反馈。</p><button className="secondary-button" onClick={onOpenReports}>我的举报</button></section>,
     deletion: onDeleted && <section className="settings-card"><h2>注销账号</h2><p>先查看实际影响和保留期限，再决定是否验证身份并注销。</p><button className="secondary-button danger-text" disabled={busy} onClick={() => setDeletionOpen(true)}>查看注销影响</button></section>,
     sessions: <section className="settings-card"><div className="card-heading"><h2>登录设备</h2><button className="icon-button" aria-label="刷新设备和安全记录" disabled={busy} onClick={() => setReload((value) => value + 1)}><RefreshCw size={18} /></button></div><p className="field-hint">撤销设备需要再次验证身份，该设备将需要重新登录。</p>{sessionsError ? <p className="form-error" role="alert">{sessionsError}</p> : sessions === null ? <p role="status">正在加载设备…</p> : sessions.length === 0 ? <p className="field-hint">暂无可显示的登录设备。</p> : <ul className="security-list">{sessions.map((session) => <li key={session.id}><div><strong>{session.device || '未知设备'}</strong>{session.current && <span className="current-device">当前设备</span>}<small>登录：{formatTime(session.createdAt)}</small><small>最近活动：{formatTime(session.lastSeenAt)}</small></div><button className="text-button danger-text" disabled={busy} onClick={() => begin({ kind: 'revoke', session })}>撤销{session.current ? '当前会话' : '会话'}</button></li>)}</ul>}</section>,
     password: <section className="settings-card"><h2>修改密码</h2><p className="warning-note">修改后所有设备都会退出登录，包括当前设备。</p><form onSubmit={(event) => { event.preventDefault(); if (password !== confirmation) { setError('两次输入的新密码不一致。'); return; } begin({ kind: 'password', password }); }}><fieldset disabled={busy}><FormField label="新密码" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required hint="8–128 个字符，支持空格与中文。" /><FormField label="确认新密码" type="password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} autoComplete="new-password" required /><button className="secondary-button">验证身份并修改密码</button></fieldset></form></section>,
-    recovery: <section className="settings-card"><h2>账号恢复码</h2><p>重新生成后，原来保存的全部账号恢复码立即失效。新恢复码只显示一次。</p><button className="secondary-button" disabled={busy} onClick={() => begin({ kind: 'codes' })}><ShieldCheck size={17} />验证身份并重新生成</button></section>,
+    recovery: <section className="settings-card"><h2>找回密码</h2><p>忘记密码时请联系管理员核实身份。管理员会提供一次性重置凭据，请在登录页的“忘记密码”入口设置新密码。无需提前生成或保存恢复码。</p></section>,
     events: <section className="settings-card"><h2>近期安全记录</h2>{eventsError ? <p className="form-error" role="alert">{eventsError}</p> : events === null ? <p role="status">正在加载记录…</p> : events.length === 0 ? <p className="field-hint">暂无可显示的安全记录。</p> : <ul className="security-list">{events.map((item) => <li key={item.id}><div><strong>{item.action}</strong><small>{item.device || '未知设备'} · {formatTime(item.createdAt)}</small></div><span>{item.result}</span></li>)}</ul>}</section>,
     enrollment: <AdminEnrollmentPanel user={user} onUserChange={onUserChange} onBusyChange={setEnrollmentBusy} />,
   };
   const groups: { label: string; items: { id: SettingsSection; label: string }[] }[] = [
     { label: '使用偏好', items: [{ id: 'privacy', label: '隐私与通知偏好' }, { id: 'notifications', label: '浏览器通知' }] },
     { label: '账号与权限', items: [{ id: 'restrictions', label: '账号使用限制' }, ...(user.siteRole !== 'super_admin' || enrollmentBusy ? [{ id: 'enrollment' as const, label: '管理权限邀请与绑定' }] : [])] },
-    { label: '安全', items: [{ id: 'sessions', label: '登录设备' }, { id: 'password', label: '修改密码' }, { id: 'recovery', label: '账号恢复码' }, { id: 'events', label: '近期安全记录' }] },
+    { label: '安全', items: [{ id: 'sessions', label: '登录设备' }, { id: 'password', label: '修改密码' }, { id: 'recovery', label: '找回密码' }, { id: 'events', label: '近期安全记录' }] },
     { label: '帮助与账号', items: [...(onOpenReports ? [{ id: 'reports' as const, label: '举报与反馈' }] : []), ...(onDeleted ? [{ id: 'deletion' as const, label: '注销账号' }] : [])] },
   ];
   const availableGroups = groups.filter((group) => group.items.length > 0);
@@ -146,7 +144,6 @@ export function AccountSettings({ user, onUserChange, onSignedOut, onLogout, onO
       </div>
     </div>
     {deletionOpen && onDeleted && <AccountDeletion onGetLocalSummary={onGetLocalSummary} user={user} onClose={() => setDeletionOpen(false)} onDeleted={onDeleted} onBeforeDelete={onBeforeDelete} onDeleteFailed={onDeleteFailed} onPreserveAndSignOut={onPreserveAndSignOut} />}
-    <Modal open={!!pending} title="再次验证身份" dismissible={!busy} onClose={() => { if (!busy) { setPending(null); setReauthPassword(''); setFactor(''); } }}><p>{pending?.kind === 'password' ? '确认修改密码后，全部设备会话将被注销。' : pending?.kind === 'revoke' ? `即将撤销「${pending.session.device || '未知设备'}」的会话。` : '确认后将生成新恢复码，旧恢复码立即失效。'}</p><form onSubmit={(event) => void confirmAction(event)}><fieldset disabled={busy}><FormField label="当前密码" type="password" value={reauthPassword} onChange={(e) => setReauthPassword(e.target.value)} autoComplete="current-password" required /><FormField label="动态码或第二因素恢复码（管理员必填）" value={factor} onChange={(e) => setFactor(e.target.value)} autoComplete="off" /></fieldset>{reauthError && <p className="form-error" role="alert">{reauthError}</p>}<button className="primary-button" disabled={busy}>{busy ? '正在验证并处理…' : '确认并继续'}</button></form></Modal>
-    {recoveryDialog}
+    <Modal open={!!pending} title="再次验证身份" dismissible={!busy} onClose={() => { if (!busy) { setPending(null); setReauthPassword(''); } }}><p>{pending?.kind === 'password' ? '确认修改密码后，全部设备会话将被注销。' : pending?.kind === 'revoke' ? `即将撤销「${pending.session.device || '未知设备'}」的会话。` : '请确认本次操作。'}</p><form onSubmit={(event) => void confirmAction(event)}><fieldset disabled={busy}><FormField label="当前密码" type="password" value={reauthPassword} onChange={(e) => setReauthPassword(e.target.value)} autoComplete="current-password" required /></fieldset>{reauthError && <p className="form-error" role="alert">{reauthError}</p>}<button className="primary-button" disabled={busy}>{busy ? '正在验证并处理…' : '确认并继续'}</button></form></Modal>
   </div>;
 }

@@ -206,7 +206,6 @@ class AnnouncementsAdmin:
                 not creator
                 or creator["status"] != "active"
                 or creator["site_role"] != "super_admin"
-                or not creator["totp_secret"]
                 or creator["must_change_password"]
             ):
                 conn.execute(

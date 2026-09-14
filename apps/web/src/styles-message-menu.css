@@ -1,0 +1,17 @@
+.message-body { position:relative; min-width:0; }
+.message-body > .message-actions { position:absolute; top:8px; left:100%; padding-left:6px; max-width:none; }
+.message-body > .message-actions.is-own { left:auto; right:100%; padding-left:0; padding-right:6px; }
+.message-menu-toggle { display:flex; align-items:center; justify-content:center; width:26px; height:28px; min-height:0; padding:0; border:1px solid transparent; border-radius:7px; background:transparent; color:#8495a5; opacity:0; pointer-events:none; transition:opacity .12s, background .12s; }
+.message-body:hover .message-menu-toggle, .message-body:focus-within .message-menu-toggle, .message-menu-toggle[aria-expanded=true] { opacity:1; pointer-events:auto; }
+.message-menu-toggle:hover, .message-menu-toggle[aria-expanded=true] { background:#e7eff6; color:#397da7; }
+.message-menu-toggle:focus-visible { opacity:1; outline:2px solid #168ed0; outline-offset:2px; }
+.message-action-menu { position:fixed; z-index:90; width:158px; max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); overflow:auto; padding:5px; border:1px solid #dfe8ef; border-radius:11px; background:#fff; color:#34485c; box-shadow:0 7px 24px #24465b24; }
+.message-action-menu > button { display:block; width:100%; min-height:34px; padding:7px 10px; border:0; border-radius:6px; background:transparent; color:inherit; font-size:12px; line-height:1.5; text-align:left; }
+.message-action-menu > button:hover, .message-action-menu > button:focus-visible { background:#eef6fc; outline:none; color:#157fbb; }
+.message-action-menu > button.danger-text { color:#ad6759; }
+.message-action-menu > button.danger-text:hover, .message-action-menu > button.danger-text:focus-visible { background:#fff1ed; }
+.message-action-menu > button:disabled { opacity:.5; cursor:wait; }
+.message-menu-error { margin:5px; color:#aa5d4b; font-size:11px; overflow-wrap:anywhere; }
+@media (max-width:720px) { .chat-workspace .message .message-content { max-width:calc(100% - 82px); } }
+@media (hover:none), (pointer:coarse) { .message-menu-toggle { opacity:1; pointer-events:auto; width:32px; height:34px; } }
+@media (prefers-reduced-motion:reduce) { .message-menu-toggle { transition:none; } }

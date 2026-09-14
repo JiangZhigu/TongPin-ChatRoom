@@ -6,7 +6,6 @@ import './styles-files.css';
 
 export const fileSize = (bytes: number) => bytes === 0 ? '0 B' : bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MiB` : `${Math.max(1, Math.ceil(bytes / 1024))} KiB`;
 export const attachmentError = (cause: unknown) => cause instanceof Error ? cause.message : '文件操作失败，请重试。';
-const localPhase = { preparing: '本机准备', uploading: '上传中', checking: '校验中', ready: '已就绪', failed: '处理失败' };
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 export function Avatar({ url, label, className = '' }: { url?: string | null; label: string; className?: string }) {
@@ -37,7 +36,7 @@ function LocalFile({ file, onRemove, beforeDownload, allowDownload }: { file: Lo
     return () => URL.revokeObjectURL(next);
   }, [file.blob, file.mime]);
   async function saveCopy() { setBusy(true); setError(''); try { await beforeDownload?.(); download(file.blob, file.name); } catch (cause) { setError(attachmentError(cause)); } finally { setBusy(false); } }
-  return <li className="local-file"><div className="file-thumbnail">{url ? <img src={url} alt="" /> : <FileText size={24} />}</div><div className="file-copy"><strong>{file.name}</strong><small>{fileSize(file.blob.size)} · {file.phase ? localPhase[file.phase] : '本机附件'}</small>{file.mime === 'image/gif' && <small>本机 GIF · 发送后显示静态预览</small>}{file.error && <p className="field-error">{file.error}</p>}{error && <p role="alert" className="field-error">{error}</p>}</div>{allowDownload && <button type="button" className="icon-button" disabled={busy} aria-label={`下载本机副本 ${file.name}`} onClick={() => void saveCopy()}><Download size={17} /></button>}{onRemove && <button type="button" className="icon-button" aria-label={`移除附件 ${file.name}`} onClick={onRemove}><X size={17} /></button>}</li>;
+  return <li className={`local-file ${file.mime === 'image/gif' ? 'animated-local-file' : ''}`}><div className="file-thumbnail">{url ? <img src={url} alt={file.name} /> : <FileText size={24} />}</div><div className="file-copy"><strong>{file.name}</strong><small>{fileSize(file.blob.size)}</small>{file.error && <p className="field-error">{file.error}</p>}{error && <p role="alert" className="field-error">{error}</p>}</div>{allowDownload && <button type="button" className="icon-button" disabled={busy} aria-label={`下载本机副本 ${file.name}`} onClick={() => void saveCopy()}><Download size={17} /></button>}{onRemove && <button type="button" className="icon-button" aria-label={`移除附件 ${file.name}`} onClick={onRemove}><X size={17} /></button>}</li>;
 }
 
 export function LocalAttachmentList({ files, onRemove, beforeDownload, allowDownload = false }: { files: LocalAttachment[]; onRemove?: (id: string) => void; beforeDownload?: () => Promise<void>; allowDownload?: boolean }) {
@@ -52,12 +51,14 @@ function ServerFile({ file }: { file: Attachment }) {
   const access = useRef({ key: accessKey, revision: 0, available });
   if (access.current.key !== accessKey) access.current = { key: accessKey, revision: access.current.revision + 1, available };
   else access.current.available = available;
-  const previewAvailable = available && !!file.thumbnailUrl && !!file.previewUrl;
+  const animated = file.mime === 'image/gif' || (file.frameCount || 0) > 1;
+  const thumbnailUrl = animated ? file.contentUrl : file.thumbnailUrl;
+  const previewUrl = animated ? file.contentUrl : file.previewUrl;
+  const previewAvailable = available && !!thumbnailUrl && !!previewUrl;
   useEffect(() => {
     controller.current?.abort(); controller.current = null; setBusy(false); setPreview(false); setError(''); setImageError(false);
   }, [accessKey, file.thumbnailUrl, file.previewUrl]);
   useEffect(() => () => { controller.current?.abort(); controller.current = null; }, []);
-  const animated = file.mime === 'image/gif' || (file.frameCount || 0) > 1;
   async function save() {
     if (!access.current.available || controller.current) return;
     const requestRevision = access.current.revision; const contentUrl = file.contentUrl;
@@ -77,11 +78,11 @@ function ServerFile({ file }: { file: Attachment }) {
     finally { clearTimeout(timeout); request.signal.removeEventListener('abort', abort); if (controller.current === request) { controller.current = null; setBusy(false); } }
   }
   return <div className={`server-file ${file.kind === 'image' ? 'image-attachment' : ''}`}>
-    {file.kind === 'image' && previewAvailable && !imageError && <button type="button" className="image-preview-button" aria-label={`预览图片 ${file.name}`} onClick={() => setPreview(true)}><img src={file.thumbnailUrl} alt={file.name} loading="lazy" onError={() => setImageError(true)} /></button>}
+    {file.kind === 'image' && previewAvailable && !imageError && <button type="button" className="image-preview-button" aria-label={`预览图片 ${file.name}`} onClick={() => setPreview(true)}><img src={thumbnailUrl} alt={file.name} loading="lazy" onError={() => setImageError(true)} /></button>}
     {imageError && <p className="field-error" role="alert">图片预览已不可访问，请刷新会话确认权限。</p>}
-    <div className="file-card"><span className="file-type-icon">{file.kind === 'image' ? <ImageIcon size={23} /> : <FileText size={23} />}</span><div className="file-copy"><strong>{file.name}</strong><small>{fileSize(file.size)}{animated ? ' · 静态预览，原件保留动画' : ''}</small>{file.error && <p className="field-error" role="alert">{file.error}</p>}{!available && !file.error && <p className="field-error" role="status">文件当前不可下载，请刷新会话确认状态。</p>}</div><button type="button" className="icon-button" aria-label={`${animated ? '下载原始动画' : '下载文件'} ${file.name}`} disabled={busy || !available} onClick={() => void save()}><Download size={18} /></button></div>
+    <div className="file-card"><span className="file-type-icon">{file.kind === 'image' ? <ImageIcon size={23} /> : <FileText size={23} />}</span><div className="file-copy"><strong>{file.name}</strong><small>{fileSize(file.size)}</small>{file.error && <p className="field-error" role="alert">{file.error}</p>}{!available && !file.error && <p className="field-error" role="status">文件当前不可下载，请刷新会话确认状态。</p>}</div><button type="button" className="icon-button" aria-label={`${animated ? '下载原始动画' : '下载文件'} ${file.name}`} disabled={busy || !available} onClick={() => void save()}><Download size={18} /></button></div>
     {error && <p className="field-error" role="alert">{error}</p>}
-    {preview && previewAvailable && <Modal open title={file.name} onClose={() => setPreview(false)}><div className="attachment-lightbox">{file.previewUrl && !imageError ? <img src={file.previewUrl} alt={file.name} onError={() => setImageError(true)} /> : <p role="alert">图片预览已不可访问。</p>}</div>{animated && <p className="field-hint">这是安全处理后的静态预览。下载原始文件可查看动画。</p>}<button type="button" className="secondary-button" disabled={busy || !available} onClick={() => void save()}>{busy ? '正在下载…' : '下载原件'}</button>{error && <p className="field-error" role="alert">{error}</p>}</Modal>}
+    {preview && previewAvailable && <Modal open title={file.name} onClose={() => setPreview(false)}><div className="attachment-lightbox">{previewUrl && !imageError ? <img src={previewUrl} alt={file.name} onError={() => setImageError(true)} /> : <p role="alert">图片预览已不可访问。</p>}</div><button type="button" className="secondary-button" disabled={busy || !available} onClick={() => void save()}>{busy ? '正在下载…' : '下载原件'}</button>{error && <p className="field-error" role="alert">{error}</p>}</Modal>}
   </div>;
 }
 

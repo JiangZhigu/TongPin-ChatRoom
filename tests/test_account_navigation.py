@@ -47,9 +47,9 @@ async def test_navigation_rechecks_admin_requirements_each_request(admin_app, mi
                 conn.execute("UPDATE users SET site_role='user' WHERE id=?", (actor.id,))
         response = await client.get(NAVIGATION)
         assert response.status_code == 200, response.text
-        assert response.json()["data"] == {"admin": None}
+        assert response.json()["data"] == {"admin": None if missing == "role" else {"href": "/admin"}}
         assert response.headers["Cache-Control"] == "no-store"
-        assert (await client.get("/api/v1/admin/auth")).status_code == 403
+        assert (await client.get("/api/v1/admin/auth")).status_code == (403 if missing == "role" else 200)
 
 
 @pytest.mark.parametrize("invalid", ["anonymous", "revoked", "expired", "idle"])

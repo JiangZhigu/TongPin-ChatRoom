@@ -108,6 +108,16 @@ async def login(client, username="friend_one", **extra):
     return response
 
 
+def issue_manual_reset(runtime, uid):
+    # Isolated fixture for an administrator-issued, expiring reset credential.
+    import secrets
+    credential = secrets.token_urlsafe(32)
+    with runtime.db.write() as conn:
+        conn.execute("INSERT INTO reset_credentials(digest,user_id,issued_by,expires_at,consumed_at,created_at) VALUES(?,?,NULL,?,NULL,?)",
+                     (runtime.auth.security.digest(credential, "manual-reset"), uid, now_ms() + 3600000, now_ms()))
+    return credential
+
+
 def seed_admin(runtime, username="site_admin"):
     service = runtime.auth
     secret = pyotp.random_base32()
@@ -134,7 +144,7 @@ async def test_registration_closed_open_unique_and_no_secret_leak(client, runnin
     first = await register(client)
     assert first.status_code == 201, first.text
     result = first.json()["data"]
-    assert len(result["recoveryCodes"]) == 8
+    assert "recoveryCodes" not in result
     cookie = first.headers["set-cookie"]
     assert "HttpOnly" in cookie and "SameSite=Lax" in cookie and "Path=/" in cookie
     second = await register(client, username="FRIEND_ONE")
@@ -242,19 +252,21 @@ async def test_session_idle_absolute_and_sensitive_action_bound_once(client, run
     assert (await register(client)).status_code == 201
     token = client.cookies.get("tp_session")
     actor = running_app.runtime.auth.load(token)
+    with running_app.runtime.db.write() as conn:
+        other_token, _ = running_app.runtime.auth.issue_session(conn, actor.user, False, "device to revoke")
+    other_session = running_app.runtime.auth.load(other_token).session["id"]
     reauth = await client.post(
-        "/api/v1/auth/reauth", json={"password": PASSWORD, "action": "recovery_codes"}
+        "/api/v1/auth/reauth", json={"password": PASSWORD, "action": f"revoke_session:{other_session}"}
     )
     credential = reauth.json()["data"]["reauthToken"]
     wrong = await client.post(
         "/api/v1/account/password", json={"password": OTHER_PASSWORD, "reauthToken": credential}
     )
     assert wrong.status_code == 403
-    result = await client.post("/api/v1/account/recovery-codes", json={"reauthToken": credential})
-    assert result.status_code == 200 and len(result.json()["data"]["recoveryCodes"]) == 8
-    assert (
-        await client.post("/api/v1/account/recovery-codes", json={"reauthToken": credential})
-    ).status_code == 403
+    result = await client.request("DELETE", f"/api/v1/account/sessions/{other_session}", json={"reauthToken": credential})
+    assert result.status_code == 200
+    assert (await client.request("DELETE", f"/api/v1/account/sessions/{other_session}", json={"reauthToken": credential})).status_code == 403
+    assert (await client.post("/api/v1/account/recovery-codes", json={"reauthToken": credential})).status_code == 410
     with running_app.runtime.db.write() as conn:
         conn.execute(
             "UPDATE sessions SET last_seen_at=? WHERE id=?",
@@ -276,6 +288,7 @@ async def test_recovery_once_race_revokes_all_sessions(client, running_app):
     registration_mode(running_app.runtime, "open")
     result = (await register(client)).json()["data"]
     token = client.cookies.get("tp_session")
+    code = issue_manual_reset(running_app.runtime, result["user"]["id"])
     service = running_app.runtime.auth
     payloads = []
     for i in range(2):
@@ -286,7 +299,7 @@ async def test_recovery_once_race_revokes_all_sessions(client, running_app):
             (
                 RecoverInput(
                     username="friend_one",
-                    recoveryCode=result["recoveryCodes"][0],
+                    recoveryCode=code,
                     password=OTHER_PASSWORD,
                     captchaId=image["captchaId"],
                     captchaAnswer="AAAAAA",
@@ -309,37 +322,30 @@ async def test_recovery_once_race_revokes_all_sessions(client, running_app):
     with running_app.runtime.db.read() as conn:
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM recovery_codes WHERE consumed_at IS NOT NULL"
+                "SELECT COUNT(*) FROM reset_credentials"
             ).fetchone()[0]
-            == 1
+            == 0
         )
 
 
 @pytest.mark.asyncio
-async def test_admin_second_factor_replay_and_independent_recovery_codes(client, running_app):
-    uid, secret, codes, factors = seed_admin(running_app.runtime)
-    assert (await login(client, username="site_admin")).json()["error"][
-        "code"
-    ] == "SECOND_FACTOR_REQUIRED"
-    code = pyotp.TOTP(secret).now()
-    response = await login(client, username="site_admin", secondFactor=code, admin=True)
+async def test_admin_password_only_login_and_reauth_for_legacy_account(client, running_app):
+    uid, secret, _, _ = seed_admin(running_app.runtime)
+    response = await login(client, username="site_admin", admin=True)
     assert response.status_code == 200, response.text
-    assert (await client.get("/api/v1/admin/auth")).json()["data"]["user"]["id"] == uid
-    assert (await login(client, username="site_admin", secondFactor=code)).status_code == 401
-    assert (await login(client, username="site_admin", secondFactor=codes[0])).status_code == 401
-    assert (await login(client, username="site_admin", secondFactor=factors[0])).status_code == 200
-    assert (await login(client, username="site_admin", secondFactor=factors[0])).status_code == 401
+    result = (await client.get("/api/v1/admin/auth")).json()["data"]
+    assert result["user"]["id"] == uid and result["secondFactorRequired"] is False
+    assert "recoveryCodes" not in response.json()["data"]
     actor = running_app.runtime.auth.load(client.cookies.get("tp_session"))
-    challenge = running_app.runtime.auth.reauth(
-        actor, ReauthInput(password=PASSWORD, action="some_admin_action", secondFactor=factors[1])
-    )
+    assert actor.session["second_factor_at"] is None
+    with pytest.raises(APIError, match="REAUTH_FAILED"):
+        running_app.runtime.auth.reauth(actor, ReauthInput(password="wrong", action="some_admin_action"))
+    challenge = running_app.runtime.auth.reauth(actor, ReauthInput(password=PASSWORD, action="some_admin_action"))
     with running_app.runtime.db.write() as conn:
-        running_app.runtime.auth.consume_reauth(
-            conn, actor, challenge["reauthToken"], "some_admin_action", admin=True
-        )
+        running_app.runtime.auth.consume_reauth(conn, actor, challenge["reauthToken"], "some_admin_action", admin=True)
     with running_app.runtime.db.read() as conn:
         row = conn.execute("SELECT totp_secret FROM users WHERE id=?", (uid,)).fetchone()
-        assert secret not in row[0]
+        assert secret not in row[0]  # Legacy stored values are not exposed or rewritten on login.
 
 
 @pytest.mark.asyncio
@@ -391,7 +397,7 @@ async def test_eight_character_password_register_change_and_recover(client, runn
     assert (await register(client, password=short)).status_code == 422
     registration = await register(client, password=initial)
     assert registration.status_code == 201, registration.text
-    code = registration.json()["data"]["recoveryCodes"][0]
+    code = issue_manual_reset(running_app.runtime, registration.json()["data"]["user"]["id"])
     reauth = await client.post(
         "/api/v1/auth/reauth", json={"password": initial, "action": "change_password"}
     )

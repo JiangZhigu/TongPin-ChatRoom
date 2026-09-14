@@ -73,10 +73,15 @@ describe('M6-UI attachment presentation and file controls', () => {
     const { rerender, unmount } = render(<LocalAttachmentList files={[local('图.png', 'image/png')]} />); expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
     rerender(<LocalAttachmentList files={[]} />); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:unit-test'); unmount();
   });
-  it('labels GIF previews as static and only uses server preview URLs for enlarged images', () => {
+  it('previews the original local GIF and omits preparation and static-preview notices', () => {
+    render(<LocalAttachmentList files={[{ ...local('本机动图.gif', 'image/gif'), phase: 'preparing' }]} />);
+    expect(screen.getByRole('img', { name: '本机动图.gif' })).toHaveAttribute('src', 'blob:unit-test');
+    expect(screen.queryByText(/本机准备|本机 GIF|静态预览/)).not.toBeInTheDocument();
+  });
+  it('plays GIF content in both inline and enlarged previews without static notices', () => {
     render(<AttachmentList files={[attachment({ name: '动图.gif', mime: 'image/gif', kind: 'image', thumbnailUrl: '/safe/thumb', previewUrl: '/safe/preview', frameCount: 3 })]} />);
-    expect(screen.getByText(/静态预览，原件保留动画/)).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: '预览图片 动图.gif' }));
-    const dialog = screen.getByRole('dialog', { name: '动图.gif' }); expect(within(dialog).getByRole('img')).toHaveAttribute('src', '/safe/preview'); expect(screen.getByRole('button', { name: '下载原始动画 动图.gif' })).toBeInTheDocument();
+    expect(screen.queryByText(/静态预览/)).not.toBeInTheDocument(); expect(screen.getByRole('img')).toHaveAttribute('src', '/api/v1/attachments/attachment-a/content'); fireEvent.click(screen.getByRole('button', { name: '预览图片 动图.gif' }));
+    const dialog = screen.getByRole('dialog', { name: '动图.gif' }); expect(within(dialog).getByRole('img')).toHaveAttribute('src', '/api/v1/attachments/attachment-a/content'); expect(screen.getByRole('button', { name: '下载原始动画 动图.gif' })).toBeInTheDocument();
   });
   it('shows an authorization error instead of generating a download when an attachment is no longer accessible', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 })); render(<AttachmentList files={[attachment()]} />);

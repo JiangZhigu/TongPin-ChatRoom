@@ -51,7 +51,7 @@ export function ExportForm() {
 }
 
 export function OperationDownload({ operation, onClose }: { operation: AdminOperation; onClose: () => void }) {
-  const { deny } = useContext(AdminContext); const [reason, setReason] = useState(''); const [password, setPassword] = useState(''); const [factor, setFactor] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [done, setDone] = useState(false);
+  const { deny } = useContext(AdminContext); const [reason, setReason] = useState(''); const [password, setPassword] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const [done, setDone] = useState(false);
   const controller = useRef<AbortController | null>(null); const locked = useRef(false); const objectUrl = useRef<string | null>(null); const backup = operation.kind === 'backup.create';
   useEffect(() => { controller.current = new AbortController(); return () => { controller.current?.abort(); if (objectUrl.current) URL.revokeObjectURL(objectUrl.current); }; }, []);
   async function download(event: FormEvent) {
@@ -59,14 +59,14 @@ export function OperationDownload({ operation, onClose }: { operation: AdminOper
     locked.current = true; setBusy(true); setError(''); setDone(false);
     try {
       let reauthToken: string | undefined;
-      if (backup) { const result = await api<{ reauthToken: string }>('/api/v1/auth/reauth', { method: 'POST', body: { password, secondFactor: factor, action: `backup.download:${operation.id}` }, signal: request.signal }); reauthToken = result.reauthToken; if (request.signal.aborted) return; setPassword(''); setFactor(''); }
+      if (backup) { const result = await api<{ reauthToken: string }>('/api/v1/auth/reauth', { method: 'POST', body: { password, action: `backup.download:${operation.id}` }, signal: request.signal }); reauthToken = result.reauthToken; if (request.signal.aborted) return; setPassword(''); }
       const blob = await apiBlob(`/api/v1/admin/operations/${encodeURIComponent(operation.id)}/download`, { body: { reason: reason.trim(), ...(reauthToken ? { reauthToken } : {}) }, signal: request.signal, timeoutMs: 600000 }); if (request.signal.aborted) return;
       const url = URL.createObjectURL(blob); objectUrl.current = url; const link = document.createElement('a'); link.href = url; link.download = `${backup ? 'backup' : 'export'}-${operation.id}.zip`; link.click(); setDone(true);
       window.setTimeout(() => { URL.revokeObjectURL(url); if (objectUrl.current === url) objectUrl.current = null; }, 1000);
     } catch (cause) { if (request.signal.aborted) return; if (cause instanceof APIError && (cause.status === 401 || cause.status === 403) && ['AUTH_REQUIRED', 'SESSION_REVOKED', 'FORBIDDEN'].includes(cause.code)) { deny(); return; } setError(errorText(cause)); }
-    finally { locked.current = false; if (!request.signal.aborted) { setBusy(false); setPassword(''); setFactor(''); } }
+    finally { locked.current = false; if (!request.signal.aborted) { setBusy(false); setPassword(''); } }
   }
-  return <Modal open title={backup ? '下载完整备份' : '下载受控导出'} onClose={onClose}><p>{backup ? '完整备份下载需再次验证管理员密码与第二因素。' : '仅原创建会话可下载；服务器再次校验权限及到期时间。'}</p><p>归档读取最多等待 10 分钟，可随时取消。浏览器收到归档后仍需核对实际保存结果。</p><p>归档 SHA-256：{operation.sha256 || '服务器未提供'}</p><form className="admin-s3-form" onSubmit={(event) => void download(event)}><fieldset disabled={busy}><label>下载理由<textarea required minLength={3} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} /></label>{backup && <><label>下载验证密码<input type="password" required autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label><label>下载动态码或第二因素恢复码<input required autoComplete="off" value={factor} onChange={(event) => setFactor(event.target.value)} /></label></>}<button className="primary-button">{busy ? '正在安全读取…' : '验证并下载归档'}</button></fieldset></form>{error && <p role="alert" className="form-error">{error}</p>}{done && <p role="status">归档已交给浏览器下载，请在浏览器中核对保存结果。</p>}<button className="text-button" onClick={onClose}>{busy ? '取消读取并关闭' : '关闭下载窗口'}</button></Modal>;
+  return <Modal open title={backup ? '下载完整备份' : '下载受控导出'} onClose={onClose}><p>{backup ? '完整备份下载需再次验证管理员密码。' : '仅原创建会话可下载；服务器再次校验权限及到期时间。'}</p><p>归档读取最多等待 10 分钟，可随时取消。浏览器收到归档后仍需核对实际保存结果。</p><p>归档 SHA-256：{operation.sha256 || '服务器未提供'}</p><form className="admin-s3-form" onSubmit={(event) => void download(event)}><fieldset disabled={busy}><label>下载理由<textarea required minLength={3} maxLength={500} value={reason} onChange={(event) => setReason(event.target.value)} /></label>{backup && <><label>下载验证密码<input type="password" required autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label></>}<button className="primary-button">{busy ? '正在安全读取…' : '验证并下载归档'}</button></fieldset></form>{error && <p role="alert" className="form-error">{error}</p>}{done && <p role="status">归档已交给浏览器下载，请在浏览器中核对保存结果。</p>}<button className="text-button" onClick={onClose}>{busy ? '取消读取并关闭' : '关闭下载窗口'}</button></Modal>;
 }
 
 export function OperationsPage() {

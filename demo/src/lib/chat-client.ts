@@ -4,6 +4,7 @@ import type { ChatSnapshot, ChatState, Contact, Conversation, Draft, FriendReque
 import { uploadLocalAttachment, validateLocalFiles } from './files';
 import type { MessageLocation, TypingUser } from './interactions-types';
 import { closeBrowserNotifications, showBrowserNotification } from './browser-notifications';
+import { playMessageSound, startMessageSounds } from './message-sounds';
 import { readTaskDrafts } from './task-drafts';
 import { addQueuedMessage, changeQueuedMessage, clearLocalUser, forgetIdentity, localError, localSummary, OUTBOX_AGE_MS, readDraft, readOfflineIdentity, readQueue, rememberIdentity, saveLocalDraft, withDeliveryLock } from './outbox';
 
@@ -55,6 +56,7 @@ export class ChatClient {
   private typingFlight = false;
   private lastTyping = 0;
   private alertsEnabled = false;
+  private stopSounds: (() => void) | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   private retryAttempt = 0;
@@ -80,6 +82,7 @@ export class ChatClient {
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true; const epoch = ++this.generation; this.controller = new AbortController();
+    this.stopSounds = startMessageSounds(this.user.id);
     this.set({ phase: 'connecting', error: null });
     window.addEventListener('online', this.online); window.addEventListener('offline', this.offline);
     this.unsubscribeExpiry = onAuthExpired(() => this.expire());
@@ -117,6 +120,7 @@ export class ChatClient {
     this.pollTimer = null; this.reconnectTimer = null; this.noticeTimer = null;
     this.typingTimer = null; this.typingFlight = false; this.alertsEnabled = false;
     closeBrowserNotifications(this.user.id);
+    this.stopSounds?.(); this.stopSounds = null;
     this.unsubscribeExpiry?.(); this.unsubscribeExpiry = null;
     this.channel?.close(); this.channel = null;
     window.removeEventListener('online', this.online); window.removeEventListener('offline', this.offline);
@@ -365,11 +369,17 @@ export class ChatClient {
         this.set({ messages, ...(this.state.historyAfter && last ? { historyAfter: latest && BigInt(last.seq) >= BigInt(latest) ? null : last.seq } : {}) });
       }
       this.set({ conversations: this.state.conversations.map((item) => item.lastMessage ? { ...item, lastMessage: item.lastMessage.id === message.id ? message : updateReference(item.lastMessage) } : item) });
-      if (event.type === 'message.created' && this.alertsEnabled && this.initialized && message.senderId !== this.user.id && message.kind === 'user' && message.status === 'sent' && !this.user.preferences.doNotDisturb && (document.visibilityState !== 'visible' || !document.hasFocus())) {
+      if (event.type === 'message.created' && this.alertsEnabled && this.initialized && message.senderId !== this.user.id && message.kind === 'user' && message.status === 'sent' && !this.user.preferences.doNotDisturb) {
         const conversation = this.state.conversations.find((item) => item.id === message.conversationId);
         const mentioned = message.mentionAll || message.mentionedUserIds.includes(this.user.id);
         if (conversation && !conversation.preferences.muted && (!conversation.preferences.onlyMentions || mentioned)) {
-          showBrowserNotification(this.user.id, { tag: conversation.id, title: '同频 · 收到新消息', body: mentioned ? '有人在消息中提及了你，打开同频查看。' : '你有一条新消息，打开同频查看。', onClick: () => { if (this.current(epoch)) window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: this.user.id, messageId: message.id } })); } });
+          void playMessageSound(this.user.id, message.id, () => {
+            const latest = this.state.conversations.find((item) => item.id === message.conversationId);
+            return this.current(epoch) && this.alertsEnabled && this.initialized && !this.user.preferences.doNotDisturb && !!latest && !latest.preferences.muted && (!latest.preferences.onlyMentions || !!mentioned);
+          });
+          if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+            showBrowserNotification(this.user.id, { tag: conversation.id, title: '同频 · 收到新消息', body: mentioned ? '有人在消息中提及了你，打开同频查看。' : '你有一条新消息，打开同频查看。', onClick: () => { if (this.current(epoch)) window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: this.user.id, messageId: message.id } })); } });
+          }
         }
       }
       if (message.senderId === this.user.id && message.clientMessageId && this.localReady) {

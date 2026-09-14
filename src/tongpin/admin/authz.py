@@ -80,12 +80,11 @@ def last_admin_guard(conn, target):
     if (
         target["site_role"] != "super_admin"
         or target["status"] != "active"
-        or not target["totp_secret"]
         or target["must_change_password"]
     ):
         return
     remaining = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE id<>? AND site_role='super_admin' AND status='active' AND totp_secret IS NOT NULL AND must_change_password=0",
+        "SELECT COUNT(*) FROM users WHERE id<>? AND site_role='super_admin' AND status='active' AND must_change_password=0",
         (target["id"],),
     ).fetchone()[0]
     if not remaining:

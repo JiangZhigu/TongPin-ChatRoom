@@ -91,7 +91,7 @@ describe('real service entry', () => {
     render(<App />);
     expect(await screen.findByRole('heading', { name: '登录管理后台' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '返回同频' })).toHaveAttribute('href', '/');
-    expect(screen.getByLabelText('动态码或第二因素恢复码')).toBeInTheDocument();
+    expect(screen.queryByLabelText('动态码或第二因素恢复码')).not.toBeInTheDocument();
     expect(screen.queryByText('管理身份已确认')).not.toBeInTheDocument();
   });
 });
@@ -156,11 +156,6 @@ describe('M2 bootstrap StrictMode', () => {
       fireEvent.change(screen.getByLabelText('确认密码'), { target: { value: 'a strict mode test password' } });
       fireEvent.click(screen.getByRole('checkbox', { name: '我已阅读并同意上述服务条款与隐私说明' }));
       fireEvent.click(screen.getByRole('button', { name: '创建账号' }));
-      expect(await screen.findByRole('heading', { name: '保存你的恢复码' })).toBeInTheDocument();
-      expect(window.location.pathname + window.location.search + window.location.hash).toBe('/register?unused=1#section');
-      expect(screen.getByRole('button', { name: '已保存，继续' })).toBeDisabled();
-      fireEvent.click(screen.getByRole('checkbox', { name: '我已将恢复码保存到安全的位置' }));
-      fireEvent.click(screen.getByRole('button', { name: '已保存，继续' }));
       await screen.findByRole('heading', { name: '欢迎来到同频' });
     } else {
       fireEvent.click(screen.getAllByRole('button', { name: '登录' }).at(-1)!);
@@ -205,9 +200,9 @@ describe('authenticated registration URL', () => {
     window.history.replaceState({}, '', '/register?unused=1#section');
     vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/bootstrap') ? dataReply({ ...bootstrapData(null), registrationMode: 'open' }) : url.endsWith('/captcha') ? captchaReply() : dataReply({ recovered: true })));
     render(<App />); await screen.findByRole('heading', { name: '创建你的账号' });
-    fireEvent.click(screen.getByRole('button', { name: '忘记密码？使用恢复码找回' }));
+    fireEvent.click(screen.getByRole('button', { name: '忘记密码？联系管理员' }));
     await waitFor(() => expect(screen.getByRole('button', { name: '刷新图形验证码' })).toBeEnabled());
-    for (const [label, value] of [['用户名', 'recover_user'], ['新密码', 'a safe recovery password'], ['确认密码', 'a safe recovery password'], ['账号恢复码', 'TEST-CODE'], ['图形验证码', 'ABCDEF']]) fireEvent.change(screen.getByLabelText(label, { exact: true }), { target: { value } });
+    for (const [label, value] of [['用户名', 'recover_user'], ['新密码', 'a safe recovery password'], ['确认密码', 'a safe recovery password'], ['管理员提供的重置凭据', 'TEST-CODE'], ['图形验证码', 'ABCDEF']]) fireEvent.change(screen.getByLabelText(label, { exact: true }), { target: { value } });
     fireEvent.click(screen.getByRole('button', { name: '重置密码' }));
     await screen.findByText('密码已重置，旧会话已注销。请使用新密码登录。');
     expect(window.location.pathname + window.location.search + window.location.hash).toBe('/register?unused=1#section');
@@ -276,14 +271,14 @@ describe('M2 auth expiry', () => {
     vi.stubGlobal('fetch', vi.fn((url: string) => {
       if (url.endsWith('/bootstrap')) return dataReply(bootstrapData(bootstrapCalls++ === 0 ? adminUser : null));
       if (url.endsWith('/captcha')) return captchaReply();
-      if (url.endsWith('/admin/auth')) return operation === 'verification' ? failureReply('SESSION_REVOKED') : dataReply({ user: adminUser, secondFactorRequired: true });
+      if (url.endsWith('/admin/auth')) return operation === 'verification' ? failureReply('SESSION_REVOKED') : dataReply({ user: adminUser, secondFactorRequired: false });
       if (url.startsWith('/api/v1/admin/overview')) return dataReply({ window: '24h', from: 0, to: 1, generatedAt: 1, metrics: [], trends: [], processStartedAt: 0 });
       return failureReply();
     }));
     render(<App />);
     if (operation === 'logout') { await screen.findByRole('heading', { name: '运营概览' }); fireEvent.click(screen.getByRole('button', { name: '退出当前账号' })); }
     expect(await screen.findByRole('heading', { name: '登录管理后台' })).toBeInTheDocument();
-    expect(screen.getByLabelText('动态码或第二因素恢复码')).toBeInTheDocument();
+    expect(screen.queryByLabelText('动态码或第二因素恢复码')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: '管理身份已确认' })).not.toBeInTheDocument();
     expect(window.location.pathname).toBe('/admin'); expect(bootstrapCalls).toBe(2);
   });
@@ -298,8 +293,10 @@ describe('M2 auth expiry', () => {
       return dataReply({ items: [] });
     }));
     render(<App />); await openAccountSettings();
-    fireEvent.click(screen.getByRole('tab', { name: '账号恢复码' }));
-    fireEvent.click(await screen.findByRole('button', { name: '验证身份并重新生成' }));
+    fireEvent.click(screen.getByRole('tab', { name: '修改密码' }));
+    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'New safe password 87!' } });
+    fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: 'New safe password 87!' } });
+    fireEvent.click(screen.getByRole('button', { name: '验证身份并修改密码' }));
     const reauthDialog = await screen.findByRole('dialog', { name: '再次验证身份' });
     fireEvent.change(within(reauthDialog).getByLabelText('当前密码'), { target: { value: 'wrong in-memory password' } });
     fireEvent.click(within(reauthDialog).getByRole('button', { name: '确认并继续' }));

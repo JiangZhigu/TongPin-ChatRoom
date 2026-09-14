@@ -58,7 +58,7 @@ async def test_default_open_registration_and_first_login_without_captcha(client,
     bootstrap = (await client.get('/api/v1/auth/bootstrap')).json()['data']
     assert bootstrap['registrationMode'] == 'open'
     created = await register(client)
-    assert created.status_code == 201 and len(created.json()['data']['recoveryCodes']) == 8
+    assert created.status_code == 201 and 'recoveryCodes' not in created.json()['data']
     result = await attempt(client)
     assert result.status_code == 200, result.text
     assert (await client.get('/api/v1/auth/me')).json()['data']['user']['username'] == 'friend_one'
@@ -186,20 +186,13 @@ async def test_concurrent_wrong_passwords_cannot_overrun_five_ungated_checks(run
 
 
 @pytest.mark.asyncio
-async def test_second_factor_still_required_and_only_complete_login_resets(client, running_app):
-    _, _, _, factors = seed_admin(running_app.runtime)
+async def test_password_only_admin_login_resets_failure_counter(client, running_app):
+    seed_admin(running_app.runtime)
     initial = await attempt(client, username='site_admin', admin=True)
-    assert initial.json()['error']['code'] == 'SECOND_FACTOR_REQUIRED'
-    assert failure_row(running_app.runtime, 'site_admin') is None
-    invalid = await attempt(client, username='site_admin', admin=True, secondFactor='invalid-factor')
-    assert invalid.json()['error']['code'] == 'SECOND_FACTOR_INVALID'
+    assert initial.status_code == 200
     assert failure_row(running_app.runtime, 'site_admin') is None
     await trigger(client, 'site_admin')
-    factor = await attempt(client, username='site_admin', admin=True, **await captcha(client))
-    assert factor.json()['error']['code'] == 'SECOND_FACTOR_REQUIRED'
-    assert failure_row(running_app.runtime, 'site_admin')['attempts'] == 5
-    complete = await attempt(client, username='site_admin', admin=True,
-                             secondFactor=factors[0], **await captcha(client))
+    complete = await attempt(client, username='site_admin', admin=True, **await captcha(client))
     assert complete.status_code == 200
     assert failure_row(running_app.runtime, 'site_admin') is None
     assert (await client.get('/api/v1/admin/auth')).status_code == 200

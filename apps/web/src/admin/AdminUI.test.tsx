@@ -39,7 +39,7 @@ function installCommands(options: { partial?: boolean; unknown?: boolean; secret
   return { order, saved: () => saved! };
 }
 async function previewAction() { fireEvent.change(screen.getByLabelText('操作理由'), { target: { value: '核实后处理测试账号' } }); fireEvent.click(screen.getByRole('button', { name: '预览目标与影响' })); await screen.findByRole('heading', { name: '服务端操作预览' }); }
-async function executeAction() { fireEvent.change(screen.getByLabelText('管理员当前密码'), { target: { value: 'in-memory-admin-password' } }); fireEvent.change(screen.getByLabelText('动态码或第二因素恢复码'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: '验证身份并执行' })); }
+async function executeAction() { fireEvent.change(screen.getByLabelText('管理员当前密码'), { target: { value: 'in-memory-admin-password' } }); fireEvent.click(screen.getByRole('button', { name: '验证身份并执行' })); }
 function mountShell(path: string) { window.history.replaceState({}, '', path); return render(<AdminShell user={actor} onSignOut={vi.fn()} signOutBusy={false} signOutError="" />); }
 beforeEach(() => { requestApi.mockReset(); Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } }); Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } }); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers(); window.history.replaceState({}, '', '/'); });
@@ -52,7 +52,7 @@ describe('M7 ADMIN command safety and normal controls', () => {
     expect(commands.saved().parameters).toEqual({ uploadDisabled: true, groupCreationDisabled: true }); expect(screen.getByText('预览目标 u1')).toBeInTheDocument(); expect(screen.getByText('所有指定目标立即受影响')).toBeInTheDocument();
     await executeAction(); await screen.findByRole('heading', { name: '执行结果：已完成' });
     expect(commands.order).toEqual(['/api/v1/admin/commands/preview', '/api/v1/auth/reauth', '/api/v1/admin/commands/execute']);
-    expect(requestApi.mock.calls[1][1]?.body).toEqual({ password: 'in-memory-admin-password', secondFactor: '123456', action: `admin.execute:${commands.saved().operationId}` });
+    expect(requestApi.mock.calls[1][1]?.body).toEqual({ password: 'in-memory-admin-password', action: `admin.execute:${commands.saved().operationId}` });
     expect(requestApi.mock.calls[2][1]?.body).toEqual({ operationId: commands.saved().operationId, reauthToken: 'ephemeral-reauth' });
   });
   it('keeps an unknown execution on the original ID and renders partial per-target results without retrying punishment', async () => {

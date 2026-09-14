@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import hmac
-
-import pyotp
-
 from tongpin.admin.authz import conflict, cursor, identity, last_admin_guard, page, unavailable
 from tongpin.contracts.base import APIError
 from tongpin.domain.auth import public_user
@@ -27,9 +23,8 @@ class AdministratorsAdmin:
             "user": identity(conn, row["id"]),
             "status": row["status"],
             "usable": row["status"] == "active"
-            and bool(row["totp_secret"])
             and not row["must_change_password"],
-            "hasSecondFactor": bool(row["totp_secret"]),
+            "hasSecondFactor": False,
             "sessionCount": devices[0],
             "lastSeenAt": devices[1],
             "version": row["admin_version"],
@@ -94,7 +89,7 @@ class AdministratorsAdmin:
         if action == "administrator.invite":
             if user["site_role"] != "user" or pending:
                 raise conflict("目标已有站点权限或待完成的管理员邀请。")
-            detail = "24小时内由本人再认证并验证新的验证器，完成后才授予站点权限。"
+            detail = "24小时内由本人验证当前密码并接受邀请，完成后才授予站点权限。"
         else:
             if user["site_role"] != "super_admin":
                 raise conflict("目标当前不是超级管理员。")
@@ -189,7 +184,7 @@ class AdministratorsAdmin:
     @staticmethod
     def pending_enrollment(conn, uid):
         return conn.execute(
-            "SELECT i.* FROM administrator_invitations i JOIN users u ON u.id=i.inviter_id WHERE i.user_id=? AND i.status='pending' AND i.expires_at>? AND u.status='active' AND u.site_role='super_admin' AND u.totp_secret IS NOT NULL AND u.must_change_password=0 ORDER BY i.created_at DESC LIMIT 1",
+            "SELECT i.* FROM administrator_invitations i JOIN users u ON u.id=i.inviter_id WHERE i.user_id=? AND i.status='pending' AND i.expires_at>? AND u.status='active' AND u.site_role='super_admin' AND u.must_change_password=0 ORDER BY i.created_at DESC LIMIT 1",
             (uid, now_ms()),
         ).fetchone()
 
@@ -220,7 +215,6 @@ class AdministratorsAdmin:
             if not invite or actor.user["site_role"] != "user":
                 raise unavailable()
             self.runtime.auth.consume_reauth(conn, actor, data.reauthToken, "administrator.enroll")
-            secret = pyotp.random_base32()
             eid = identifier("enr_")
             expiry = min(invite["expires_at"], now_ms() + 600000)
             conn.execute(
@@ -233,7 +227,7 @@ class AdministratorsAdmin:
                     eid,
                     invite["id"],
                     actor.session["id"],
-                    self.runtime.auth.security.fernet.encrypt(secret.encode()).decode(),
+                    "",
                     expiry,
                 ),
             )
@@ -246,10 +240,6 @@ class AdministratorsAdmin:
             )
             return {
                 "enrollmentId": eid,
-                "secret": secret,
-                "uri": pyotp.TOTP(secret).provisioning_uri(
-                    name=actor.user["username"], issuer_name="Tongpin"
-                ),
                 "expiresAt": expiry,
             }
 
@@ -271,36 +261,22 @@ class AdministratorsAdmin:
                 raise APIError(
                     "ENROLLMENT_EXPIRED", "绑定请求已失效或已处理，请重新核对管理员邀请。", 409
                 )
-            secret = self.runtime.auth.security.fernet.decrypt(
-                challenge["secret_ciphertext"].encode()
-            ).decode()
-            totp, counter = pyotp.TOTP(secret), now_ms() // 30000
-            matched = next(
-                (
-                    value
-                    for value in (counter - 1, counter, counter + 1)
-                    if hmac.compare_digest(totp.at(value * 30), data.code)
-                ),
-                None,
-            )
-            if matched is None:
-                raise APIError("SECOND_FACTOR_INVALID", "验证码无效，请检查验证器时间并重试。", 422)
             conn.execute(
-                "UPDATE users SET site_role='super_admin',totp_secret=?,totp_last_counter=?,admin_version=admin_version+1,updated_at=? WHERE id=?",
-                (challenge["secret_ciphertext"], matched, now_ms(), actor.id),
+                "UPDATE users SET site_role='super_admin',totp_secret=NULL,totp_last_counter=-1,admin_version=admin_version+1,updated_at=? WHERE id=?",
+                (now_ms(), actor.id),
             )
             conn.execute(
                 "UPDATE sessions SET revoked_at=COALESCE(revoked_at,?) WHERE user_id=? AND id<>?",
                 (now_ms(), actor.id, actor.session["id"]),
             )
             conn.execute(
-                "UPDATE sessions SET second_factor_at=? WHERE id=?", (now_ms(), actor.session["id"])
+                "UPDATE sessions SET second_factor_at=NULL WHERE id=?", (actor.session["id"],)
             )
             conn.execute(
                 "DELETE FROM reauth_tokens WHERE session_id IN(SELECT id FROM sessions WHERE user_id=?)",
                 (actor.id,),
             )
-            codes = self.runtime.auth.security.recovery_codes(conn, actor.id, "second_factor")
+            conn.execute("DELETE FROM recovery_codes WHERE user_id=?", (actor.id,))
             conn.execute(
                 "UPDATE administrator_invitations SET status='accepted',version=version+1 WHERE id=?",
                 (invite["id"],),
@@ -321,11 +297,11 @@ class AdministratorsAdmin:
                 },
             )
             self.runtime.events.user_changed(conn, actor.id)
-            result = {"user": public_user(user), "recoveryCodes": codes}
+            result = {"user": public_user(user)}
         self.runtime.revalidate_connections()
         return result
 
-    def recover_local_administrator(self, username, password, secret, code, reason):
+    def recover_local_administrator(self, username, password, reason):
         # Only the offline maintenance entry initializes without an async server
         # loop. Its exclusive DATA_DIR lock must already be held.
         if self.runtime.loop is not None or self.runtime.lock._lock is None:
@@ -333,23 +309,7 @@ class AdministratorsAdmin:
         username = validate_username(username)
         reason = clean_text(reason, 5, 1000, "reason")
         validate_password(password)
-        try:
-            totp = pyotp.TOTP(secret)
-            counter = now_ms() // 30000
-            matched = next(
-                (
-                    value
-                    for value in (counter - 1, counter, counter + 1)
-                    if hmac.compare_digest(totp.at(value * 30), code)
-                ),
-                None,
-            )
-        except (ValueError, TypeError) as error:
-            raise ValueError("Invalid authenticator setup") from error
-        if matched is None:
-            raise ValueError("Authenticator verification failed; no account was changed")
         password_hash = self.runtime.auth.security.passwords.hash(password)
-        encrypted = self.runtime.auth.security.fernet.encrypt(secret.encode()).decode()
         with self.runtime.db.write() as conn:
             user = conn.execute(
                 "SELECT * FROM users WHERE username=? COLLATE NOCASE AND site_role='super_admin' AND status IN('active','banned')",
@@ -361,14 +321,11 @@ class AdministratorsAdmin:
                 )
             self.revoke_administrator_in(conn, user["id"])
             conn.execute(
-                "UPDATE users SET password_hash=?,totp_secret=?,totp_last_counter=?,site_role='super_admin',status='active',status_reason='',must_change_password=0,updated_at=? WHERE id=?",
-                (password_hash, encrypted, matched, now_ms(), user["id"]),
+                "UPDATE users SET password_hash=?,totp_secret=NULL,totp_last_counter=-1,site_role='super_admin',status='active',status_reason='',must_change_password=0,updated_at=? WHERE id=?",
+                (password_hash, now_ms(), user["id"]),
             )
             conn.execute("DELETE FROM reset_credentials WHERE user_id=?", (user["id"],))
-            password_codes = self.runtime.auth.security.recovery_codes(conn, user["id"])
-            factor_codes = self.runtime.auth.security.recovery_codes(
-                conn, user["id"], "second_factor"
-            )
+            conn.execute("DELETE FROM recovery_codes WHERE user_id=?", (user["id"],))
             audit(
                 conn,
                 None,
@@ -378,7 +335,7 @@ class AdministratorsAdmin:
                 details={
                     "hostMaintenance": True,
                     "sessionsRevoked": True,
-                    "secondFactorReplaced": True,
+                    "passwordOnly": True,
                 },
             )
-        return {"recoveryCodes": password_codes, "secondFactorRecoveryCodes": factor_codes}
+        return {"recovered": True}

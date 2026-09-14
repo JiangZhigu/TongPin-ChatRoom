@@ -2,6 +2,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatClient, mergeMessages, validateMessageText } from './chat-client';
+import { playMessageSound } from './message-sounds';
 import { setCsrfToken, type User } from './api';
 import { openLocalDatabase, readQueue, readOfflineIdentity, rememberIdentity } from './outbox';
 import type { Conversation, LocalAttachment, Message, SyncEvent } from './chat-types';
@@ -9,6 +10,7 @@ import type { UploadRecord } from './files-types';
 import { closeBrowserNotifications, showBrowserNotification } from './browser-notifications';
 
 const socketEvents = vi.hoisted(() => new Map<string, () => void>());
+vi.mock('./message-sounds', () => ({ playMessageSound: vi.fn(async () => true), startMessageSounds: vi.fn(() => vi.fn()) }));
 vi.mock('./browser-notifications', () => ({ closeBrowserNotifications: vi.fn(), showBrowserNotification: vi.fn(() => true) }));
 vi.mock('socket.io-client', () => ({ io: () => {
   const events = socketEvents;
@@ -30,7 +32,7 @@ beforeEach(async () => {
   vi.stubGlobal('navigator', { get onLine() { return connected; } });
   vi.stubGlobal('document', { visibilityState: 'visible', hasFocus: () => true });
   setCsrfToken('synthetic-csrf');
-  vi.mocked(showBrowserNotification).mockClear(); vi.mocked(closeBrowserNotifications).mockClear();
+  vi.mocked(playMessageSound).mockClear(); vi.mocked(showBrowserNotification).mockClear(); vi.mocked(closeBrowserNotifications).mockClear();
   const db = await openLocalDatabase();
   await new Promise<void>((resolve) => { const tx = db.transaction(['meta', 'outbox', 'drafts', 'leases'], 'readwrite'); for (const name of ['meta', 'outbox', 'drafts', 'leases']) tx.objectStore(name).clear(); tx.oncomplete = () => resolve(); });
   vi.stubGlobal('fetch', vi.fn(async (url: string, options?: { method?: string; body?: string }) => {
@@ -138,24 +140,38 @@ describe('rich message persistence, located windows and live hints', () => {
     vi.stubGlobal('document', { visibilityState: 'hidden', hasFocus: () => false });
     const fromPeer = (id: string, seq: string, changes: Partial<Message> = {}) => ({ ...message(id, seq), senderId: peer.id, sender: peer, ...changes });
     syncEvents = [event('1', { message: fromPeer('backlog', '1') })];
-    const current = await client(); expect(showBrowserNotification).not.toHaveBeenCalled();
+    const current = await client(); expect(showBrowserNotification).not.toHaveBeenCalled(); expect(playMessageSound).not.toHaveBeenCalled();
     await live(current, event('2', { message: fromPeer('fresh', '2') }));
-    expect(showBrowserNotification).toHaveBeenCalledTimes(1);
+    expect(showBrowserNotification).toHaveBeenCalledTimes(1); expect(playMessageSound).toHaveBeenCalledTimes(1);
     expect(vi.mocked(showBrowserNotification).mock.calls[0][1].body).not.toContain('fresh');
     current.updateUser({ ...user, preferences: { ...user.preferences, doNotDisturb: true } });
     await live(current, event('3', { message: fromPeer('quiet', '3') }));
-    expect(showBrowserNotification).toHaveBeenCalledTimes(1);
+    expect(showBrowserNotification).toHaveBeenCalledTimes(1); expect(playMessageSound).toHaveBeenCalledTimes(1);
     current.updateUser(user); conversation = { ...conversation, preferences: { ...conversation.preferences, onlyMentions: true } };
     await live(current, event('4', { type: 'conversation.updated', conversation }));
     await live(current, event('5', { message: fromPeer('unmentioned', '5') }));
-    expect(showBrowserNotification).toHaveBeenCalledTimes(1);
+    expect(showBrowserNotification).toHaveBeenCalledTimes(1); expect(playMessageSound).toHaveBeenCalledTimes(1);
     await live(current, event('6', { message: fromPeer('mentioned', '6', { mentionedUserIds: [user.id] }) }));
-    expect(showBrowserNotification).toHaveBeenCalledTimes(2);
+    expect(showBrowserNotification).toHaveBeenCalledTimes(2); expect(playMessageSound).toHaveBeenCalledTimes(2);
     conversation = { ...conversation, preferences: { ...conversation.preferences, muted: true } };
     await live(current, event('7', { type: 'conversation.updated', conversation }));
     await live(current, event('8', { message: fromPeer('all-muted', '8', { mentionAll: true }) }));
-    expect(showBrowserNotification).toHaveBeenCalledTimes(2);
+    expect(showBrowserNotification).toHaveBeenCalledTimes(2); expect(playMessageSound).toHaveBeenCalledTimes(2);
     current.stop(); expect(closeBrowserNotifications).toHaveBeenCalledWith(user.id);
+  });
+  it('sounds for live peer messages in the foreground but not own messages, edits or repeated sync', async () => {
+    const current = await client();
+    const incoming = { ...message('audible', '1'), senderId: peer.id, sender: peer };
+    await live(current, event('1', { message: incoming }));
+    expect(playMessageSound).toHaveBeenCalledTimes(1); expect(showBrowserNotification).not.toHaveBeenCalled();
+    const syncCount = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('/sync?')).length;
+    socketEvents.get('sync.available')?.();
+    await until(() => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('/sync?')).length > syncCount);
+    await live(current, event('2', { message: message('own', '2') }));
+    await live(current, event('3', { type: 'message.updated', message: { ...incoming, text: 'edited' } }));
+    expect(playMessageSound).toHaveBeenCalledTimes(1);
+    const guard = vi.mocked(playMessageSound).mock.calls[0][2]; expect(guard()).toBe(true);
+    current.updateUser({ ...user, preferences: { ...user.preferences, doNotDisturb: true } }); expect(guard()).toBe(false);
   });
   it('emits throttled text-free typing hints and pauses synchronization before account deletion', async () => {
     const current = await client(); locations([message('old', '11')]); await current.selectConversation(conversation.id);

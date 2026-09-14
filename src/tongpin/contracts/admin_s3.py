@@ -46,7 +46,7 @@ class EnrollmentStart(InputModel):
 
 class EnrollmentFinish(InputModel):
     enrollmentId: str = Field(min_length=1, max_length=128)
-    code: str = Field(pattern=r"^\d{6}$")
+    code: str = Field(default="", max_length=100)  # Older clients may still send this unused field.
 
 
 class AuditFilters(InputModel):

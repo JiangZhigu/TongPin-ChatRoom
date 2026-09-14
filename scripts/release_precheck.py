@@ -44,8 +44,8 @@ def check():
                 row = conn.execute('SELECT values_json FROM policy_versions ORDER BY version DESC LIMIT 1').fetchone()
                 if row:
                     policy.update(json.loads(row[0]))
-                administrator = conn.execute("SELECT count(*) FROM users WHERE site_role='super_admin' AND status='active' AND totp_secret IS NOT NULL AND totp_secret<>''").fetchone()[0]
-                add('administrator', administrator > 0, 'At least one active administrator with configured second factor')
+                administrator = conn.execute("SELECT count(*) FROM users WHERE site_role='super_admin' AND status='active' AND must_change_password=0").fetchone()[0]
+                add('administrator', administrator > 0, 'At least one active administrator with a usable password')
                 known = {int(p.name.split('_', 1)[0]): hashlib.sha256(p.read_bytes()).hexdigest() for p in (Path(__file__).resolve().parents[1] / 'src/tongpin/migrations').glob('[0-9]*.sql')}
                 current = dict(conn.execute('SELECT version,checksum FROM schema_migrations'))
                 add('schema', current == known, 'Migration versions and byte checksums match this release')

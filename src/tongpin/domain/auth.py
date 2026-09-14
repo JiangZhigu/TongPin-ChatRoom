@@ -104,10 +104,8 @@ class AuthService:
     def require_admin(self, principal):
         if (
             principal.user["site_role"] != "super_admin"
-            or not principal.session["second_factor_at"]
-            or not principal.user["totp_secret"]
         ):
-            raise APIError("FORBIDDEN", "此操作需要已完成第二因素验证的全站管理员。", 403)
+            raise APIError("FORBIDDEN", "此操作需要已登录并完成账号验证的全站管理员。", 403)
         return principal
 
     def current_in_transaction(self, conn, principal, admin=False):
@@ -211,10 +209,9 @@ class AuthService:
                         "SITE_INVITE_INVALID", "站点邀请码无效、已过期或名额已用完。", 403
                     )
             user = self.create_user(conn, username, nickname, password_hash)
-            codes = self.security.recovery_codes(conn, user["id"])
             token, result = self.issue_session(conn, user, False, device)
             audit(conn, user["id"], "account.register", user["id"], device=device)
-        return token, result | {"recoveryCodes": codes}
+        return token, result
 
     def login(self, data, flow, ip, device, old_token=""):
         self.security.rate("login-ip", ip, 100, 900)
@@ -254,16 +251,13 @@ class AuthService:
                 self.security.require_login_captcha()
             raise APIError("LOGIN_FAILED", "登录名、密码或账号状态不正确。", 401)
         if user['must_change_password']:
-            raise APIError('PASSWORD_RESET_REQUIRED', '账号需要重置密码。请在找回入口使用管理员交付的一次性重置凭据，或本人尚未使用的恢复码。', 403)
+            raise APIError('PASSWORD_RESET_REQUIRED', '账号需要重置密码。请联系管理员，在忘记密码入口使用管理员交付的一次性重置凭据。', 403)
         with self.runtime.db.write() as conn:
             current = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
             if current["password_hash"] != user["password_hash"] or current["status"] != "active" or current['must_change_password']:
                 raise APIError("LOGIN_FAILED", "登录名、密码或账号状态不正确。", 401)
             if data.admin and current["site_role"] != "super_admin":
                 raise APIError("FORBIDDEN", "此账号没有全站管理权限。", 403)
-            factor = current["site_role"] == "super_admin"
-            if factor:
-                self.security.second_factor(conn, current, data.secondFactor)
             if self.security.passwords.check_needs_rehash(user["password_hash"]):
                 conn.execute(
                     "UPDATE users SET password_hash=? WHERE id=?",
@@ -274,7 +268,7 @@ class AuthService:
                     "UPDATE sessions SET revoked_at=? WHERE token_hash=?",
                     (now_ms(), self.security.digest(old_token)),
                 )
-            token, result = self.issue_session(conn, current, data.remember, device, factor=factor)
+            token, result = self.issue_session(conn, current, data.remember, device)
             audit(conn, user["id"], "account.login", user["id"], device=device)
             conn.execute("DELETE FROM rate_buckets WHERE key=?", (failure_key,))
         self.runtime.revalidate_connections()
@@ -296,10 +290,8 @@ class AuthService:
             ):
                 raise APIError("RECOVERY_FAILED", "登录名或恢复凭据无效。", 401)
             manual = conn.execute('UPDATE reset_credentials SET consumed_at=? WHERE digest=? AND user_id=? AND expires_at>? AND consumed_at IS NULL', (now_ms(), self.security.digest(data.recoveryCode, 'manual-reset'), user['id'], now_ms())).rowcount == 1
-            if not manual and not self.security.consume_recovery(conn, user['id'], data.recoveryCode):
+            if not manual:
                 raise APIError('RECOVERY_FAILED', '登录名或恢复凭据无效。', 401)
-            if user["site_role"] == "super_admin":
-                self.security.second_factor(conn, user, data.secondFactor)
             if (
                 user["status"] == "deleting"
                 and user["deletion_at"] is not None
@@ -344,8 +336,6 @@ class AuthService:
             current = self.current_in_transaction(conn, principal)
             if current.user["password_hash"] != principal.user["password_hash"]:
                 raise APIError("REAUTH_FAILED", "凭据已更新，请重新登录。", 401)
-            if current.user["site_role"] == "super_admin":
-                self.security.second_factor(conn, current.user, data.secondFactor)
             conn.execute("DELETE FROM reauth_tokens WHERE expires_at<?", (now_ms(),))
             conn.execute(
                 "INSERT INTO reauth_tokens VALUES(?,?,?,?,NULL)",
@@ -438,11 +428,7 @@ class AuthService:
         return {"changed": True}
 
     def regenerate_codes(self, principal, token):
-        with self.runtime.db.write() as conn:
-            self.consume_reauth(conn, principal, token, "recovery_codes")
-            codes = self.security.recovery_codes(conn, principal.id)
-            audit(conn, principal.id, "account.regenerate_recovery", principal.id)
-        return {"recoveryCodes": codes}
+        raise APIError("RECOVERY_CODES_DISABLED", "账号已改为由管理员协助找回密码，无需生成或保存恢复码。", 410)
 
     def profile(self, principal, data):
         nickname, bio = (

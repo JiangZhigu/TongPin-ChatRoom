@@ -47,7 +47,7 @@ export function freshState(): DemoState {
   add('dm_chen', 'u_lin', '收到，我也把交互流程补了一版，稍后一起看。');
   add('dm_chen', 'u_chen', '浅蓝色很舒服，感觉更适合日常聊天。 ☁️');
   add('dm_chen', 'u_lin', '是的，希望大家打开就能安心聊两句。', { reactions: [{ key: '👍', userIds: ['u_chen'] }] });
-  add('dm_chen', 'u_chen', '这里还可以试试回复、表情反应、收藏和把消息转成待办。');
+  add('dm_chen', 'u_chen', '移到消息旁的小菜单，可以引用回复、收藏，或把消息转成待办。');
   add('g_design', 'u_chen', '新版的几个关键页面已经整理进协作清单了。');
   add('g_design', 'u_zhou', '我负责把移动端的交互细节再检查一遍。');
   add('g_design', 'u_lin', '好呀。大家可以直接领取右侧群待办，有问题就在任务里留言。');

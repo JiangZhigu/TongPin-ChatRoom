@@ -137,7 +137,7 @@ async def test_announcement_fixed_scope_future_revocation_and_failed_runner(admi
     )
 
 
-async def test_enrollment_requires_own_reauth_session_factor_and_is_single_use(admin_app):
+async def test_enrollment_requires_own_reauth_session_and_is_single_use(admin_app):
     rt, actors = admin_app[0].runtime, admin_app[1]
     target = actors[2]
     execute(admin_app, "administrator.invite", [target.id])
@@ -148,15 +148,11 @@ async def test_enrollment_requires_own_reauth_session_factor_and_is_single_use(a
     with rt.db.write() as conn:
         other_token, _ = rt.auth.issue_session(conn, target.user, False, "second device")
     other = rt.auth.load(other_token)
-    code = pyotp.TOTP(enrollment["secret"]).now()
-    finish = EnrollmentFinish(enrollmentId=enrollment["enrollmentId"], code=code)
+    assert set(enrollment) == {"enrollmentId", "expiresAt"}
+    finish = EnrollmentFinish(enrollmentId=enrollment["enrollmentId"])
     fails("ENROLLMENT_EXPIRED", lambda: rt.admin.enrollment_finish(other, finish))
-    wrong = EnrollmentFinish(
-        enrollmentId=enrollment["enrollmentId"], code="000000" if code != "000000" else "111111"
-    )
-    fails("SECOND_FACTOR_INVALID", lambda: rt.admin.enrollment_finish(target, wrong))
     result = rt.admin.enrollment_finish(target, finish)
-    assert result["user"]["siteRole"] == "super_admin" and len(result["recoveryCodes"]) == 8
+    assert result["user"]["siteRole"] == "super_admin" and "recoveryCodes" not in result
     current = rt.auth.load(admin_app[2][2])
     assert rt.auth.require_admin(current).id == target.id
     fails("AUTH_REQUIRED", lambda: rt.auth.load(other_token))
@@ -168,11 +164,9 @@ async def test_enrollment_requires_own_reauth_session_factor_and_is_single_use(a
                 "SELECT COUNT(*) FROM recovery_codes WHERE user_id=? AND kind='second_factor'",
                 (target.id,),
             ).fetchone()[0]
-            == 8
+            == 0
         )
-        assert enrollment["secret"] not in "\n".join(
-            row[0] for row in conn.execute("SELECT details FROM audit_events")
-        )
+
 
 
 async def test_inviter_revocation_invalidates_challenge_and_last_admin_guard(admin_app):
@@ -186,7 +180,7 @@ async def test_inviter_revocation_invalidates_challenge_and_last_admin_guard(adm
         lambda: rt.admin.enrollment_finish(
             actors[2],
             EnrollmentFinish(
-                enrollmentId=challenge["enrollmentId"], code=pyotp.TOTP(challenge["secret"]).now()
+                enrollmentId=challenge["enrollmentId"]
             ),
         ),
     )
@@ -209,7 +203,7 @@ async def test_enrollment_cancel_race_and_factor_reset(admin_app):
     target = rt.auth.load(token)
     enrollment = start_enrollment(rt, target)
     data = EnrollmentFinish(
-        enrollmentId=enrollment["enrollmentId"], code=pyotp.TOTP(enrollment["secret"]).now()
+        enrollmentId=enrollment["enrollmentId"]
     )
 
     def finish():
@@ -301,17 +295,13 @@ async def test_host_recovery_only_offline_resets_credentials_and_audits(settings
                 totp_secret=rt.auth.security.fernet.encrypt(original.encode()).decode(),
             )
             token, _ = rt.auth.issue_session(conn, user, False, "before host recovery", factor=True)
-            old_codes = rt.auth.security.recovery_codes(conn, user["id"])
-        secret = pyotp.random_base32()
+            rt.auth.security.recovery_codes(conn, user["id"])
         result = rt.admin.recover_local_administrator(
             user["username"],
             "New isolated host recovery 87!",
-            secret,
-            pyotp.TOTP(secret).now(),
             "隔离本机身份核验后恢复",
         )
-        assert len(result["recoveryCodes"]) == len(result["secondFactorRecoveryCodes"]) == 8
-        assert not set(old_codes) & set(result["recoveryCodes"])
+        assert result == {"recovered": True}
         fails("AUTH_REQUIRED", lambda: rt.auth.load(token))
         with rt.db.read() as conn:
             changed = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
@@ -319,6 +309,8 @@ async def test_host_recovery_only_offline_resets_credentials_and_audits(settings
                 changed["password_hash"], "New isolated host recovery 87!"
             )
             assert not rt.auth.security.verify_password(changed["password_hash"], PASSWORD)
+            assert changed["totp_secret"] is None
+            assert conn.execute("SELECT COUNT(*) FROM recovery_codes WHERE user_id=?", (user["id"],)).fetchone()[0] == 0
             assert (
                 conn.execute(
                     "SELECT COUNT(*) FROM audit_events WHERE action='admin.user.host_recovery' AND actor_id IS NULL"
@@ -329,7 +321,7 @@ async def test_host_recovery_only_offline_resets_credentials_and_audits(settings
         rt.loop = object()
         with pytest.raises(RuntimeError, match="offline"):
             rt.admin.recover_local_administrator(
-                user["username"], PASSWORD, secret, pyotp.TOTP(secret).now(), "不允许在线恢复"
+                user["username"], PASSWORD, "不允许在线恢复"
             )
     finally:
         rt.cache.clear()

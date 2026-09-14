@@ -29,7 +29,7 @@ function installCommands(read: (path: string, init: Parameters<typeof api>[1]) =
   return { input: () => input!, paths };
 }
 async function preview() { fireEvent.change(screen.getByLabelText('操作理由'), { target: { value: '经核实后执行管理操作' } }); fireEvent.click(screen.getByRole('button', { name: '预览目标与影响' })); await screen.findByRole('heading', { name: '服务端操作预览' }); }
-async function execute() { fireEvent.change(screen.getByLabelText('管理员当前密码'), { target: { value: 'secret-password' } }); fireEvent.change(screen.getByLabelText('动态码或第二因素恢复码'), { target: { value: '123456' } }); fireEvent.click(screen.getByRole('button', { name: '验证身份并执行' })); await screen.findByRole('heading', { name: '执行结果：已完成' }); }
+async function execute() { fireEvent.change(screen.getByLabelText('管理员当前密码'), { target: { value: 'secret-password' } }); fireEvent.click(screen.getByRole('button', { name: '验证身份并执行' })); await screen.findByRole('heading', { name: '执行结果：已完成' }); }
 beforeEach(() => { requestApi.mockReset(); requestBlob.mockReset(); Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } }); Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; } }); Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:private-ui-test') }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() }); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); window.history.replaceState({}, '', '/'); });
 
