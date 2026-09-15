@@ -703,7 +703,16 @@ describe('V3 task shell integration', () => {
     enableTasks(); chat.summary.mockResolvedValue({ pending: 0, drafts: 0, taskDrafts: 2 }); chat.logout.mockRejectedValue(new Error('退出未成功')); showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '设置' })); fireEvent.click(await screen.findByRole('button', { name: '退出登录' })); const prompt = await screen.findByRole('dialog', { name: '退出前，处理本机内容' }); expect(prompt).toHaveTextContent('2 份任务草稿'); expect(taskUI.stop).not.toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: '删除本机内容并退出' })); await screen.findByText('退出未成功'); expect(taskUI.stop).toHaveBeenCalledTimes(1); expect(taskUI.stop.mock.invocationCallOrder[0]).toBeLessThan(chat.logout.mock.invocationCallOrder[0]); expect(taskUI.start).toHaveBeenCalledTimes(2);
   });
   it('task notifications require available target and recheck the task before opening detail', async () => {
-    enableTasks(); chat.state!.notifications = [{ id: 'n-task', type: 'task.assigned', entityRef: 'task-one', taskId: 'task-one', available: true, text: '分配给你的待办', readAt: 1, createdAt: 1 }]; showWorkspace(); fireEvent.click(screen.getByRole('button', { name: '通知' })); fireEvent.click(await screen.findByRole('button', { name: '核对并查看待办' })); await screen.findByRole('dialog', { name: '待办详情' }); expect(taskUI.get).toHaveBeenCalledWith('task-one');
+    enableTasks(); chat.state!.notifications = [{ id: 'n-task', type: 'task.assigned', entityRef: 'task-one', taskId: 'task-one', available: true, text: '分配给你的待办', readAt: 1, createdAt: 1 }];
+    const checked = deferred<Task>(); taskUI.get.mockImplementationOnce(() => checked.promise);
+    showWorkspace();
+    // Finish navigation and the notification page's lifetime effect before clicking.
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: '通知' })));
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: '核对并查看待办' })));
+    expect(taskUI.get).toHaveBeenCalledWith('task-one');
+    expect(screen.queryByRole('dialog', { name: '待办详情' })).not.toBeInTheDocument();
+    await act(async () => checked.resolve(integrationTask));
+    expect(screen.getByRole('dialog', { name: '待办详情' })).toBeVisible();
   });
   it('unavailable task notification hides its old text and cannot navigate to a task or friend requests', () => {
     const open = vi.fn(); const requests = vi.fn(); render(<NotificationsPage actorContext={user.id} items={[{ id: 'n1', type: 'task.assigned', taskId: 'private-old', entityRef: 'private-old', available: false, text: 'OLD-PRIVATE-NOTIFICATION', readAt: 1, createdAt: 1 }]} hasMore={false} onLoadMore={vi.fn()} onRefresh={vi.fn()} onOpenRequests={requests} onOpenTask={open} />); expect(screen.queryByText('OLD-PRIVATE-NOTIFICATION')).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: '核对并查看待办' })).toBeDisabled(); expect(open).not.toHaveBeenCalled(); expect(requests).not.toHaveBeenCalled();
