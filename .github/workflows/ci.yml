@@ -51,6 +51,8 @@ jobs:
         run: npm run test --workspace @tongpin/web
       - name: Browser runtime
         run: npx --no-install playwright install --with-deps chromium
+      - name: Browser request diagnostics tests
+        run: node --test tests/ci_browser_requests.test.mjs
       - name: Real browser smoke
         run: uv run --no-sync python scripts/ci_browser_smoke.py
   container:

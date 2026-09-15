@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { observeRequests } from './ci_browser_requests.mjs';
 
 const repoRoot = await realpath(fileURLToPath(new URL('../', import.meta.url)));
 const report = { schemaVersion: 1, check: 'ci-browser-smoke', status: 'running', startedAt: new Date().toISOString(), steps: [], sockets: [], errors: [], ignoredRequests: [], assets: [], screenshots: [], viewports: [], authResponses: [], diagnostics: [] };
@@ -59,17 +60,11 @@ async function openPage(role) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: 'zh-CN', reducedMotion: 'reduce' });
   await context.addCookies([{ name: fixture.cookieName, value: fixture[role].session, url: fixture.baseUrl, httpOnly: true, sameSite: 'Lax', secure: fixture.baseUrl.startsWith('https:') }]);
   const page = await context.newPage();
-  const entry = { role, page, navigating: false };
+  const entry = { role, page, requests: await observeRequests(page, { origin: report.origin, isClosing: () => closing }) };
   pages.push(entry);
   page.setDefaultTimeout(15000);
   page.on('console', (message) => { if (message.type() === 'error') report.errors.push({ role, kind: 'console', message: redact(message.text()) }); });
   page.on('pageerror', (error) => report.errors.push({ role, kind: 'pageerror', message: redact(error.message) }));
-  page.on('requestfailed', (request) => {
-    const error = request.failure()?.errorText || 'unknown';
-    const item = { role, kind: 'requestfailed', path: urlPath(request.url()), message: redact(error) };
-    if (closing || (entry.navigating && request.isNavigationRequest() && error === 'net::ERR_ABORTED')) report.ignoredRequests.push(item);
-    else report.errors.push(item);
-  });
   page.on('response', (response) => {
     const pathname = urlPath(response.url());
     if (pathname.startsWith('/api/v1/auth/') && report.authResponses.length < 100) report.authResponses.push({ role, path: pathname, status: response.status() });
@@ -90,9 +85,16 @@ async function openPage(role) {
   return entry;
 }
 async function navigate(entry, reload) {
-  entry.navigating = true;
+  // Do not replace a document while its permission response is still being read.
+  await expect.poll(() => entry.requests.pendingReads(), { message: 'Permission reads finish before scripted navigation' }).toBe(0);
+  entry.requests.beginNavigation();
   try { if (reload) await entry.page.reload({ waitUntil: 'domcontentloaded' }); else await entry.page.goto(fixture.baseUrl, { waitUntil: 'domcontentloaded' }); }
-  finally { entry.navigating = false; }
+  finally { entry.requests.endNavigation(); }
+}
+async function collectRequests() {
+  for (const entry of pages) for (const item of await entry.requests.collect()) {
+    (item.reason ? report.ignoredRequests : report.errors).push({ role: entry.role, ...item, message: redact(item.message) });
+  }
 }
 async function openNavigation(page, label) {
   const navigation = page.getByRole('navigation', { name: '主导航' });
@@ -190,7 +192,7 @@ try {
     await expect(savedTask(owner.page)).toBeVisible();
   });
   for (const width of [320, 768, 1440]) await step(`rendered-viewports-${width}`, async () => { await viewport(member, 'chat', width); await viewport(owner, 'tasks', width); });
-  await step('no-browser-runtime-errors', async () => { assert.equal(report.errors.length, 0, `Unexpected browser errors: ${JSON.stringify(report.errors)}`); });
+  await step('no-browser-runtime-errors', async () => { await collectRequests(); assert.equal(report.errors.length, 0, `Unexpected browser errors: ${JSON.stringify(report.errors)}`); });
   report.status = 'passed';
 } catch (error) {
   report.status = 'failed'; report.failure = redact(error.message); process.exitCode = 1;
@@ -198,6 +200,8 @@ try {
 } finally {
   closing = true;
   if (browser) { try { await browser.close(); } catch (error) { report.errors.push({ kind: 'close', message: redact(error.message) }); report.status = 'failed'; process.exitCode = 1; } }
+  await collectRequests();
+  if (report.errors.length) { report.status = 'failed'; process.exitCode = 1; }
   report.endedAt = new Date().toISOString();
   if (output) await writeFile(path.join(output, 'observed-browser.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   const summary = { status: report.status, report: output ? path.join(output, 'observed-browser.json') : null, failure: report.failure };
