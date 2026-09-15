@@ -589,11 +589,13 @@ describe('M7-UI context history pagination', () => {
     chat.jump.mockImplementation(async () => publish({ selectedId: 'dm-a', conversations: [{ ...conversation(), lastSeq: '65' }], messages: initial, locatedMessageId: 'context-4', historyAfter: '29' }));
     chat.getDraft.mockResolvedValue({ key: 'draft', userId: user.id, conversationId: 'dm-a', text: '保留的草稿', updatedAt: 1 });
     showWorkspace(); await act(async () => window.dispatchEvent(new CustomEvent('tongpin:open-message', { detail: { userId: user.id, messageId: 'context-4' } }))); await screen.findByText('已定位到目标消息');
+    // Scope accessible-name computation to the controls, not every message menu.
+    const actions = within(screen.getByText('已定位到目标消息').closest<HTMLElement>('.timeline-actions')!);
     const viewport = screen.getByLabelText('消息记录'); const geometry = dimensions(viewport, 1000, 180); fireEvent.scroll(viewport);
     const page = deferred<void>(); chat.newer.mockImplementation(async () => { publish({ historyLoading: true }); await page.promise; geometry.setHeight(1900); publish({ messages: [...initial, ...later], historyAfter: null, historyLoading: false }); });
-    fireEvent.click(screen.getByRole('button', { name: '加载较新的消息' })); await act(async () => page.resolve()); await screen.findByText('历史 65');
-    expect(screen.queryByRole('button', { name: /条新消息/ })).not.toBeInTheDocument(); expect(geometry.top()).toBe(180); expect(screen.getByLabelText('消息内容')).toHaveValue('保留的草稿'); expect(chat.read).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '返回最新消息' })); await waitFor(() => expect(chat.select).toHaveBeenCalledWith('dm-a')); expect(screen.getByLabelText('消息内容')).toHaveValue('保留的草稿');
+    fireEvent.click(actions.getByRole('button', { name: '加载较新的消息' })); await act(async () => page.resolve()); await screen.findByText('历史 65');
+    expect(screen.queryByText(/条新消息/)).not.toBeInTheDocument(); expect(geometry.top()).toBe(180); expect(screen.getByLabelText('消息内容')).toHaveValue('保留的草稿'); expect(chat.read).not.toHaveBeenCalled();
+    fireEvent.click(actions.getByRole('button', { name: '返回最新消息' })); await waitFor(() => expect(chat.select).toHaveBeenCalledWith('dm-a')); expect(screen.getByLabelText('消息内容')).toHaveValue('保留的草稿');
   });
   it('still counts a genuine live message during pagination and keeps both controls in separate flow rows', async () => {
     const initial = [message('context-1', '1', '定位历史')]; const existing = message('context-2', '2', '较新历史'); const live = message('live-3', '3', '真正实时消息');
