@@ -67,7 +67,7 @@ it('shows server validation errors without clearing drafts or reporting a succes
   expect(screen.getByLabelText('个人简介')).toHaveAttribute('aria-invalid', 'true');
   expect(screen.getByRole('button', { name: '保存资料' })).toBeEnabled();
   expect(changed).not.toHaveBeenCalled();
-  expect(busy).toHaveBeenLastCalledWith(false);
+  await waitFor(() => expect(busy).toHaveBeenLastCalledWith(false));
 });
 
 describe('late profile responses', () => {
