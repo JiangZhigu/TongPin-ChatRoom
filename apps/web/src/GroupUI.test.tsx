@@ -318,7 +318,7 @@ describe('UX-R04 invitation continuity and failed refresh', () => {
     await waitFor(() => expect(screen.getByLabelText('本次生成的邀请链接')).toHaveValue(value));
     revoked = true; current = { ...group(), version: 9 }; remoteUpdate();
     await waitFor(() => expect(screen.getByText(/已撤销/)).toBeInTheDocument());
-    expect(screen.queryByLabelText('本次生成的邀请链接')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByLabelText('本次生成的邀请链接')).not.toBeInTheDocument());
   });
   it('keeps all actions disabled when remote detail revalidation fails', async () => {
     manage(); await screen.findByLabelText('群名称');

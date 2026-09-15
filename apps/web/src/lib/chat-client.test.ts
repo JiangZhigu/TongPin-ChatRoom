@@ -3,7 +3,7 @@ import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatClient, mergeMessages, validateMessageText } from './chat-client';
 import { playMessageSound } from './message-sounds';
-import { setCsrfToken, type User } from './api';
+import { APIError, setCsrfToken, type User } from './api';
 import { openLocalDatabase, readQueue, readOfflineIdentity, rememberIdentity } from './outbox';
 import type { Conversation, LocalAttachment, Message, SyncEvent } from './chat-types';
 import type { UploadRecord } from './files-types';
@@ -433,7 +433,13 @@ describe('real Blob outbox and controlled HTTP upload scheduling', () => {
     await until(async () => (await readQueue(user.id))[0]?.errorCode === 'NETWORK_ERROR');
     const retained = (await readQueue(user.id))[0]; expect(retained.files[0].attachmentId).toBeTruthy();
     expect(await retained.files[0].blob.text()).toBe('real local bytes');
-    await current.retry(retained.payload.clientMessageId); await until(async () => (await readQueue(user.id)).length === 0);
+    // Persisting the error precedes the delivery task's finally/lock cleanup.
+    // Wait through that documented busy state; all other retry failures still fail.
+    await until(async () => {
+      try { await current.retry(retained.payload.clientMessageId); return true; }
+      catch (error) { if (error instanceof APIError && error.code === 'UPLOAD_BUSY') return false; throw error; }
+    });
+    await until(async () => (await readQueue(user.id)).length === 0);
     expect(server.requests.filter((row) => row.url.endsWith('/attachments') && row.method === 'POST')).toHaveLength(1);
     expect(server.requests.filter((row) => row.url.endsWith('/attachment-uploads'))).toHaveLength(1);
     expect(server.deliveries[0].payload.attachmentIds).toEqual([retained.files[0].attachmentId]);
@@ -467,7 +473,9 @@ describe('real Blob outbox and controlled HTTP upload scheduling', () => {
     const server = fileServer('processing'); server.control.holdUpload = true; const current = await client();
     await current.queue(conversation.id, '', { files: [localFile()] });
     await until(() => server.requests.some((row) => row.url.endsWith('/attachments') && row.method === 'POST'));
-    const retained = (await readQueue(user.id))[0]; await current.cancel(retained.payload.clientMessageId);
+    const retained = (await readQueue(user.id))[0];
+    await expect(current.retry(retained.payload.clientMessageId)).rejects.toMatchObject({ code: 'UPLOAD_BUSY' });
+    await current.cancel(retained.payload.clientMessageId);
     expect(await readQueue(user.id)).toEqual([]); expect(server.deliveries).toEqual([]);
     expect(server.requests.filter((row) => row.url.endsWith('/cancel'))).toHaveLength(1);
   });
