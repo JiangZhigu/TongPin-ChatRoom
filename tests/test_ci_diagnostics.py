@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import logging
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,6 +64,22 @@ def test_ci_server_uses_real_entry_and_restores_factory(monkeypatch):
     probe.main()
     assert calls == [('factory', 'settings'), ('instrument', 'settings')]
     assert entry.create_application is factory
+
+
+def test_ci_probe_captures_asgi_exception_frames_without_values(capsys):
+    probe = module('ci_server_probe')
+    secret = 'synthetic-private-path-or-exception-value'
+    try:
+        raise RuntimeError(secret)
+    except RuntimeError:
+        record = logging.LogRecord('uvicorn.error', logging.ERROR, __file__, 1, secret, (), sys.exc_info())
+    assert probe.ASGIExceptionMetadata().filter(record) is True
+    output = capsys.readouterr().out
+    assert secret not in output
+    value = json.loads(output.removeprefix(probe.PREFIX))
+    assert value['type'] == 'RuntimeError' and value['route'] == '(ASGI)'
+    assert value['requestId'] is None
+    assert value['frames'][-1]['function'] == 'test_ci_probe_captures_asgi_exception_frames_without_values'
 
 
 def test_ci_diagnostics_bounds_records_and_omits_raw_server_exception_messages(tmp_path):

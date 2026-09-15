@@ -55,6 +55,13 @@ jobs:
         run: node --test tests/ci_browser_requests.test.mjs
       - name: Real browser smoke
         run: uv run --no-sync python scripts/ci_browser_smoke.py
+      - name: Repeated isolated Linux browser lifecycle
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            uv run --no-sync python scripts/ci_browser_smoke.py || exit "$?"
+          done
   container:
     runs-on: ubuntu-latest
     timeout-minutes: 20
